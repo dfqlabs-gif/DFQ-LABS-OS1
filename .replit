@@ -36,3 +36,8 @@ externalPort = 5000
 [[ports]]
 localPort = 24678
 externalPort = 80
+
+[deployment]
+deploymentTarget = "autoscale"
+run = ["node", "dist/server.cjs"]
+build = ["npm", "run", "build"]
