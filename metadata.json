@@ -1,0 +1,6 @@
+{
+  "name": "Intern Outreach CRM & Metrics Tracker",
+  "description": "Elite daily and weekly performance tracking for outreach teams, featuring hyper-personalized, context-aware DM generation powered by Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
