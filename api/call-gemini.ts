@@ -2,6 +2,33 @@
 // Called by callClaude() in prompts.ts for all in-app AI generation.
 import { GoogleGenAI } from "@google/genai";
 
+function friendlyGeminiError(error: any): { status: number; message: string } {
+  const raw = error?.message ?? "";
+
+  // Quota / billing exhausted
+  if (raw.includes("RESOURCE_EXHAUSTED") || raw.includes("quota") || raw.includes("429")) {
+    return {
+      status: 429,
+      message:
+        "AI quota exhausted. The Gemini API free tier has been used up. Enable billing at aistudio.google.com or use a fresh API key.",
+    };
+  }
+
+  // Auth / invalid key
+  if (raw.includes("API_KEY_INVALID") || raw.includes("401") || raw.includes("403")) {
+    return { status: 401, message: "Invalid Gemini API key. Check your GEMINI_API_KEY environment variable." };
+  }
+
+  // Model not found
+  if (raw.includes("NOT_FOUND") || raw.includes("404")) {
+    return { status: 404, message: "Gemini model not found. The requested model may not be available." };
+  }
+
+  // Generic fallback — strip JSON noise, cap length
+  const clean = raw.replace(/\{.*\}/s, "").trim().slice(0, 200) || "AI generation failed. Please try again.";
+  return { status: 500, message: clean };
+}
+
 export default async function handler(req: any, res: any) {
   // Always respond with JSON — never let Vercel return an HTML error page.
   res.setHeader("Content-Type", "application/json");
@@ -36,6 +63,7 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ text });
   } catch (error: any) {
     console.error("Gemini /api/call-gemini error:", error);
-    return res.status(500).json({ error: error.message || "Failed to generate AI response." });
+    const { status, message } = friendlyGeminiError(error);
+    return res.status(status).json({ error: message });
   }
 }

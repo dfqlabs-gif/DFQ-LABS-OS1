@@ -2,6 +2,29 @@
 // Generates a personalized outreach DM for a lead at a given pipeline stage.
 import { GoogleGenAI } from "@google/genai";
 
+function friendlyGeminiError(error: any): { status: number; message: string } {
+  const raw = error?.message ?? "";
+
+  if (raw.includes("RESOURCE_EXHAUSTED") || raw.includes("quota") || raw.includes("429")) {
+    return {
+      status: 429,
+      message:
+        "AI quota exhausted. The Gemini API free tier has been used up. Enable billing at aistudio.google.com or use a fresh API key.",
+    };
+  }
+
+  if (raw.includes("API_KEY_INVALID") || raw.includes("401") || raw.includes("403")) {
+    return { status: 401, message: "Invalid Gemini API key. Check your GEMINI_API_KEY environment variable." };
+  }
+
+  if (raw.includes("NOT_FOUND") || raw.includes("404")) {
+    return { status: 404, message: "Gemini model not found. The requested model may not be available." };
+  }
+
+  const clean = raw.replace(/\{.*\}/s, "").trim().slice(0, 200) || "AI generation failed. Please try again.";
+  return { status: 500, message: clean };
+}
+
 export default async function handler(req: any, res: any) {
   res.setHeader("Content-Type", "application/json");
 
@@ -100,6 +123,7 @@ Draft a single, highly effective direct message tailored perfectly for this reci
     return res.status(200).json({ draft });
   } catch (error: any) {
     console.error("Gemini /api/generate-dm error:", error);
-    return res.status(500).json({ error: error.message || "Failed to generate direct message." });
+    const { status, message } = friendlyGeminiError(error);
+    return res.status(status).json({ error: message });
   }
 }
