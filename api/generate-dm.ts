@@ -1,10 +1,17 @@
 // Serverless handler for /api/generate-dm
 // Generates a personalized outreach DM for a lead at a given pipeline stage.
-import { getGeminiClient } from "./_gemini";
+import { GoogleGenAI } from "@google/genai";
 
 export default async function handler(req: any, res: any) {
+  res.setHeader("Content-Type", "application/json");
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
   }
 
   const { name, company, role, niche, channel, painPoint, stage, lastConversation, notes } =
@@ -20,43 +27,35 @@ export default async function handler(req: any, res: any) {
   switch (stage) {
     case "Outreach Sent":
       nextStage = "Replied / Interested";
-      objective =
-        "Get them to respond to our outreach. Follow up on the previous touchpoint or introduce a fresh, low-resistance, highly relevant angle. Offer immediate value or a specific insight rather than a sales pitch.";
+      objective = "Get them to respond to our outreach. Follow up on the previous touchpoint or introduce a fresh, low-resistance, highly relevant angle. Offer immediate value or a specific insight rather than a sales pitch.";
       break;
     case "Replied / Interested":
       nextStage = "Audit Requested";
-      objective =
-        "Offer a free custom audit or brief analysis specific to their company/niche to diagnose their key pain point. Transition their general interest into requesting a custom audit.";
+      objective = "Offer a free custom audit or brief analysis specific to their company/niche to diagnose their key pain point. Transition their general interest into requesting a custom audit.";
       break;
     case "Audit Requested":
       nextStage = "Audit Delivered";
-      objective =
-        "Deliver an outstanding insight (the audit) and invite them to schedule a brief 10-minute walk-through call to discuss the solution. The tone must be expert, helpful, and value-first.";
+      objective = "Deliver an outstanding insight (the audit) and invite them to schedule a brief 10-minute walk-through call to discuss the solution. The tone must be expert, helpful, and value-first.";
       break;
     case "Audit Delivered":
       nextStage = "Meeting Booked";
-      objective =
-        "Move them to book a specific strategy session or meeting. Address any initial feedback they had and provide an easy scheduling link or request 2 specific times that work for them.";
+      objective = "Move them to book a specific strategy session or meeting. Address any initial feedback they had and provide an easy scheduling link or request 2 specific times that work for them.";
       break;
     case "Meeting Booked":
       nextStage = "Proposal Sent";
-      objective =
-        "Follow up on the booked meeting to outline what was discussed and send over a clear, tailored business proposal or outline next steps to initiate a partnership.";
+      objective = "Follow up on the booked meeting to outline what was discussed and send over a clear, tailored business proposal or outline next steps to initiate a partnership.";
       break;
     case "Proposal Sent":
       nextStage = "Client Closed";
-      objective =
-        "Gently but with high urgency and professionalism follow up to address final concerns, clarify pricing or terms, and invite them to take the closing step (signing contract / onboarding).";
+      objective = "Gently but with high urgency and professionalism follow up to address final concerns, clarify pricing or terms, and invite them to take the closing step (signing contract / onboarding).";
       break;
     case "Client Closed":
       nextStage = "Referrals / Account Growth";
-      objective =
-        "Express appreciation for the partnership, verify that they are thrilled with the initial results, and request a warm referral or discuss scaling their campaign.";
+      objective = "Express appreciation for the partnership, verify that they are thrilled with the initial results, and request a warm referral or discuss scaling their campaign.";
       break;
     default:
       nextStage = "Replied / Interested";
-      objective =
-        "Foster a genuine conversation, build rapport, and offer value related to their business.";
+      objective = "Foster a genuine conversation, build rapport, and offer value related to their business.";
   }
 
   const systemInstruction = `You are an elite, highly paid cold outreach and conversion copywriter who writes bespoke, ultra-high-converting direct messages.
@@ -90,20 +89,17 @@ ${notes ? `- Contextual Notes: "${notes}"` : ""}
 Draft a single, highly effective direct message tailored perfectly for this recipient. Use placeholder variables like [My Name] or [My Calendar Link] where appropriate. Let's make it punchy, incredibly natural, and hard to ignore. Ensure you write ONLY the final text of the message or email. Do not include any meta-text, introductions, or post-scripts. For email, you can include a "Subject: " line at the top.`;
 
   try {
-    const ai = getGeminiClient();
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: "gemini-2.0-flash",
       contents: prompt,
-      config: {
-        systemInstruction,
-        temperature: 0.8,
-      },
+      config: { systemInstruction, temperature: 0.8 },
     });
 
     const draft = response.text ?? "Failed to generate DM.";
-    res.json({ draft });
+    return res.status(200).json({ draft });
   } catch (error: any) {
     console.error("Gemini /api/generate-dm error:", error);
-    res.status(500).json({ error: error.message || "Failed to generate direct message." });
+    return res.status(500).json({ error: error.message || "Failed to generate direct message." });
   }
 }
