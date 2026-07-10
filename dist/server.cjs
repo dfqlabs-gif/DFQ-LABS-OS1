@@ -49,6 +49,30 @@ function getGeminiClient() {
   }
   return aiClient;
 }
+app.post("/api/call-gemini", async (req, res) => {
+  const { systemInstruction, prompt, maxTokens } = req.body;
+  if (!prompt) {
+    res.status(400).json({ error: "prompt is required" });
+    return;
+  }
+  try {
+    const ai = getGeminiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: prompt,
+      config: {
+        systemInstruction: systemInstruction || void 0,
+        maxOutputTokens: maxTokens || void 0,
+        temperature: 0.7
+      }
+    });
+    const text = response.text ?? "";
+    res.json({ text });
+  } catch (error) {
+    console.error("Gemini /api/call-gemini error:", error);
+    res.status(500).json({ error: error.message || "Failed to generate AI response." });
+  }
+});
 app.post("/api/generate-dm", async (req, res) => {
   const { name, company, role, niche, channel, painPoint, stage, lastConversation, notes } = req.body;
   if (!name || !company) {
