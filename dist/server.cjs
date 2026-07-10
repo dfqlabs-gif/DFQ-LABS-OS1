@@ -30,7 +30,7 @@ import_dotenv.default.config();
 var app = (0, import_express.default)();
 var PORT = process.env.PORT ? parseInt(process.env.PORT) : 5e3;
 var OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-var DEFAULT_MODEL = "deepseek/deepseek-chat-v3-0324:free";
+var DEFAULT_MODEL = "deepseek/deepseek-r1:free";
 app.use(import_express.default.json());
 async function callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temperature = 0.7) {
   const apiKey = process.env.OPENROUTER_API_KEY;

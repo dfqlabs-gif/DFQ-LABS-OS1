@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const DEFAULT_MODEL = "deepseek/deepseek-chat-v3-0324:free";
+const DEFAULT_MODEL = "deepseek/deepseek-r1:free";
 
 app.use(express.json());
 
