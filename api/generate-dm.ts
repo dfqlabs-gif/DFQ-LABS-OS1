@@ -1,28 +1,21 @@
 // Serverless handler for /api/generate-dm
 // Generates a personalized outreach DM for a lead at a given pipeline stage.
-import { GoogleGenAI } from "@google/genai";
+// Now powered by OpenRouter (model-agnostic).
 
-function friendlyGeminiError(error: any): { status: number; message: string } {
-  const raw = error?.message ?? "";
+import { DEFAULT_MODEL } from "./ai";
 
-  if (raw.includes("RESOURCE_EXHAUSTED") || raw.includes("quota") || raw.includes("429")) {
-    return {
-      status: 429,
-      message:
-        "AI quota exhausted. The Gemini API free tier has been used up. Enable billing at aistudio.google.com or use a fresh API key.",
-    };
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+
+function friendlyError(error: any): { status: number; message: string } {
+  const raw = String(error?.message ?? error ?? "");
+  if (raw.includes("429") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
+    return { status: 429, message: "AI quota exceeded. Try switching to a different model in AI Gateway settings." };
   }
-
-  if (raw.includes("API_KEY_INVALID") || raw.includes("401") || raw.includes("403")) {
-    return { status: 401, message: "Invalid Gemini API key. Check your GEMINI_API_KEY environment variable." };
+  if (raw.includes("401") || raw.includes("403")) {
+    return { status: 401, message: "Invalid OPENROUTER_API_KEY. Check your Vercel environment variables." };
   }
-
-  if (raw.includes("NOT_FOUND") || raw.includes("404")) {
-    return { status: 404, message: "Gemini model not found. The requested model may not be available." };
-  }
-
-  const clean = raw.replace(/\{.*\}/s, "").trim().slice(0, 200) || "AI generation failed. Please try again.";
-  return { status: 500, message: clean };
+  const clean = raw.replace(/\{[\s\S]*?\}/g, "").trim().slice(0, 200);
+  return { status: 500, message: clean || "AI service temporarily unavailable. Please try again." };
 }
 
 export default async function handler(req: any, res: any) {
@@ -32,12 +25,12 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
+    return res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
   }
 
-  const { name, company, role, niche, channel, painPoint, stage, lastConversation, notes } =
+  const { name, company, role, niche, channel, painPoint, stage, lastConversation, notes, model } =
     req.body || {};
 
   if (!name || !company) {
@@ -81,7 +74,7 @@ export default async function handler(req: any, res: any) {
       objective = "Foster a genuine conversation, build rapport, and offer value related to their business.";
   }
 
-  const systemInstruction = `You are an elite, highly paid cold outreach and conversion copywriter who writes bespoke, ultra-high-converting direct messages.
+  const systemPrompt = `You are an elite, highly paid cold outreach and conversion copywriter who writes bespoke, ultra-high-converting direct messages.
 Your copy has no "AI signature". It sounds exactly like an authentic, highly focused, professional human who respects the recipient's time and intelligence.
 
 STRICT WRITING RULES:
@@ -94,7 +87,7 @@ STRICT WRITING RULES:
 5. Focus on ONE clear, low-friction, natural action step. Don't ask them to commit to a long call immediately if it's too early.
 6. The message must feel fully personalized, speaking directly to their niche and pain points. Never generic.`;
 
-  const prompt = `Write a highly specialized and hyper-personalized message for the following prospect.
+  const userPrompt = `Write a highly specialized and hyper-personalized message for the following prospect.
 
 Prospect Details:
 - Name: ${name}
@@ -109,21 +102,43 @@ Prospect Details:
 ${lastConversation ? `- Last Message / Conversation History: "${lastConversation}"` : ""}
 ${notes ? `- Contextual Notes: "${notes}"` : ""}
 
-Draft a single, highly effective direct message tailored perfectly for this recipient. Use placeholder variables like [My Name] or [My Calendar Link] where appropriate. Let's make it punchy, incredibly natural, and hard to ignore. Ensure you write ONLY the final text of the message or email. Do not include any meta-text, introductions, or post-scripts. For email, you can include a "Subject: " line at the top.`;
+Draft a single, highly effective direct message tailored perfectly for this recipient. Use placeholder variables like [My Name] or [My Calendar Link] where appropriate. Ensure you write ONLY the final text of the message or email. Do not include any meta-text, introductions, or post-scripts. For email, you can include a "Subject: " line at the top.`;
+
+  const activeModel = model || DEFAULT_MODEL;
 
   try {
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: prompt,
-      config: { systemInstruction, temperature: 0.8 },
+    const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://dfqlabs.vercel.app",
+        "X-Title": "DFQ Labs OS"
+      },
+      body: JSON.stringify({
+        model: activeModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        max_tokens: 400,
+        temperature: 0.8
+      })
     });
 
-    const draft = response.text ?? "Failed to generate DM.";
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({})) as any;
+      const msg = errBody?.error?.message || `HTTP ${response.status}`;
+      const { status, message } = friendlyError({ message: msg });
+      return res.status(status).json({ error: message });
+    }
+
+    const data = await response.json() as any;
+    const draft: string = data?.choices?.[0]?.message?.content ?? "Failed to generate DM.";
     return res.status(200).json({ draft });
   } catch (error: any) {
-    console.error("Gemini /api/generate-dm error:", error);
-    const { status, message } = friendlyGeminiError(error);
+    console.error("OpenRouter /api/generate-dm error:", error);
+    const { status, message } = friendlyError(error);
     return res.status(status).json({ error: message });
   }
 }

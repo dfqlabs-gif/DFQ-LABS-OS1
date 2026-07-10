@@ -1,3 +1,4 @@
+// ─── Business Context (system prompt for all AI calls) ────────────────────
 export const BUSINESS_CONTEXT = `You are the Chief Revenue Intelligence Officer and Elite Copywriting Strategist for DFQ Labs. 
 DFQ Labs is a boutique sales outbound and lead intelligence consultancy that helps Abuja-based real estate brands capture premium clients, sell off-plan properties, and establish digital authority on WhatsApp and Instagram.
 
@@ -36,16 +37,62 @@ STRICT COPYWRITING RULES (ELIMINATE THE AI SIGNATURE):
    - Meeting Booked to Proposal Sent: Clarify partnership terms, pricing, or the Beta program.
    - Proposal Sent to Closed: Address final objections, clear up contract terms, and close the deal.`;
 
+// ─── Model preference (persisted in localStorage) ─────────────────────────
+const AI_MODEL_KEY = "dfqlabs-ai-model";
+
+export const getActiveModel = (): string | undefined => {
+  try { return localStorage.getItem(AI_MODEL_KEY) || undefined; }
+  catch { return undefined; }
+};
+
+export const setActiveModel = (model: string): void => {
+  try { localStorage.setItem(AI_MODEL_KEY, model); }
+  catch {}
+};
+
+// ─── Error log (persisted in localStorage, max 50 entries) ────────────────
+const AI_ERROR_KEY = "dfqlabs-ai-errors";
+
+export interface AIError {
+  ts: string;
+  message: string;
+  model?: string;
+}
+
+export const getAIErrors = (): AIError[] => {
+  try { return JSON.parse(localStorage.getItem(AI_ERROR_KEY) || "[]"); }
+  catch { return []; }
+};
+
+const logAIError = (message: string, model?: string): void => {
+  try {
+    const errors = getAIErrors();
+    errors.unshift({ ts: new Date().toISOString(), message, model });
+    localStorage.setItem(AI_ERROR_KEY, JSON.stringify(errors.slice(0, 50)));
+  } catch {}
+};
+
+export const clearAIErrors = (): void => {
+  try { localStorage.removeItem(AI_ERROR_KEY); }
+  catch {}
+};
+
+// ─── Central AI call — routes all features through /api/ai ────────────────
+// Pass systemInstruction as the system prompt, prompt as the user message.
+// Model is read from localStorage (set via AI Gateway); falls back to server default.
 export async function callClaude(systemInstruction: string, prompt: string, maxTokens?: number): Promise<string> {
-  const response = await fetch("/api/call-gemini", {
+  const model = getActiveModel();
+  const response = await fetch("/api/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ systemInstruction, prompt, maxTokens }),
+    body: JSON.stringify({ systemPrompt: systemInstruction, userPrompt: prompt, maxTokens, model }),
   });
   if (!response.ok) {
-    const err = await response.json().catch(() => ({ error: "Unknown network error." }));
-    throw new Error(err.error || "Failed to generate AI response.");
+    const err = await response.json().catch(() => ({ error: "AI service temporarily unavailable." })) as any;
+    const message = err.error || "Unable to generate recommendation.";
+    logAIError(message, model);
+    throw new Error(message);
   }
-  const data = await response.json();
+  const data = await response.json() as any;
   return data.text;
 }

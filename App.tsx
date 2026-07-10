@@ -26,6 +26,7 @@ import { TeamTab } from "./components/TeamTab";
 import { LeadModal, ConversationHistoryPanel } from "./components/LeadModal";
 import { WeeklyReport } from "./components/WeeklyReport";
 import { CEOTab } from "./components/CEOTab";
+import { AIGateway } from "./components/AIGateway";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -912,7 +913,8 @@ export default function App() {
     { key: "strategy", label: "Strategy" },
     { key: "report", label: "CEO Report" },
     { key: "coach", label: "AI Coach" },
-    { key: "ceo", label: "CEO Dashboard" }
+    { key: "ceo", label: "CEO Dashboard" },
+    { key: "gateway", label: "AI Gateway" }
   ];
 
   if (loading) return <div style={{ background: BG, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: G, fontFamily: "monospace", letterSpacing: 4, fontSize: 13 }}>LOADING OS…</span></div>;
@@ -1025,6 +1027,7 @@ export default function App() {
         {tab === "report" && <WeeklyReport leads={leads} stats={stats} revenue={revenueValue} />}
         {tab === "coach" && <AICoach leads={leads} />}
         {tab === "ceo" && <CEOTab leads={leads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
+        {tab === "gateway" && <AIGateway />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={leads} onSave={saveLead} onClose={() => setModal(null)} />}

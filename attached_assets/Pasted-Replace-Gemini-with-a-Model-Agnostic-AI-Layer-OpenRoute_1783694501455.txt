@@ -1,0 +1,366 @@
+Replace Gemini with a Model-Agnostic AI Layer (OpenRouter)
+
+I want to redesign the AI architecture of DFQ Labs OS. Do not make any changes to the UI, branding, colors, layouts, dashboards, navigation, or existing workflows. This is strictly a backend AI integration upgrade.
+
+Objective
+
+Completely remove the Gemini dependency and replace it with a model-agnostic AI service using OpenRouter.
+
+The system must never depend on one AI provider again.
+
+Store the API key as:
+
+OPENROUTER_API_KEY
+
+using Vercel Environment Variables.
+
+
+---
+
+AI Architecture
+
+Create a centralized AI service.
+
+Every AI feature in the application must call this service instead of talking directly to an AI provider.
+
+The AI service should accept:
+
+system prompt
+
+user prompt
+
+business context
+
+lead context
+
+conversation history
+
+model selection
+
+
+This allows us to swap models later without changing the application.
+
+
+---
+
+Default Model
+
+Use a high-quality free OpenRouter model by default (such as DeepSeek or Qwen).
+
+Do not hardcode Gemini anywhere.
+
+The model should be configurable in one location.
+
+
+---
+
+AI Features
+
+The AI is not just a DM writer.
+
+It is the intelligence layer of the entire operating system.
+
+It should support multiple specialist roles.
+
+
+---
+
+1. Personalized DM Generator
+
+Given:
+
+lead name
+
+company
+
+conversation history
+
+pipeline stage
+
+assigned specialist
+
+lead score
+
+company notes
+
+previous replies
+
+DFQ Labs knowledge base
+
+
+Generate:
+
+highly personalized reply
+
+natural human tone
+
+short
+
+persuasive
+
+contextual
+
+
+Never sound robotic.
+
+
+---
+
+2. CEO Strategic Advisor
+
+Allow the AI to analyse the ENTIRE CRM.
+
+It should understand:
+
+every lead
+
+every stage
+
+response times
+
+conversion rates
+
+pipeline value
+
+discovery calls
+
+proposals
+
+closed deals
+
+lost deals
+
+specialist performance
+
+overdue follow-ups
+
+weekly activity
+
+
+It should answer questions like:
+
+Why are we behind target?
+
+What is the biggest bottleneck?
+
+What should I personally focus on today?
+
+Which stage is leaking revenue?
+
+Which intern is performing better?
+
+What actions will generate the highest ROI this week?
+
+Predict whether we'll hit our monthly target.
+
+
+
+---
+
+3. Sales Manager AI
+
+Review pipeline health.
+
+Recommend:
+
+leads requiring attention
+
+leads becoming cold
+
+opportunities at risk
+
+follow-up priorities
+
+pipeline bottlenecks
+
+
+
+---
+
+4. Specialist Coach
+
+For every intern:
+
+Review only their assigned leads.
+
+Recommend:
+
+who to follow up
+
+why
+
+suggested next action
+
+coaching feedback
+
+
+
+---
+
+5. Lead Intelligence
+
+Given one lead:
+
+Analyse
+
+conversation
+
+notes
+
+replies
+
+activity
+
+
+Predict
+
+buying intent
+
+urgency
+
+confidence score
+
+probability of closing
+
+
+Explain why.
+
+
+---
+
+6. Proposal Assistant
+
+Generate
+
+proposal outline
+
+pricing suggestions
+
+next steps
+
+
+based on CRM information.
+
+
+---
+
+7. Executive Daily Briefing
+
+Every day generate:
+
+today's priorities
+
+overdue tasks
+
+biggest opportunities
+
+biggest risks
+
+recommended actions
+
+expected revenue
+
+pipeline health summary
+
+
+
+---
+
+Context Engineering
+
+The AI must receive structured business data instead of raw text whenever possible.
+
+Provide:
+
+lead objects
+
+pipeline objects
+
+CRM metrics
+
+activity logs
+
+specialist assignments
+
+knowledge base
+
+
+so responses remain grounded in business data.
+
+
+---
+
+Error Handling
+
+Never expose raw API errors.
+
+Instead display friendly messages like:
+
+AI service temporarily unavailable.
+
+Unable to generate recommendation.
+
+Please try again in a few moments.
+
+
+Log technical errors on the server.
+
+
+---
+
+Performance
+
+Reuse API connections where possible.
+
+Avoid duplicate requests.
+
+Support streaming responses if available.
+
+
+---
+
+Future-Proofing
+
+The application must be able to switch models by changing only one configuration value.
+
+Examples:
+
+DeepSeek
+
+Qwen
+
+Llama
+
+GPT
+
+Claude
+
+
+No application logic should need changing when switching models.
+
+
+---
+
+Preserve Existing Functionality
+
+Do not remove or redesign any existing feature.
+
+Keep all current workflows exactly the same.
+
+Only replace the AI backend and improve the architecture.
+
+
+---
+
+One additional feature I'd ask Replit to build while they're doing this is an AI Gateway. This is a simple settings page where you can:
+
+choose the active AI model from a dropdown,
+
+see whether the AI service is connected,
+
+test the connection with one click,
+
+view usage statistics and error logs.
+
+
+That way, if one model becomes unavailable or starts performing poorly, you can switch to another in seconds without modifying the codebase or redeploying the application. This will make DFQ Labs OS much easier to maintain as it grows.
