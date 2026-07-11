@@ -7,16 +7,17 @@ import {
 } from "../constants";
 
 // ─── Model list mirrored from api/ai.ts (no runtime import needed) ────────
+// Keep this in sync with AVAILABLE_MODELS/DEFAULT_MODEL in api/ai.ts and
+// DEFAULT_MODEL in server.ts — see the note there about verifying free-tier
+// slugs before changing this list.
 const MODELS = [
-  { id: "deepseek/deepseek-r1:free",               label: "DeepSeek R1",       note: "Recommended · Reasoning" },
-  { id: "meta-llama/llama-3.3-70b-instruct:free",  label: "Llama 3.3 70B",     note: "Fast · Balanced" },
-  { id: "google/gemini-2.0-flash-exp:free",        label: "Gemini 2.0 Flash",  note: "Creative · Concise" },
-  { id: "qwen/qwen2.5-72b-instruct:free",          label: "Qwen 2.5 72B",      note: "Powerful · Detailed" },
-  { id: "mistralai/mistral-7b-instruct:free",      label: "Mistral 7B",        note: "Lightweight · Quick" },
-  { id: "microsoft/phi-3-mini-128k-instruct:free", label: "Phi-3 Mini",        note: "Compact · Efficient" },
+  { id: "nvidia/nemotron-nano-9b-v2:free",     label: "Nemotron Nano 9B",    note: "Recommended · Balanced" },
+  { id: "openai/gpt-oss-20b:free",             label: "GPT-OSS 20B",         note: "Fast · Concise" },
+  { id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B", note: "Detailed" },
+  { id: "google/gemma-4-26b-a4b-it:free",      label: "Gemma 4 26B",         note: "Creative" },
 ];
 
-const DEFAULT_MODEL_ID = "deepseek/deepseek-r1:free";
+const DEFAULT_MODEL_ID = "nvidia/nemotron-nano-9b-v2:free";
 
 type Status = "idle" | "checking" | "ok" | "error";
 

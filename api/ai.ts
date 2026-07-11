@@ -2,17 +2,21 @@
 // Single entry point for ALL AI calls in DFQ Labs OS.
 // To switch models app-wide, change DEFAULT_MODEL here — no other code changes needed.
 
-export const DEFAULT_MODEL = "deepseek/deepseek-r1:free";
+// Verified against OpenRouter's live free-tier catalog on 2026-07-11 — many
+// previously-listed free slugs (DeepSeek R1, Llama 3.3 70B, Gemini 2.0 Flash,
+// Qwen 2.5 72B, Mistral 7B, Phi-3 Mini) now 404, are rate-limited upstream, or
+// are reasoning models that return empty content. If entries here start
+// failing via /api/ai-status, re-verify against https://openrouter.ai/api/v1/models
+// and swap in a working `:free` slug — do not silently leave a broken default.
+export const DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 
 // ─── Available models (used by AI Gateway UI) ──────────────────────────────
 export const AVAILABLE_MODELS = [
-  { id: "deepseek/deepseek-r1:free",               label: "DeepSeek R1",          note: "Recommended · Reasoning" },
-  { id: "meta-llama/llama-3.3-70b-instruct:free",  label: "Llama 3.3 70B",        note: "Fast · Balanced" },
-  { id: "google/gemini-2.0-flash-exp:free",        label: "Gemini 2.0 Flash",     note: "Creative · Concise" },
-  { id: "qwen/qwen2.5-72b-instruct:free",          label: "Qwen 2.5 72B",         note: "Powerful · Detailed" },
-  { id: "mistralai/mistral-7b-instruct:free",      label: "Mistral 7B",           note: "Lightweight · Quick" },
-  { id: "microsoft/phi-3-mini-128k-instruct:free", label: "Phi-3 Mini",           note: "Compact · Efficient" },
+  { id: "nvidia/nemotron-nano-9b-v2:free",     label: "Nemotron Nano 9B",   note: "Recommended · Balanced" },
+  { id: "openai/gpt-oss-20b:free",             label: "GPT-OSS 20B",        note: "Fast · Concise" },
+  { id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B", note: "Detailed" },
+  { id: "google/gemma-4-26b-a4b-it:free",      label: "Gemma 4 26B",        note: "Creative" },
 ];
 
 function friendlyError(error: any): { status: number; message: string } {
@@ -68,7 +72,10 @@ export default async function handler(req: any, res: any) {
         model: activeModel,
         messages,
         max_tokens: maxTokens || 1200,
-        temperature: 0.7
+        temperature: 0.7,
+        // Many free-tier models are reasoning models that spend the whole
+        // token budget "thinking" and return empty content otherwise.
+        reasoning: { exclude: true, effort: "low" }
       })
     });
 

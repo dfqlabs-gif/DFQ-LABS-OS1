@@ -1,0 +1,1 @@
+- [OpenRouter free-model reasoning trap](openrouter-free-model-reasoning.md) — free-tier OpenRouter models are often reasoning models that return empty content unless configured; check before wiring up generation.

@@ -30,7 +30,7 @@ import_dotenv.default.config();
 var app = (0, import_express.default)();
 var PORT = process.env.PORT ? parseInt(process.env.PORT) : 5e3;
 var OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-var DEFAULT_MODEL = "deepseek/deepseek-r1:free";
+var DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free";
 app.use(import_express.default.json());
 async function callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temperature = 0.7) {
   const apiKey = process.env.OPENROUTER_API_KEY;
@@ -46,7 +46,16 @@ async function callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temper
       "HTTP-Referer": "https://dfqlabs.vercel.app",
       "X-Title": "DFQ Labs OS"
     },
-    body: JSON.stringify({ model, messages, max_tokens: maxTokens || 1200, temperature })
+    // Some free-tier models are reasoning models that spend the whole token
+    // budget "thinking" and return empty content unless reasoning is
+    // excluded from the completion and given a low effort level.
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: maxTokens || 1200,
+      temperature,
+      reasoning: { exclude: true, effort: "low" }
+    })
   });
   if (!response.ok) {
     const errBody = await response.json().catch(() => ({}));
@@ -163,7 +172,7 @@ ${notes ? `- Notes: "${notes}"` : ""}
 Output ONLY the final message text. No meta-commentary.`;
   const activeModel = model || DEFAULT_MODEL;
   try {
-    const draft = await callOpenRouter(systemPrompt, userPrompt, activeModel, 400, 0.8);
+    const draft = await callOpenRouter(systemPrompt, userPrompt, activeModel, 900, 0.8);
     res.json({ draft: draft || "Failed to generate DM." });
   } catch (error) {
     console.error("OpenRouter /api/generate-dm error:", error);

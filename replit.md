@@ -39,7 +39,12 @@ Server starts on port 5000 (Vite middleware in dev mode).
 
 ## Required Secrets
 
-- `GEMINI_API_KEY` — Google Gemini API key (get one at https://aistudio.google.com/apikey)
+- `OPENROUTER_API_KEY` — OpenRouter API key (get one at https://openrouter.ai/settings/keys). Note: the top-level `README.md` still references a legacy `GEMINI_API_KEY`/AI Studio setup — the app was migrated to OpenRouter and no longer uses Gemini directly.
+
+## Notes on the AI model
+
+- Default model is `nvidia/nemotron-nano-9b-v2:free`. Many OpenRouter free-tier models are reasoning models that spend their whole token budget "thinking" and return empty content — `callOpenRouter` in `server.ts` sets `reasoning: { exclude: true, effort: "low" }` and generous `max_tokens` to avoid this. If you swap the default model, verify it returns non-empty content via `/api/ai-status`, not just `ok: true`.
+- OpenRouter's free-tier catalog changes over time; some previously-free model slugs may 404 or rate-limit. If generation starts failing, check `/api/ai-status` with a candidate model and adjust `DEFAULT_MODEL` in `server.ts`.
 
 ## API Endpoints
 

@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const DEFAULT_MODEL = "deepseek/deepseek-r1:free";
+const DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free";
 
 app.use(express.json());
 
@@ -35,7 +35,16 @@ async function callOpenRouter(
       "HTTP-Referer": "https://dfqlabs.vercel.app",
       "X-Title": "DFQ Labs OS"
     },
-    body: JSON.stringify({ model, messages, max_tokens: maxTokens || 1200, temperature })
+    // Some free-tier models are reasoning models that spend the whole token
+    // budget "thinking" and return empty content unless reasoning is
+    // excluded from the completion and given a low effort level.
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: maxTokens || 1200,
+      temperature,
+      reasoning: { exclude: true, effort: "low" },
+    })
   });
 
   if (!response.ok) {
@@ -174,7 +183,7 @@ Output ONLY the final message text. No meta-commentary.`;
 
   const activeModel = model || DEFAULT_MODEL;
   try {
-    const draft = await callOpenRouter(systemPrompt, userPrompt, activeModel, 400, 0.8);
+    const draft = await callOpenRouter(systemPrompt, userPrompt, activeModel, 900, 0.8);
     res.json({ draft: draft || "Failed to generate DM." });
   } catch (error: any) {
     console.error("OpenRouter /api/generate-dm error:", error);
