@@ -16,9 +16,10 @@ import {
   ROLE_ACCESS, classifyLead, detectMeetingRequest, meetingQualified, getWeekKey,
   DAILY_FOLLOWUP_CAP, RELATIONSHIP_RENEWAL_DAYS, RELATIONSHIP_WARNING_DAYS, RESPONSE_GUARD_HOURS, MEETING_WINDOW_HOURS,
   iStyle, Bdg, BucketBdg, BetaBdg, AssignedBdg, CopyBtn, Celebration,
-  SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE
+  SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE, specialistLabel
 } from "./constants";
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
+import { runAI, buildFollowUpPrompt } from "./aiEngine";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -1039,19 +1040,58 @@ export default function App() {
 // EXTRACTED INTERNAL UTILITY VIEWS
 // ----------------------------------------------------
 
+function RoleCard({ onClick, color, Icon, label, sub }: { onClick: () => void; color: string; Icon: any; label: string; sub: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        background: hover ? `linear-gradient(180deg, ${color}14, ${SURFACE})` : SURFACE,
+        border: `1px solid ${hover ? color + "80" : BORDER}`,
+        color: TEXT,
+        borderRadius: 16,
+        padding: "22px 20px",
+        fontSize: 14,
+        fontWeight: 700,
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 10,
+        justifyContent: "center",
+        width: "100%",
+        transform: hover ? "translateY(-4px)" : "translateY(0)",
+        boxShadow: hover ? `0 14px 30px -10px ${color}55, 0 0 0 1px ${color}25` : "0 1px 0 rgba(255,255,255,0.02)",
+        transition: "all 0.25s cubic-bezier(0.16,1,0.3,1)"
+      }}
+    >
+      <div style={{
+        width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center",
+        background: `${color}18`, border: `1px solid ${color}40`
+      }}>
+        <Icon size={19} color={color} />
+      </div>
+      <div>{label}</div>
+      <div style={{ fontSize: 10, fontWeight: 500, color: MUTED, letterSpacing: "0.02em" }}>{sub}</div>
+    </button>
+  );
+}
+
 function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
   return (
     <div style={{ background: BG, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, color: TEXT, fontFamily: "'Inter',system-ui,sans-serif" }}>
-      <div style={{ width: "100%", maxWidth: 360, textAlign: "center" }}>
+      <div style={{ width: "100%", maxWidth: 420, textAlign: "center" }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
           <div className="pulse" style={{ width: 8, height: 8, borderRadius: "50%", background: G, boxShadow: `0 0 10px ${G}` }} />
         </div>
         <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: "0.1em", marginBottom: 4 }}>DFQ<span style={{color: G}}>LABS</span> <span style={{ color: MUTED, fontSize: 12, letterSpacing: "0.05em" }}>OS</span></div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 28 }}>Who's working today?</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <button onClick={() => onSelect("internA")} style={{ background: SURFACE, border: `1px solid ${SPECIALIST_COLOR["Intern A"]}40`, color: TEXT, borderRadius: 10, padding: "15px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 10, justifyContent: "center" }}><UserCheck size={15} color={SPECIALIST_COLOR["Intern A"]} /> Intern A</button>
-          <button onClick={() => onSelect("internB")} style={{ background: SURFACE, border: `1px solid ${SPECIALIST_COLOR["Intern B"]}40`, color: TEXT, borderRadius: 10, padding: "15px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 10, justifyContent: "center" }}><UserCheck size={15} color={SPECIALIST_COLOR["Intern B"]} /> Intern B</button>
-          <button onClick={() => onSelect("founder")} style={{ background: SURFACE, border: `1px solid ${G}40`, color: TEXT, borderRadius: 10, padding: "15px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 10, justifyContent: "center" }}><Shield size={15} color={G} /> Founder</button>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 12 }}>
+          <RoleCard onClick={() => onSelect("internA")} color={SPECIALIST_COLOR["Intern A"]} Icon={UserCheck} label={specialistLabel("Intern A")} sub="Outbound & prospecting" />
+          <RoleCard onClick={() => onSelect("internB")} color={SPECIALIST_COLOR["Intern B"]} Icon={UserCheck} label={specialistLabel("Intern B")} sub="Client relationships" />
+          <RoleCard onClick={() => onSelect("founder")} color={G} Icon={Shield} label="Founder" sub="Full command view" />
         </div>
       </div>
     </div>
@@ -1133,22 +1173,7 @@ function InternDashboard({ internName, leads, onSave, onQuickContact, classifyin
     setDmLoading(p => ({ ...p, [lead.id]: true }));
     setDmOutputs(p => ({ ...p, [lead.id]: "" }));
     try {
-      const text = await callClaude(BUSINESS_CONTEXT, `Determine the EXACT current stage of the prospect based on Status (${lead.status}) and the conversation thread.
-Write an extremely personalized, high-converting outbound message/reply that specifically moves them from their CURRENT stage ("${lead.status}") to the NEXT natural step in our DFQ Labs buyer funnel.
-
-Funnel Path:
-- If Status is New -> Move to "DM Sent" (Send a high-relevance real estate acquisition hook).
-- If Status is DM Sent -> Move to "Replied" (Warm nudge following up on the hook).
-- If Status is Replied -> Move to "Audit Requested" (Pitch a free 2-minute content-to-inbox audit showing views vs inbound conversion bottleneck).
-- If Status is Audit Requested -> Move to "Audit Delivered" (Present custom insights/audit deliverable with a bottleneck diagnosis).
-- If Status is Audit Delivered -> Move to "Discovery Call Booked" (Propose a 10-minute discovery call).
-- If Status is Discovery Call Booked/Done -> Move to "Proposal Sent" (Present partnership terms / Beta program).
-- If Status is Proposal Sent -> Move to "Closed" (Close the deal, address commitment fee/terms).
-
-Requirements:
-1. Target their exact Abuja client archetype (${lead.clientType}). Keep it highly conversational, direct, and zero-fluff.
-2. Max 3-4 sentences. Do NOT use emojis.
-3. Write the message first, then on a new line "---STRATEGY---" followed by 2 sentences explaining the buyer-psychology and transition choice.\n\nLead: ${lead.name || lead.company}. Status: ${lead.status}. Client type: ${lead.clientType}. Our prior DMs: ${lead.dmText || "none"}. Their replies: ${lead.prospectLatestResponse || "none"}. Notes: ${lead.notes}.`, 400);
+      const text = await runAI(buildFollowUpPrompt(lead), 900);
       setDmOutputs(p => ({ ...p, [lead.id]: text }));
     } catch (e: any) {
       setDmOutputs(p => ({ ...p, [lead.id]: "Error: " + e.message }));
@@ -1168,7 +1193,7 @@ Requirements:
       <header style={{ borderBottom: `1px solid ${BORDER}`, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.1em" }}>DFQ<span style={{color: G}}>LABS</span></span>
-          <Bdg text={internName} color={SPECIALIST_COLOR[internName]} solid icon={UserCheck} />
+          <Bdg text={specialistLabel(internName)} color={SPECIALIST_COLOR[internName]} solid icon={UserCheck} />
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <button onClick={() => setModal({

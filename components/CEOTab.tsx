@@ -13,6 +13,7 @@ import {
   STATUS_COLOR, 
   SPECIALISTS, 
   SPECIALIST_COLOR, 
+  specialistLabel,
   SERVICE_VALUE, 
   STAGE_PROBABILITY, 
   G, 
@@ -35,7 +36,7 @@ import {
   RESPONSE_GUARD_HOURS,
   MEETING_WINDOW_HOURS
 } from "../constants";
-import { BUSINESS_CONTEXT, callClaude } from "../prompts";
+import { buildCEOAdvisorPrompt, runAI } from "../aiEngine";
 
 interface CEOTabProps {
   leads: Lead[];
@@ -54,6 +55,9 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
   // AI brief state
   const [brief, setBrief] = useState("");
   const [briefLoading, setBriefLoading] = useState(false);
+  const [advisorQuestion, setAdvisorQuestion] = useState("");
+  const [advisorAnswer, setAdvisorAnswer] = useState("");
+  const [advisorLoading, setAdvisorLoading] = useState(false);
 
   // Date constants for easy presets
   const yesterdayStr = addDays(-1);
@@ -160,19 +164,26 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
   const getBrief = async () => {
     setBriefLoading(true);
     setBrief("");
-    const snapshot = `Active leads: ${active.length}. Follow-ups due: ${dueTodayCount}. Scheduled meetings (<24h): ${meetings.length}. Overdue replies from us: ${awaitingReply.length}. Relationships nearing 90-days limits: ${approaching90.length}. past 90-days limits: ${overdue90.length}. Weighted value: ${fmt(revenue.weighted)}. Locked value: ${fmt(revenue.guaranteed)}. Conversion rate: ${closeRate}%.`;
-    
     try {
-      const text = await callClaude(
-        BUSINESS_CONTEXT,
-        `Generate Daily CEO briefing for Alex. Today is ${today()} (${new Date().toLocaleDateString("en-GB", { weekday: "long" })}). Give a direct focus map. Answer the question: if Alex only has two focused hours today, what should he work on first to optimize for watches on audits, booked discovery calls, or closing beta partnership program spots? Include relevant lead names.\n\nPipeline snapshot:\n${snapshot}\n\nFormat the output exactly:\nCURRENT STATE: [one honest sentence on where we stand]\nSTRATEGIC FOCUS FOR TODAY: [the single highest-leverage task to spend 2 hours on]\nWHY IT WINS: [1 line explaining the psychology]\nCONVERSION HAZARD: [specific risk that could cost revenue today if ignored]`,
-        600
-      );
+      const text = await runAI(buildCEOAdvisorPrompt(leads, revenue), 700);
       setBrief(text);
     } catch (e: any) {
       setBrief("Error: " + e.message);
     }
     setBriefLoading(false);
+  };
+
+  const askAdvisor = async () => {
+    if (!advisorQuestion.trim()) return;
+    setAdvisorLoading(true);
+    setAdvisorAnswer("");
+    try {
+      const text = await runAI(buildCEOAdvisorPrompt(leads, revenue, advisorQuestion), 700);
+      setAdvisorAnswer(text);
+    } catch (e: any) {
+      setAdvisorAnswer("Error: " + e.message);
+    }
+    setAdvisorLoading(false);
   };
 
   const Stat = ({ label, value, color, icon: Icon }: any) => (
@@ -244,6 +255,40 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
         {brief && (
           <div style={{ fontSize: 12, lineHeight: 1.85, color: "#ccc", whiteSpace: "pre-wrap", background: SURFACE2, padding: "12px 14px", borderRadius: 8, border: `1px solid ${BORDER}` }}>
             {brief}
+          </div>
+        )}
+
+        <div style={{ height: 1, background: BORDER, margin: "14px 0" }} />
+
+        <div style={{ fontSize: 10, color: MUTED, marginBottom: 8 }}>Ask the Advisor — any strategic question, answered against the live pipeline data above.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input
+            value={advisorQuestion}
+            onChange={e => setAdvisorQuestion(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") askAdvisor(); }}
+            placeholder="e.g. Which lead should we push hardest to close this week?"
+            style={{ ...iStyle, flex: "1 1 220px" }}
+          />
+          <button
+            onClick={askAdvisor}
+            disabled={advisorLoading || !advisorQuestion.trim()}
+            style={{
+              background: advisorLoading ? SURFACE2 : G,
+              color: advisorLoading ? MUTED : "#000",
+              border: "none",
+              borderRadius: 6,
+              padding: "8px 16px",
+              fontWeight: 800,
+              fontSize: 11,
+              cursor: advisorLoading || !advisorQuestion.trim() ? "not-allowed" : "pointer"
+            }}
+          >
+            {advisorLoading ? "Thinking…" : "Ask →"}
+          </button>
+        </div>
+        {advisorAnswer && (
+          <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.85, color: "#ccc", whiteSpace: "pre-wrap", background: SURFACE2, padding: "12px 14px", borderRadius: 8, border: `1px solid ${BORDER}` }}>
+            {advisorAnswer}
           </div>
         )}
       </div>
@@ -322,7 +367,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
             return (
               <div key={s} style={{ background: SURFACE2, border: `1px solid ${SPECIALIST_COLOR[s]}30`, borderTop: `2px solid ${SPECIALIST_COLOR[s]}`, borderRadius: 8, padding: "12px 14px" }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: SPECIALIST_COLOR[s], marginBottom: 8, display: "flex", alignItems: "center", gap: 4 }}>
-                  <UserCheck size={12} /> {s}
+                  <UserCheck size={12} /> {specialistLabel(s)}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
@@ -408,7 +453,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
           {rollup.map(r => (
             <div key={r.name} style={{ background: SURFACE2, border: `1px solid ${SPECIALIST_COLOR[r.name]}30`, borderTop: `2px solid ${SPECIALIST_COLOR[r.name]}`, borderRadius: 8, padding: "12px 14px" }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: SPECIALIST_COLOR[r.name], marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}>
-                <UserCheck size={13} /> {r.name}
+                <UserCheck size={13} /> {specialistLabel(r.name)}
               </div>
               <div style={{ fontSize: 11, color: "#ccc", display: "flex", flexDirection: "column", gap: 3 }}>
                 <span>New WhatsApp conversations: <b style={{ color: TEXT }}>{r.newLeads}</b></span>
@@ -456,7 +501,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
             style={{ ...iStyle, width: 170, cursor: "pointer" }}
           >
             <option value="All">All Interns</option>
-            {specialists.map(s => <option key={s}>{s}</option>)}
+            {specialists.map(s => <option key={s} value={s}>{specialistLabel(s)}</option>)}
           </select>
         </div>
         
@@ -472,7 +517,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
                     {l.status}
                   </span>
                   <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: `${SPECIALIST_COLOR[l.assignedTo]}15`, border: `1px solid ${SPECIALIST_COLOR[l.assignedTo]}40`, color: SPECIALIST_COLOR[l.assignedTo], fontWeight: 700 }}>
-                    {l.assignedTo}
+                    {specialistLabel(l.assignedTo)}
                   </span>
                   {l.betaCandidate && (
                     <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "rgba(250,204,21,0.1)", border: "1px solid rgba(250,204,21,0.3)", color: "#FACC15", fontWeight: 700 }}>

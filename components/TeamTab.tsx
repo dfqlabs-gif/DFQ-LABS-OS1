@@ -15,6 +15,7 @@ import {
   MUTED, 
   SPECIALISTS, 
   SPECIALIST_COLOR, 
+  specialistLabel,
   STATUS_COLOR 
 } from "../constants";
 
@@ -105,7 +106,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
           {bySpecialist.map(s => (
             <div key={s.name} style={{ background: SURFACE2, border: `1px solid ${SPECIALIST_COLOR[s.name]}30`, borderTop: `2px solid ${SPECIALIST_COLOR[s.name]}`, borderRadius: 8, padding: "12px 14px" }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: SPECIALIST_COLOR[s.name], display: "flex", alignItems: "center", gap: 5 }}>
-                <UserCheck size={13} /> {s.name}
+                <UserCheck size={13} /> {specialistLabel(s.name)}
               </div>
               <div style={{ fontSize: 20, fontWeight: 900, marginTop: 6, color: "#fff" }}>{s.active}</div>
               <div style={{ fontSize: 9, color: MUTED }}>active leads</div>
@@ -152,7 +153,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
                 {group.map(l => (
                   <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: MUTED, marginBottom: 3 }}>
                     <span>{l.name || "—"} · {l.status}</span>
-                    <span style={{ fontSize: 10, color: SPECIALIST_COLOR[l.assignedTo], fontWeight: 700 }}>{l.assignedTo}</span>
+                    <span style={{ fontSize: 10, color: SPECIALIST_COLOR[l.assignedTo], fontWeight: 700 }}>{specialistLabel(l.assignedTo)}</span>
                   </div>
                 ))}
               </div>
@@ -191,7 +192,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
                   {l.status}
                 </span>
                 <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: `${SPECIALIST_COLOR[l.assignedTo]}15`, border: `1px solid ${SPECIALIST_COLOR[l.assignedTo]}50`, color: SPECIALIST_COLOR[l.assignedTo], fontWeight: 700 }}>
-                  {l.assignedTo}
+                  {specialistLabel(l.assignedTo)}
                 </span>
               </div>
             </div>

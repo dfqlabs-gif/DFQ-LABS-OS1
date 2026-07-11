@@ -30,7 +30,22 @@ export const CEO_PASSWORD = "War_Machine26";
 export const INTERN_A_PASSWORD = "InternA_2607";
 export const INTERN_B_PASSWORD = "InternB_2607";
 export const SESSION_KEY = "dfqlabs-session-v1";
-export const SESSION_IDLE_MS = 15 * 60 * 1000;
+// Idle timeout before auto-logout. Raised from 15 minutes to reduce forced
+// logout friction during normal work sessions, while still locking the OS
+// if a device is left unattended for a few hours.
+export const SESSION_IDLE_MS = 4 * 60 * 60 * 1000;
+
+// Display-only labels for the intern roles. Internal keys ("Intern A" /
+// "Intern B") are unchanged everywhere they're used as data values
+// (assignedTo, SPECIALIST_COLOR, auto-assignment) so existing lead
+// assignments never silently move — only what the user sees is renamed.
+export const SPECIALIST_DISPLAY: Record<string, string> = {
+  "Intern A": "Outreach",
+  "Intern B": "Client Relationships"
+};
+export function specialistLabel(name: string): string {
+  return SPECIALIST_DISPLAY[name] || name;
+}
 
 export const STATUSES = [
   "New",
@@ -460,8 +475,8 @@ export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
 
 export const ROLE_ACCESS = {
   founder: { password: CEO_PASSWORD, label: "Founder", color: G, Icon: Shield },
-  internA: { password: INTERN_A_PASSWORD, label: "Intern A", color: SPECIALIST_COLOR["Intern A"], Icon: UserCheck },
-  internB: { password: INTERN_B_PASSWORD, label: "Intern B", color: SPECIALIST_COLOR["Intern B"], Icon: UserCheck }
+  internA: { password: INTERN_A_PASSWORD, label: "Outreach", color: SPECIALIST_COLOR["Intern A"], Icon: UserCheck },
+  internB: { password: INTERN_B_PASSWORD, label: "Client Relationships", color: SPECIALIST_COLOR["Intern B"], Icon: UserCheck }
 };
 
 export async function classifyLead(lead: Lead): Promise<{ bucket: string; reason: string; nextAction: string; followUpInDays?: number }> {
@@ -574,7 +589,7 @@ export function AssignedBdg({ who }: { who?: string }) {
   const c = SPECIALIST_COLOR[who] || "#888";
   return (
     <span style={{ fontSize: "10px", padding: "2px 7px", borderRadius: "4px", background: `${c}12`, border: `1px solid ${c}35`, color: c, fontWeight: 700 }}>
-      {who}
+      {specialistLabel(who)}
     </span>
   );
 }

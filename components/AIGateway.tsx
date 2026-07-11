@@ -29,6 +29,18 @@ interface TestResult {
   error?: string;
 }
 
+interface HealthData {
+  configured: boolean;
+  defaultModel: string;
+  fallbackModels?: string[];
+  lastSuccessAt: string | null;
+  lastModelUsed: string | null;
+  successCount: number;
+  failureCount: number;
+  avgLatencyMs: number | null;
+  recentErrors: { ts: string; message: string; model: string }[];
+}
+
 export function AIGateway() {
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_ID);
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -36,6 +48,7 @@ export function AIGateway() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [errors, setErrors] = useState<AIError[]>([]);
   const [saving, setSaving] = useState(false);
+  const [health, setHealth] = useState<HealthData | null>(null);
 
   // Load persisted model + errors on mount
   useEffect(() => {
@@ -43,6 +56,8 @@ export function AIGateway() {
     if (saved) setSelectedModel(saved);
     setErrors(getAIErrors());
     checkConfigured();
+    const interval = setInterval(checkConfigured, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const checkConfigured = async () => {
@@ -55,6 +70,7 @@ export function AIGateway() {
       }
       const data = await res.json();
       setConfigured(data.configured);
+      setHealth(data);
     } catch {
       setConfigured(false);
     }
@@ -84,6 +100,7 @@ export function AIGateway() {
       const data: TestResult = await res.json();
       setTestResult(data);
       setStatus(data.ok ? "ok" : "error");
+      checkConfigured();
     } catch (e: any) {
       setTestResult({ ok: false, model: selectedModel, error: e.message || "Network error" });
       setStatus("error");
@@ -225,6 +242,50 @@ export function AIGateway() {
               </div>
             )}
           </div>
+        )}
+      </div>
+
+      {/* ── AI Health Monitoring ────────────────────────────────────────── */}
+      <div className="dfq-card" style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 18px" }}>
+        <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 14 }}>Health Monitoring</div>
+        {!health ? (
+          <div style={{ fontSize: 11, color: MUTED, padding: "10px 0" }}>Loading health data…</div>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 12 }}>
+              <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 4 }}>ACTIVE / LAST MODEL</div>
+                <div style={{ fontSize: 11, color: TEXT, fontWeight: 700 }}>{(health.lastModelUsed || health.defaultModel).split("/").pop()}</div>
+              </div>
+              <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 4 }}>LAST SUCCESS</div>
+                <div style={{ fontSize: 11, color: TEXT, fontWeight: 700 }}>{health.lastSuccessAt ? new Date(health.lastSuccessAt).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }) : "—"}</div>
+              </div>
+              <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 4 }}>AVG LATENCY</div>
+                <div style={{ fontSize: 11, color: TEXT, fontWeight: 700 }}>{health.avgLatencyMs != null ? `${health.avgLatencyMs}ms` : "—"}</div>
+              </div>
+              <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 4 }}>SUCCESS / FAILURE</div>
+                <div style={{ fontSize: 11, fontWeight: 700 }}><span style={{ color: "#22C55E" }}>{health.successCount}</span> <span style={{ color: MUTED }}>/</span> <span style={{ color: health.failureCount > 0 ? "#EF4444" : MUTED }}>{health.failureCount}</span></div>
+              </div>
+            </div>
+            {health.fallbackModels && (
+              <div style={{ fontSize: 10, color: MUTED, marginBottom: health.recentErrors.length > 0 ? 10 : 0 }}>
+                Fallback chain: {health.fallbackModels.map(m => m.split("/").pop()).join(" → ")}
+              </div>
+            )}
+            {health.recentErrors.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto" }}>
+                {health.recentErrors.slice(0, 5).map((e, i) => (
+                  <div key={i} style={{ padding: "6px 10px", background: SURFACE2, border: "1px solid rgba(239,68,68,0.15)", borderLeft: "2px solid #EF4444", borderRadius: 6 }}>
+                    <div style={{ fontSize: 9, color: MUTED }}>{new Date(e.ts).toLocaleTimeString("en-GB")} · {e.model.split("/").pop()}</div>
+                    <div style={{ fontSize: 10, color: "#ccc" }}>{e.message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 

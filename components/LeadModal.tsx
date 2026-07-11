@@ -12,6 +12,7 @@ import {
   BUCKETS, 
   BUCKET_COLOR, 
   SPECIALISTS, 
+  specialistLabel,
   BETA_SPOTS_TOTAL, 
   BETA_MONTH_LABEL, 
   today, 
@@ -123,7 +124,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose }: LeadModalPr
             </div>
             <Fld label="Assigned To">
               <select value={lead.assignedTo || "Unassigned"} onChange={e => set("assignedTo", e.target.value)} style={{ ...iStyle, cursor: "pointer" }}>
-                {SPECIALISTS.map(o => <option key={o}>{o}</option>)}
+                {SPECIALISTS.map(o => <option key={o} value={o}>{specialistLabel(o)}</option>)}
               </select>
             </Fld>
             {conflict && (

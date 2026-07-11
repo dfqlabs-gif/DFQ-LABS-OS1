@@ -3,7 +3,7 @@ import { Brain, Target, Copy as CopyIcon, CheckCircle2 } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
 import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, TEXT } from "../constants";
-import { BUSINESS_CONTEXT, callClaude } from "../prompts";
+import { runAI, buildFollowUpPrompt, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildPipelinePrompt } from "../aiEngine";
 
 interface AICoachProps {
   leads: Lead[];
@@ -36,41 +36,18 @@ export function AICoach({ leads }: AICoachProps) {
   ];
 
   const buildPrompt = (lead: Lead, m: string) => {
-    const ctx = `Lead: ${lead.name || "Unknown"} at ${lead.company || "Unknown"}. Client type: ${lead.clientType || "Real Estate Developer"}. Service: ${lead.service}. Status/Current Stage: ${lead.status}. Beta candidate: ${lead.betaCandidate ? "yes" : "no"}. Our DM: ${lead.dmText || "none"}. Their reply: ${lead.prospectInitialResponse || "none"}. Latest: ${lead.prospectLatestResponse || "none"}. Notes: ${lead.notes || "none"}.`;
-    
-    if (m === "followup") {
-      return `Determine the EXACT current stage of the prospect based on Status (${lead.status}) and the conversation thread.
-Write an extremely personalized, high-converting outbound message/reply that specifically moves them from their CURRENT stage ("${lead.status}") to the NEXT natural step in our DFQ Labs buyer funnel.
-
-Funnel Path:
-- If Status is New -> Move to "DM Sent" (Send a high-relevance real estate acquisition hook).
-- If Status is DM Sent -> Move to "Replied" (Warm nudge following up on the hook).
-- If Status is Replied -> Move to "Audit Requested" (Pitch a free 2-minute content-to-inbox audit showing views vs inbound conversion bottleneck).
-- If Status is Audit Requested -> Move to "Audit Delivered" (Present custom insights/audit deliverable with a bottleneck diagnosis).
-- If Status is Audit Delivered -> Move to "Discovery Call Booked" (Propose a 10-minute discovery call).
-- If Status is Discovery Call Booked/Done -> Move to "Proposal Sent" (Present partnership terms / Beta program).
-- If Status is Proposal Sent -> Move to "Closed" (Close the deal, address commitment fee/terms).
-
-Requirements:
-1. Target their exact Abuja client archetype (${lead.clientType}). Keep it highly conversational, direct, and zero-fluff.
-2. Max 3-4 sentences. Do NOT use emojis.
-3. Write the message first, then on a new line "---STRATEGY---" followed by 2 sentences explaining the buyer-psychology and transition choice.\n\n${ctx}`;
-    }
-    if (m === "audit") {
-      return `Write a compelling, hyper-targeted message offering a FREE visual Content Audit Breakdown of their social media vs their buyer inbox conversion. Target their archetype's exact pain point (developer off-plan pressure, realtor personal brand differentiation, architecture/construction delivery credibility). Make it short, conversational, and direct. Max 4 sentences. No emojis. Output the message first, then "---STRATEGY---" and short reasoning.\n\n${ctx}`;
-    }
-    if (m === "objections") {
-      return `Predict the top 3 objections this Abuja real estate client is most likely to raise (e.g. "We already have an agency", "Pricing", "Does this actually work") and write exact, word-for-word, natural rebuttals. Keep each rebuttal short and powerful. Ground it in the Abuja market dynamics.\n\n${ctx}`;
-    }
-    return `Write a sharp 60-day closing plan for this lead, tailored specifically to their client archetype's typical decision cycle. Provide highly tactical recommendations for closing them into our Beta Partnership Program (60 days at no cost, ₦100,000 commitment fee). Provide actions at each stage.\n\n${ctx}`;
+    if (m === "followup") return buildFollowUpPrompt(lead);
+    if (m === "audit") return buildAuditPrompt(lead);
+    if (m === "objections") return buildObjectionsPrompt(lead);
+    return buildClosingPlanPrompt(lead);
   };
 
-  const runAI = async () => {
+  const runPlaybook = async () => {
     if (!selected) return;
     setLoading2(true);
     setOutput("");
     try {
-      const text = await callClaude(BUSINESS_CONTEXT, buildPrompt(selected, mode), 1000);
+      const text = await runAI(buildPrompt(selected, mode), 1000);
       setOutput(text);
     } catch (e: any) {
       setOutput("Error: " + e.message);
@@ -81,15 +58,8 @@ Requirements:
   const runPipelineAI = async () => {
     setPipelineLoading(true);
     setPipelineAI("");
-    const betaFilled = leads.filter(l => l.betaCandidate && l.status === "Closed").length;
-    const summary = `Total leads: ${leads.length}. Closed: ${leads.filter(l => l.status === "Closed").length}. Lost: ${leads.filter(l => l.status === "Lost").length}. Proposals: ${leads.filter(l => l.status === "Proposal Sent").length}. Beta spots filled: ${betaFilled}/3.`;
-    
     try {
-      const text = await callClaude(
-        BUSINESS_CONTEXT,
-        `Analyse this pipeline like a Chief Revenue Intelligence Officer:\n1) Where we're losing momentum and why\n2) Highest-ROI action this week to push them toward sending/watching the audit, booking a call, or joining the Beta Partnership Program (60 days at no cost with ₦100,000 commitment fee)\n3) Provide one WhatsApp hook to increase discovery call bookings for the most represented client archetype in this pipeline\n4) Explain whether the 3-spot beta program is on pace and what to do if it's lagging.\n\nPipeline summary: ${summary}`,
-        1000
-      );
+      const text = await runAI(buildPipelinePrompt(leads, "each specialist"), 1200);
       setPipelineAI(text);
     } catch (e: any) {
       setPipelineAI("Error: " + e.message);
@@ -188,7 +158,7 @@ Requirements:
             </div>
             
             <button
-              onClick={runAI}
+              onClick={runPlaybook}
               disabled={loading2 || !selectedId}
               style={{
                 background: loading2 ? SURFACE2 : G,

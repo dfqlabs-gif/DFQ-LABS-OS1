@@ -9,6 +9,7 @@ import {
   calcRevenue, 
   SPECIALISTS, 
   SPECIALIST_COLOR, 
+  specialistLabel,
   SURFACE, 
   SURFACE2, 
   BORDER, 
@@ -206,7 +207,7 @@ export function WeeklyReport({ leads }: WeeklyReportProps) {
             return (
               <div key={index} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderLeft: `3px solid ${typeColor}`, padding: "10px 12px", borderRadius: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4, marginBottom: 4 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: SPECIALIST_COLOR[act.actor] || TEXT }}>{act.actor}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: SPECIALIST_COLOR[act.actor] || TEXT }}>{specialistLabel(act.actor)}</span>
                   <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: `${typeColor}15`, color: typeColor, fontWeight: 700 }}>{act.title}</span>
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 600, color: TEXT, marginBottom: 4 }}>Brand: {act.company}</div>

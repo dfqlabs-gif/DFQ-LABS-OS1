@@ -19,6 +19,81 @@ export const AVAILABLE_MODELS = [
   { id: "google/gemma-4-26b-a4b-it:free",      label: "Gemma 4 26B",        note: "Creative" },
 ];
 
+// In-memory health tracking. On Vercel serverless this only persists across
+// warm invocations of the same instance (best-effort), which is fine for a
+// health *indicator* — it is not meant to be a durable audit log.
+const aiHealth = {
+  lastSuccessAt: null as string | null,
+  lastModelUsed: null as string | null,
+  successCount: 0,
+  failureCount: 0,
+  totalLatencyMs: 0,
+  recentErrors: [] as { ts: string; message: string; model: string }[],
+};
+
+async function callOpenRouterRaw(systemPrompt: string | undefined, userPrompt: string, model: string, maxTokens: number, apiKey: string): Promise<string> {
+  const messages: { role: string; content: string }[] = [];
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+  messages.push({ role: "user", content: userPrompt });
+
+  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://dfqlabs.vercel.app",
+      "X-Title": "DFQ Labs OS"
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: maxTokens || 1200,
+      temperature: 0.7,
+      reasoning: { exclude: true, effort: "low" }
+    })
+  });
+
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({})) as any;
+    throw new Error(errBody?.error?.message || errBody?.message || `HTTP ${response.status}`);
+  }
+  const data = await response.json() as any;
+  return data?.choices?.[0]?.message?.content ?? "";
+}
+
+// Tries the preferred model, then falls through AVAILABLE_MODELS in order
+// until one returns non-empty content.
+async function callWithFallback(systemPrompt: string | undefined, userPrompt: string, preferredModel: string, maxTokens: number, apiKey: string): Promise<{ text: string; model: string }> {
+  const chain = [preferredModel, ...AVAILABLE_MODELS.map(m => m.id).filter(id => id !== preferredModel)];
+  let lastError: any = null;
+  for (const model of chain) {
+    const start = Date.now();
+    try {
+      const text = await callOpenRouterRaw(systemPrompt, userPrompt, model, maxTokens, apiKey);
+      if (text && text.trim()) {
+        aiHealth.lastSuccessAt = new Date().toISOString();
+        aiHealth.lastModelUsed = model;
+        aiHealth.successCount++;
+        aiHealth.totalLatencyMs += Date.now() - start;
+        return { text, model };
+      }
+      lastError = new Error(`Model ${model} returned empty content.`);
+      aiHealth.failureCount++;
+    } catch (error: any) {
+      lastError = error;
+      aiHealth.failureCount++;
+      aiHealth.recentErrors.unshift({ ts: new Date().toISOString(), message: String(error?.message || error).slice(0, 200), model });
+      aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
+    }
+  }
+  throw lastError || new Error("All AI models failed.");
+}
+
+export function getAIHealth() {
+  const avgLatencyMs = aiHealth.successCount > 0 ? Math.round(aiHealth.totalLatencyMs / aiHealth.successCount) : null;
+  return { ...aiHealth, avgLatencyMs, fallbackModels: AVAILABLE_MODELS.map(m => m.id) };
+}
+
 function friendlyError(error: any): { status: number; message: string } {
   const raw = String(error?.message ?? error ?? "");
   if (raw.includes("RESOURCE_EXHAUSTED") || raw.includes("quota") || raw.includes("429") || raw.toLowerCase().includes("rate limit")) {
@@ -56,40 +131,8 @@ export default async function handler(req: any, res: any) {
   const activeModel = model || DEFAULT_MODEL;
 
   try {
-    const messages: { role: string; content: string }[] = [];
-    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-    messages.push({ role: "user", content: userPrompt });
-
-    const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://dfqlabs.vercel.app",
-        "X-Title": "DFQ Labs OS"
-      },
-      body: JSON.stringify({
-        model: activeModel,
-        messages,
-        max_tokens: maxTokens || 1200,
-        temperature: 0.7,
-        // Many free-tier models are reasoning models that spend the whole
-        // token budget "thinking" and return empty content otherwise.
-        reasoning: { exclude: true, effort: "low" }
-      })
-    });
-
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({})) as any;
-      const msg = errBody?.error?.message || errBody?.message || `HTTP ${response.status}`;
-      const { status, message } = friendlyError({ message: msg });
-      console.error(`OpenRouter error [${activeModel}]:`, msg);
-      return res.status(status).json({ error: message });
-    }
-
-    const data = await response.json() as any;
-    const text: string = data?.choices?.[0]?.message?.content ?? "";
-    return res.status(200).json({ text, model: activeModel });
+    const { text, model: usedModel } = await callWithFallback(systemPrompt, userPrompt, activeModel, maxTokens || 1200, apiKey);
+    return res.status(200).json({ text, model: usedModel, fellBack: usedModel !== activeModel });
   } catch (error: any) {
     console.error("OpenRouter /api/ai error:", error);
     const { status, message } = friendlyError(error);

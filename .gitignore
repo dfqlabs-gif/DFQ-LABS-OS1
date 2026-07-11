@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+.DS_Store
+*.log
+
+# Scratch files dropped in by the chat/upload UI — not part of the app.
+attached_assets/Pasted-*.txt
