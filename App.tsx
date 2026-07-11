@@ -19,7 +19,7 @@ import {
   SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE, specialistLabel
 } from "./constants";
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
-import { runAI, buildFollowUpPrompt } from "./aiEngine";
+import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply } from "./aiEngine";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -224,7 +224,7 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
     setLoading(p => ({ ...p, [lead.id]: true }));
     setOutputs(p => ({ ...p, [lead.id]: "" }));
     try {
-      const text = await callClaude(BUSINESS_CONTEXT, `This qualified prospect messaged us and has been waiting ${Math.floor(hoursSince(lead.awaitingReplySince))} hours for a reply. Write a warm, punchy, extremely natural response that continues the dialog. Target their specific client type in Abuja. Maximum 3 sentences. No emojis. Output the DM first, then write "---STRATEGY---" and 1 line of reasoning.\n\nLead: ${lead.name || lead.company}. Client type: ${lead.clientType}. Status: ${lead.status}. Latest from them: ${lead.prospectLatestResponse || "none"}. Notes: ${lead.notes}.`, 350);
+      const text = await runQuickReply(lead, Math.floor(hoursSince(lead.awaitingReplySince)));
       setOutputs(p => ({ ...p, [lead.id]: text }));
     } catch (e: any) {
       setOutputs(p => ({ ...p, [lead.id]: "Error: " + e.message }));
@@ -1173,7 +1173,7 @@ function InternDashboard({ internName, leads, onSave, onQuickContact, classifyin
     setDmLoading(p => ({ ...p, [lead.id]: true }));
     setDmOutputs(p => ({ ...p, [lead.id]: "" }));
     try {
-      const text = await runAI(buildFollowUpPrompt(lead), 900);
+      const text = await runFollowUpReply(lead);
       setDmOutputs(p => ({ ...p, [lead.id]: text }));
     } catch (e: any) {
       setDmOutputs(p => ({ ...p, [lead.id]: "Error: " + e.message }));

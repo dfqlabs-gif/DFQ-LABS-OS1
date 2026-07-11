@@ -11,20 +11,47 @@ import { BUSINESS_CONTEXT, callClaude } from "./prompts";
 import { scoreLead, daysSince, hoursSince, SERVICE_VALUE, STAGE_PROBABILITY, today } from "./constants";
 
 // ─── Reasoning framework applied to every AI call ──────────────────────────
+export const REASONING_ENGINE_IDENTITY = `You are NOT an AI copywriter.
+You are the Head of Sales at DFQ Labs.
+Your primary responsibility is NOT writing messages — it is moving leads through the DFQ Labs sales pipeline.
+Never generate a message until you have reasoned through the CRM data.`;
+
 export const SPEAKER_RULES = `CONVERSATION RULES:
-- "ALEX (us)" is our outbound sales rep. "LEAD" is the prospect on the other end of the conversation.
-- If Alex has already been introduced earlier in the thread, never reintroduce him ("Hi, I'm Alex...") again — continue the relationship naturally, as a real ongoing conversation would.
+- "ALEX (us)" / the assigned specialist is DFQ Labs. "LEAD" is the prospect on the other end of the conversation. Never confuse the sender with the prospect.
+- If Alex or the assigned specialist has already been introduced earlier in the thread, never reintroduce them ("Hi, I'm Alex...") again — continue the relationship naturally, as a real ongoing conversation would.
 - Never confuse who said what. Ground every claim strictly in the CRM context and conversation history you are given — never invent facts about the lead.`;
 
-export const THINKING_FRAMEWORK = `INTERNAL REASONING PROCESS (work through this silently — never show these steps, labels, or numbering in your output, only the final answer):
-1. Read the CRM context block in full: stage, score, assigned specialist, deal value, days since last contact/reply, meetings, prior AI notes.
-2. Read the conversation history and correctly identify who said what (ALEX vs LEAD).
-3. Summarize internally where the relationship currently stands.
-4. Identify the lead's likely objections, trust level, and buying signals from their language and behavior.
-5. Decide the single most useful objective for this response given everything above.
-6. Only then produce the final output the user actually asked for.`;
+// One objective per pipeline stage — never pursue more than one goal in a single response.
+export const STAGE_OBJECTIVES: Record<string, string> = {
+  "New": "Cold Outreach — earn permission to send the free audit. Do NOT sell services. Do NOT ask for a meeting.",
+  "DM Sent": "Cold Outreach — earn permission to send the free audit. Do NOT sell services. Do NOT ask for a meeting.",
+  "Replied": "Cold Outreach (warming) — use their reply to earn permission to send the audit. Do NOT sell services yet.",
+  "Audit Requested": "Audit Requested — deliver the audit, explain the observations, build trust. Do not pitch yet.",
+  "Audit Delivered": "Audit Delivered — book a discovery call. Do NOT offer another audit. Do NOT reintroduce yourself. Do NOT restart the sales process.",
+  "Value Given": "Audit Delivered — book a discovery call. Do NOT offer another audit or restart the process.",
+  "Discovery Call Booked": "Discovery Call Scheduled — increase attendance, reduce no-shows, answer pre-call concerns.",
+  "Discovery Call Done": "Post-Discovery Call — reinforce the value delivered and move directly toward the proposal.",
+  "Proposal Sent": "Proposal Sent — handle objections, increase confidence, help them decide. Never restart the sales cycle.",
+  "Closed": "Client — retention, results, referrals, testimonials, upsells.",
+  "Lost": "Lost — only re-engage with a genuinely new angle; otherwise do not contact."
+};
 
-export const SYSTEM_PROMPT = `${BUSINESS_CONTEXT}\n\n${SPEAKER_RULES}\n\n${THINKING_FRAMEWORK}`;
+export function stageObjective(status: string): string {
+  return STAGE_OBJECTIVES[status] || "Objective not mapped for this stage — infer the single correct next step from context, and never restart a stage the lead has already passed.";
+}
+
+export const THINKING_FRAMEWORK = `INTERNAL REASONING PROCESS (work through this silently — never show these steps, labels, or numbering in your output, only the final answer):
+1. UNDERSTAND THE CRM: read the lead's name, company, industry, current stage, assigned specialist, conversation history, internal notes, audit/discovery-call/proposal status, previous follow-ups, last response date, lead value, and existing objections. Never ignore CRM data that exists in the context below.
+2. IDENTIFY WHO IS SPEAKING: apply the CONVERSATION RULES above without exception.
+3. DETERMINE THE CURRENT OBJECTIVE: every pipeline stage has exactly ONE objective (see the stage objective in the CRM context). Pursue that single objective only.
+4. VALIDATE THE PLAN: ask yourself — is this response moving the lead FORWARD, or accidentally backwards (re-pitching, re-introducing, restarting a stage already passed)? If backwards, stop and form a better plan before writing anything.
+5. NEVER INVENT INFORMATION: never assume budget, authority, pain points, goals, or business problems unless they were actually discussed or exist in the CRM context. If information is missing, ask a thoughtful question instead of assuming.
+6. WRITE LIKE A REAL CONSULTANT: never sound like AI, never use generic marketing language, hype, or buzzwords. Write like an experienced consultant having a genuine, natural, professional, specific conversation — grounded in the actual conversation history, not invented details.
+Only after all six steps produce the final output the user actually asked for.
+
+FINAL SELF-CHECK before answering: would Alex, the founder of DFQ Labs, personally read this and say "Yes, that's exactly how I would speak to this prospect"? If not, silently rewrite it until it passes — never show this check in the output.`;
+
+export const SYSTEM_PROMPT = `${BUSINESS_CONTEXT}\n\n${REASONING_ENGINE_IDENTITY}\n\n${SPEAKER_RULES}\n\n${THINKING_FRAMEWORK}`;
 
 // ─── Central entry point — every AI feature should call this, not callClaude directly ───
 export async function runAI(userPrompt: string, maxTokens = 900): Promise<string> {
@@ -71,6 +98,7 @@ Lead: ${lead.name || "Unknown"} — ${lead.company || "Unknown company"}
 Client archetype: ${lead.clientType || "Real Estate Developer"}
 Service under discussion: ${lead.service} (value ${value ? "₦" + value.toLocaleString() : "unknown"}/mo)
 Current stage: ${lead.status} (lead score: ${score}/100, historical win probability at this stage: ${Math.round((STAGE_PROBABILITY[lead.status] || 0) * 100)}%)
+Stage objective (pursue this ONE goal only): ${stageObjective(lead.status)}
 Assigned specialist: ${lead.assignedTo || "Unassigned"}
 Priority: ${lead.priority}
 Beta candidate: ${lead.betaCandidate ? "yes" : "no"}
@@ -85,6 +113,66 @@ Internal notes: ${lead.notes || "none"}
 === CONVERSATION HISTORY (chronological, speaker-labeled) ===
 ${formatConversationLog(lead)}
 === END CONTEXT ===`;
+}
+
+// ─── Two-phase reasoning: reason silently first, then write ───────────────
+// Instead of generating an outward-facing message immediately, first produce an
+// internal sales brief (never shown to the prospect or the strategy readout verbatim
+// beyond its own labeled fields) that names the stage, objective, rationale, risks,
+// and confidence. Only then generate the actual message, informed by that brief.
+// This mirrors how an experienced closer actually works: plan, then write.
+export function buildSalesBrief(lead: Lead, task: string): string {
+  return `Produce ONLY an internal sales brief for this lead — this is never shown to the prospect, it exists purely to plan the next message. Do not write any outward-facing message yet.
+
+TASK CONTEXT: ${task}
+
+Output in exactly this format, nothing else, no extra commentary:
+Current Stage: [the lead's actual current stage]
+Next Objective: [the single correct objective for this stage, from the CRM context below]
+Why This Step: [2-3 sentences explaining why this is the correct next action based on the CRM data below]
+Risks: [any concerns — silence, objections, missing information, risk of moving the lead backwards]
+Confidence: [percentage]
+
+${buildLeadContext(lead)}`;
+}
+
+export async function runReasonedReply(lead: Lead, task: string, writeInstructions: string, maxTokens = 900): Promise<string> {
+  const brief = await runAI(buildSalesBrief(lead, task), 350);
+
+  const finalPrompt = `You already reasoned through this internal sales brief for this lead — use it silently to inform your message, do not restate it, reference it explicitly, or repeat its labels in your output:
+${brief}
+
+${writeInstructions}
+
+${buildLeadContext(lead)}`;
+
+  const message = await runAI(finalPrompt, maxTokens);
+  return `${message}\n\n---STRATEGY---\n${brief}`;
+}
+
+export function followUpWriteInstructions(lead: Lead): string {
+  return `Write an extremely personalized, high-converting outbound message that pursues ONLY this stage's single objective and moves this lead from their CURRENT stage ("${lead.status}") to the next natural step in our DFQ Labs buyer funnel.
+
+${FUNNEL_PATH}
+
+Requirements:
+1. Sound like a sales strategist with 20+ years of experience closing high-ticket deals — composed, direct, zero fluff, zero desperation.
+2. Target their exact Abuja client archetype (${lead.clientType}). Ground every line in something specific from the CRM context or conversation history — never generic.
+3. Length: 120-250 words. Do not pad with filler, but do not truncate — write the complete message, fully formed, from an appropriate opener through the specific next-step ask.
+4. No emojis. No clichés or AI buzzwords.
+5. Output ONLY the message. Do not add a strategy explanation — that is appended separately.`;
+}
+
+export async function runFollowUpReply(lead: Lead): Promise<string> {
+  return runReasonedReply(lead, "Draft the next outbound follow-up message to this lead, respecting this stage's single objective.", followUpWriteInstructions(lead), 900);
+}
+
+export function quickReplyWriteInstructions(lead: Lead, waitHours: number): string {
+  return `This qualified prospect messaged us and has been waiting ${waitHours} hours for a reply. Write a warm, punchy, extremely natural response that continues the dialog and pursues ONLY this stage's single objective. Target their specific client type in Abuja (${lead.clientType}). Maximum 3 sentences. No emojis. Output ONLY the message — no strategy explanation, that is appended separately.`;
+}
+
+export async function runQuickReply(lead: Lead, waitHours: number): Promise<string> {
+  return runReasonedReply(lead, "Reply to this waiting prospect right now, respecting this stage's single objective.", quickReplyWriteInstructions(lead, waitHours), 350);
 }
 
 // ─── Funnel path shared by every DM/follow-up prompt ───────────────────────
