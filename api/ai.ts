@@ -31,7 +31,36 @@ const aiHealth = {
   recentErrors: [] as { ts: string; message: string; model: string }[],
 };
 
-async function callOpenRouterRaw(systemPrompt: string | undefined, userPrompt: string, model: string, maxTokens: number, apiKey: string): Promise<string> {
+// ── Truncation handling ─────────────────────────────────────────────────────
+// OpenRouter's free-tier reasoning models deduct their hidden "thinking"
+// tokens from max_tokens BEFORE producing visible content, even with
+// reasoning.exclude=true — a 400-token budget can burn 230+ on invisible
+// reasoning, leaving almost nothing for the actual answer, cutting it off
+// mid-sentence (finish_reason "length"). Always leave real headroom and,
+// if a response still gets cut off, retry once with a bigger budget before
+// ever showing a broken mid-word cutoff to the user. Keep this in sync with
+// the equivalent logic in server.ts — the two implementations aren't shared.
+const SENTENCE_END_RE = /[.!?]["')\]]?(\s|$)/;
+
+function looksTruncated(text: string, finishReason: string | undefined): boolean {
+  if (finishReason !== "length") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  const lastChar = trimmed[trimmed.length - 1];
+  return !"।.!?\"')]".includes(lastChar);
+}
+
+function trimToCompleteSentence(text: string): string {
+  const trimmed = text.trim();
+  let lastEnd = -1;
+  const re = new RegExp(SENTENCE_END_RE, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(trimmed))) lastEnd = m.index + m[0].length;
+  if (lastEnd > trimmed.length * 0.4) return trimmed.slice(0, lastEnd).trim();
+  return trimmed;
+}
+
+async function callOpenRouterRaw(systemPrompt: string | undefined, userPrompt: string, model: string, maxTokens: number, apiKey: string): Promise<{ text: string; finishReason: string | undefined }> {
   const messages: { role: string; content: string }[] = [];
   if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
   messages.push({ role: "user", content: userPrompt });
@@ -47,7 +76,7 @@ async function callOpenRouterRaw(systemPrompt: string | undefined, userPrompt: s
     body: JSON.stringify({
       model,
       messages,
-      max_tokens: maxTokens || 1200,
+      max_tokens: maxTokens,
       temperature: 0.7,
       reasoning: { exclude: true, effort: "low" }
     })
@@ -58,7 +87,32 @@ async function callOpenRouterRaw(systemPrompt: string | undefined, userPrompt: s
     throw new Error(errBody?.error?.message || errBody?.message || `HTTP ${response.status}`);
   }
   const data = await response.json() as any;
-  return data?.choices?.[0]?.message?.content ?? "";
+  return {
+    text: data?.choices?.[0]?.message?.content ?? "",
+    finishReason: data?.choices?.[0]?.finish_reason,
+  };
+}
+
+// Calls one model, automatically retrying once with a larger token budget if
+// the response got cut off mid-sentence by the hidden-reasoning token drain.
+async function callOpenRouterWithRetry(systemPrompt: string | undefined, userPrompt: string, model: string, maxTokens: number, apiKey: string): Promise<string> {
+  const budget = Math.max(maxTokens || 1200, 600);
+  let { text, finishReason } = await callOpenRouterRaw(systemPrompt, userPrompt, model, budget, apiKey);
+
+  if (looksTruncated(text, finishReason)) {
+    const retryBudget = Math.min(budget * 2, 2400);
+    const retry = await callOpenRouterRaw(systemPrompt, userPrompt, model, retryBudget, apiKey);
+    if (retry.text && retry.text.trim()) {
+      text = retry.text;
+      finishReason = retry.finishReason;
+    }
+  }
+
+  if (looksTruncated(text, finishReason)) {
+    text = trimToCompleteSentence(text);
+  }
+
+  return text;
 }
 
 // Tries the preferred model, then falls through AVAILABLE_MODELS in order
@@ -69,7 +123,7 @@ async function callWithFallback(systemPrompt: string | undefined, userPrompt: st
   for (const model of chain) {
     const start = Date.now();
     try {
-      const text = await callOpenRouterRaw(systemPrompt, userPrompt, model, maxTokens, apiKey);
+      const text = await callOpenRouterWithRetry(systemPrompt, userPrompt, model, maxTokens, apiKey);
       if (text && text.trim()) {
         aiHealth.lastSuccessAt = new Date().toISOString();
         aiHealth.lastModelUsed = model;

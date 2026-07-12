@@ -236,7 +236,11 @@ function parseStrategy(raw: string, neverMention: string[]): Strategy {
 export async function runStrategyGenerator(lead: Lead, task: string): Promise<Strategy> {
   const events = buildTimeline(lead);
   const neverMention = neverMentionAgain(events);
-  const raw = await runAI(buildStrategyPrompt(lead, task, events, neverMention), 400);
+  // Free-tier OpenRouter reasoning models deduct hidden "thinking" tokens from
+  // max_tokens before writing visible content — a low budget here cuts the
+  // structured fields off mid-way (Risk/Confidence going blank). 800 leaves
+  // real headroom; the server-side retry-on-truncation logic is a backstop.
+  const raw = await runAI(buildStrategyPrompt(lead, task, events, neverMention), 800);
   return parseStrategy(raw, neverMention);
 }
 
@@ -283,7 +287,9 @@ MESSAGE:
 """
 ${message}
 """`;
-  const verdict = await runAI(prompt, 60);
+  // A tiny budget here risks the same hidden-reasoning truncation as the
+  // Strategy Generator — 200 leaves enough headroom for a one-line verdict.
+  const verdict = await runAI(prompt, 200);
   const fail = /^FAIL/i.test(verdict.trim());
   return { pass: !fail, reason: fail ? verdict.replace(/^FAIL:?\s*/i, "").trim() : "" };
 }
@@ -334,7 +340,10 @@ export function quickReplyWriteInstructions(waitHours: number): string {
 }
 
 export async function runQuickReply(lead: Lead, waitHours: number): Promise<string> {
-  return runSalesPipeline(lead, `Reply to this waiting prospect who has been waiting ${waitHours} hours.`, quickReplyWriteInstructions(waitHours), 350);
+  // Kept short in the prompt instructions ("max 3 sentences"), but the token
+  // budget itself needs headroom for hidden reasoning tokens (see
+  // runStrategyGenerator) or short replies truncate mid-sentence too.
+  return runSalesPipeline(lead, `Reply to this waiting prospect who has been waiting ${waitHours} hours.`, quickReplyWriteInstructions(waitHours), 600);
 }
 
 // ─── Funnel path shared by every DM/follow-up prompt ───────────────────────

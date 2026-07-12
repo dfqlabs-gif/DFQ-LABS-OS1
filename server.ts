@@ -45,14 +45,44 @@ function recordFailure(model: string, message: string) {
 
 app.use(express.json());
 
+// ── Truncation handling ─────────────────────────────────────────────────────
+// OpenRouter's free-tier reasoning models deduct their hidden "thinking"
+// tokens from max_tokens BEFORE producing visible content, even with
+// reasoning.exclude=true — a 400-token budget can burn 230+ on invisible
+// reasoning, leaving almost nothing for the actual answer, cutting it off
+// mid-sentence (finish_reason "length"). Always leave real headroom and,
+// if a response still gets cut off, retry once with a bigger budget before
+// ever showing a broken mid-word cutoff to the user.
+const SENTENCE_END_RE = /[.!?]["')\]]?(\s|$)/;
+
+function looksTruncated(text: string, finishReason: string | undefined): boolean {
+  if (finishReason !== "length") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  const lastChar = trimmed[trimmed.length - 1];
+  return !"।.!?\"')]".includes(lastChar);
+}
+
+// If a response is still cut off after retrying, trim to the last complete
+// sentence rather than shipping a fragment ending mid-word.
+function trimToCompleteSentence(text: string): string {
+  const trimmed = text.trim();
+  let lastEnd = -1;
+  const re = new RegExp(SENTENCE_END_RE, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(trimmed))) lastEnd = m.index + m[0].length;
+  if (lastEnd > trimmed.length * 0.4) return trimmed.slice(0, lastEnd).trim();
+  return trimmed; // too short to safely trim — better an over-long line than an empty one
+}
+
 // ── Shared OpenRouter helper ────────────────────────────────────────────────
-async function callOpenRouter(
+async function callOpenRouterRaw(
   systemPrompt: string | undefined,
   userPrompt: string,
   model: string,
-  maxTokens?: number,
-  temperature = 0.7
-): Promise<string> {
+  maxTokens: number,
+  temperature: number
+): Promise<{ text: string; finishReason: string | undefined }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured on the server.");
 
@@ -68,13 +98,12 @@ async function callOpenRouter(
       "HTTP-Referer": "https://dfqlabs.vercel.app",
       "X-Title": "DFQ Labs OS"
     },
-    // Some free-tier models are reasoning models that spend the whole token
-    // budget "thinking" and return empty content unless reasoning is
-    // excluded from the completion and given a low effort level.
+    // Some free-tier models are reasoning models that spend part of the token
+    // budget "thinking" even with reasoning excluded from the visible output.
     body: JSON.stringify({
       model,
       messages,
-      max_tokens: maxTokens || 1200,
+      max_tokens: maxTokens,
       temperature,
       reasoning: { exclude: true, effort: "low" },
     })
@@ -86,7 +115,38 @@ async function callOpenRouter(
   }
 
   const data = await response.json() as any;
-  return data?.choices?.[0]?.message?.content ?? "";
+  return {
+    text: data?.choices?.[0]?.message?.content ?? "",
+    finishReason: data?.choices?.[0]?.finish_reason,
+  };
+}
+
+// Calls one model, automatically retrying once with a larger token budget if
+// the response got cut off mid-sentence by the hidden-reasoning token drain.
+async function callOpenRouter(
+  systemPrompt: string | undefined,
+  userPrompt: string,
+  model: string,
+  maxTokens?: number,
+  temperature = 0.7
+): Promise<string> {
+  const budget = Math.max(maxTokens || 1200, 600);
+  let { text, finishReason } = await callOpenRouterRaw(systemPrompt, userPrompt, model, budget, temperature);
+
+  if (looksTruncated(text, finishReason)) {
+    const retryBudget = Math.min(budget * 2, 2400);
+    const retry = await callOpenRouterRaw(systemPrompt, userPrompt, model, retryBudget, temperature);
+    if (retry.text && retry.text.trim()) {
+      text = retry.text;
+      finishReason = retry.finishReason;
+    }
+  }
+
+  if (looksTruncated(text, finishReason)) {
+    text = trimToCompleteSentence(text);
+  }
+
+  return text;
 }
 
 // Tries the preferred model first, then falls through the rest of
