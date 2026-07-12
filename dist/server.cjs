@@ -31,6 +31,31 @@ var app = (0, import_express.default)();
 var PORT = process.env.PORT ? parseInt(process.env.PORT) : 5e3;
 var OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 var DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free";
+var AVAILABLE_MODELS = [
+  "nvidia/nemotron-nano-9b-v2:free",
+  "openai/gpt-oss-20b:free",
+  "nvidia/nemotron-3-nano-30b-a3b:free",
+  "google/gemma-4-26b-a4b-it:free"
+];
+var aiHealth = {
+  lastSuccessAt: null,
+  lastModelUsed: null,
+  successCount: 0,
+  failureCount: 0,
+  totalLatencyMs: 0,
+  recentErrors: []
+};
+function recordSuccess(model, latencyMs) {
+  aiHealth.lastSuccessAt = (/* @__PURE__ */ new Date()).toISOString();
+  aiHealth.lastModelUsed = model;
+  aiHealth.successCount++;
+  aiHealth.totalLatencyMs += latencyMs;
+}
+function recordFailure(model, message) {
+  aiHealth.failureCount++;
+  aiHealth.recentErrors.unshift({ ts: (/* @__PURE__ */ new Date()).toISOString(), message: String(message).slice(0, 200), model });
+  aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
+}
 app.use(import_express.default.json());
 async function callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temperature = 0.7) {
   const apiKey = process.env.OPENROUTER_API_KEY;
@@ -64,6 +89,26 @@ async function callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temper
   const data = await response.json();
   return data?.choices?.[0]?.message?.content ?? "";
 }
+async function callWithFallback(systemPrompt, userPrompt, preferredModel, maxTokens, temperature = 0.7) {
+  const chain = [preferredModel, ...AVAILABLE_MODELS.filter((m) => m !== preferredModel)];
+  let lastError = null;
+  for (const model of chain) {
+    const start = Date.now();
+    try {
+      const text = await callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temperature);
+      if (text && text.trim()) {
+        recordSuccess(model, Date.now() - start);
+        return { text, model, fellBack: model !== preferredModel };
+      }
+      lastError = new Error(`Model ${model} returned empty content.`);
+      recordFailure(model, lastError.message);
+    } catch (error) {
+      lastError = error;
+      recordFailure(model, error?.message || String(error));
+    }
+  }
+  throw lastError || new Error("All AI models failed.");
+}
 function friendlyError(error) {
   const raw = String(error?.message ?? "");
   if (raw.includes("429") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
@@ -90,8 +135,8 @@ app.post("/api/ai", async (req, res) => {
   }
   const activeModel = model || DEFAULT_MODEL;
   try {
-    const text = await callOpenRouter(systemPrompt, userPrompt, activeModel, maxTokens);
-    res.json({ text, model: activeModel });
+    const { text, model: usedModel, fellBack } = await callWithFallback(systemPrompt, userPrompt, activeModel, maxTokens);
+    res.json({ text, model: usedModel, fellBack });
   } catch (error) {
     console.error("OpenRouter /api/ai error:", error);
     res.status(500).json({ error: friendlyError(error) });
@@ -99,7 +144,18 @@ app.post("/api/ai", async (req, res) => {
 });
 app.get("/api/ai-status", (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  res.json({ configured: !!process.env.OPENROUTER_API_KEY, defaultModel: DEFAULT_MODEL });
+  const avgLatencyMs = aiHealth.successCount > 0 ? Math.round(aiHealth.totalLatencyMs / aiHealth.successCount) : null;
+  res.json({
+    configured: !!process.env.OPENROUTER_API_KEY,
+    defaultModel: DEFAULT_MODEL,
+    fallbackModels: AVAILABLE_MODELS,
+    lastSuccessAt: aiHealth.lastSuccessAt,
+    lastModelUsed: aiHealth.lastModelUsed,
+    successCount: aiHealth.successCount,
+    failureCount: aiHealth.failureCount,
+    avgLatencyMs,
+    recentErrors: aiHealth.recentErrors
+  });
 });
 app.post("/api/ai-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
@@ -112,8 +168,10 @@ app.post("/api/ai-status", async (req, res) => {
   const start = Date.now();
   try {
     const text = await callOpenRouter(void 0, "Reply with exactly the word: CONNECTED", testModel, 10, 0);
+    recordSuccess(testModel, Date.now() - start);
     res.json({ ok: true, model: testModel, latencyMs: Date.now() - start, response: text.trim() });
   } catch (error) {
+    recordFailure(testModel, error.message);
     res.json({ ok: false, model: testModel, latencyMs: Date.now() - start, error: error.message });
   }
 });
@@ -172,7 +230,7 @@ ${notes ? `- Notes: "${notes}"` : ""}
 Output ONLY the final message text. No meta-commentary.`;
   const activeModel = model || DEFAULT_MODEL;
   try {
-    const draft = await callOpenRouter(systemPrompt, userPrompt, activeModel, 900, 0.8);
+    const { text: draft } = await callWithFallback(systemPrompt, userPrompt, activeModel, 900, 0.8);
     res.json({ draft: draft || "Failed to generate DM." });
   } catch (error) {
     console.error("OpenRouter /api/generate-dm error:", error);
