@@ -3,7 +3,7 @@ import { Brain, Target, Copy as CopyIcon, CheckCircle2 } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
 import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, TEXT } from "../constants";
-import { runAI, buildFollowUpPrompt, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildPipelinePrompt } from "../aiEngine";
+import { runAI, runFollowUpReply, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildPipelinePrompt } from "../aiEngine";
 
 interface AICoachProps {
   leads: Lead[];
@@ -36,7 +36,6 @@ export function AICoach({ leads }: AICoachProps) {
   ];
 
   const buildPrompt = (lead: Lead, m: string) => {
-    if (m === "followup") return buildFollowUpPrompt(lead);
     if (m === "audit") return buildAuditPrompt(lead);
     if (m === "objections") return buildObjectionsPrompt(lead);
     return buildClosingPlanPrompt(lead);
@@ -47,7 +46,10 @@ export function AICoach({ leads }: AICoachProps) {
     setLoading2(true);
     setOutput("");
     try {
-      const text = await runAI(buildPrompt(selected, mode), 1000);
+      // "Value DM" runs through the full multi-step reasoning pipeline (Strategy
+      // Generator -> DM Writer -> Quality Checker) since it writes an outward message;
+      // the other playbooks are analytical outputs, not literal replies to send.
+      const text = mode === "followup" ? await runFollowUpReply(selected) : await runAI(buildPrompt(selected, mode), 1000);
       setOutput(text);
     } catch (e: any) {
       setOutput("Error: " + e.message);

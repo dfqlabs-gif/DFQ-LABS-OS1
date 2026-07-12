@@ -115,64 +115,226 @@ ${formatConversationLog(lead)}
 === END CONTEXT ===`;
 }
 
-// ─── Two-phase reasoning: reason silently first, then write ───────────────
-// Instead of generating an outward-facing message immediately, first produce an
-// internal sales brief (never shown to the prospect or the strategy readout verbatim
-// beyond its own labeled fields) that names the stage, objective, rationale, risks,
-// and confidence. Only then generate the actual message, informed by that brief.
-// This mirrors how an experienced closer actually works: plan, then write.
-export function buildSalesBrief(lead: Lead, task: string): string {
-  return `Produce ONLY an internal sales brief for this lead — this is never shown to the prospect, it exists purely to plan the next message. Do not write any outward-facing message yet.
+// ─────────────────────────────────────────────────────────────────────────
+// MULTI-STEP REASONING PIPELINE
+// The AI is not a chatbot — it is DFQ Labs' Head of Sales deciding the single
+// best next action for a lead. Every message-writing feature (Draft DM,
+// Suggest Reply, AI Coach Follow-Up) runs through this pipeline instead of a
+// single prompt:
+//   1. Context Reader     — gather everything the CRM knows (buildLeadContext)
+//   2. Timeline Builder    — deterministically reconstruct what has/hasn't happened
+//   3. Stage Detector      — the lead's canonical CRM stage (never renamed)
+//   4. Objective Planner   — exactly one objective per stage (stageObjective)
+//   5. Strategy Generator  — one AI call producing structured executive reasoning
+//   6. DM Writer           — a second AI call that receives ONLY the structured
+//                            strategy (never raw notes/conversation dump) and writes
+//   7. Quality Checker     — a third AI call that grades the draft against a
+//                            checklist and triggers exactly one regeneration if it fails
+// ─────────────────────────────────────────────────────────────────────────
+
+// STEP 2 — Timeline Builder (deterministic, no AI call). Reconstructs what has
+// and has not happened so the model can never claim something occurred (or
+// didn't) that contradicts the CRM.
+export interface TimelineEvent { key: string; label: string; occurred: boolean; }
+
+export function buildTimeline(lead: Lead): TimelineEvent[] {
+  const hasReplied = !!(lead.prospectInitialResponse || lead.prospectLatestResponse) ||
+    (lead.conversationLog || []).some(l => l.type === "reply") ||
+    !["New", "DM Sent"].includes(lead.status);
+  const auditRequested = ["Audit Requested", "Audit Delivered", "Value Given", "Discovery Call Booked", "Discovery Call Done", "Proposal Sent", "Closed"].includes(lead.status);
+  const auditDelivered = ["Audit Delivered", "Value Given", "Discovery Call Booked", "Discovery Call Done", "Proposal Sent", "Closed"].includes(lead.status);
+  const appointmentBooked = !!lead.meetingScheduledAt || ["Discovery Call Booked", "Discovery Call Done", "Proposal Sent", "Closed"].includes(lead.status);
+  const discoveryCallDone = ["Discovery Call Done", "Proposal Sent", "Closed"].includes(lead.status);
+  const proposalSent = ["Proposal Sent", "Closed"].includes(lead.status);
+  const priceObjectionRaised = /price|expensive|cost|budget|afford|₦/i.test(`${lead.notes || ""} ${lead.prospectLatestResponse || ""}`);
+
+  return [
+    { key: "outreach", label: "First outreach sent", occurred: !!lead.dmText || lead.status !== "New" },
+    { key: "replied", label: "Prospect has replied at least once", occurred: hasReplied },
+    { key: "auditRequested", label: "Audit was requested", occurred: auditRequested },
+    { key: "auditDelivered", label: "Audit was delivered", occurred: auditDelivered },
+    { key: "appointmentBooked", label: "Discovery call was booked", occurred: appointmentBooked },
+    { key: "discoveryCallDone", label: "Discovery call has taken place", occurred: discoveryCallDone },
+    { key: "proposalSent", label: "Proposal was sent", occurred: proposalSent },
+    { key: "priceObjection", label: "A price/budget objection was raised", occurred: priceObjectionRaised },
+    { key: "won", label: "Deal closed — now a client", occurred: lead.status === "Closed" },
+    { key: "lost", label: "Lead marked lost", occurred: lead.status === "Lost" },
+  ];
+}
+
+function formatTimeline(events: TimelineEvent[]): string {
+  return events.map(e => `${e.occurred ? "✓" : "✗"} ${e.label}`).join("\n");
+}
+
+// Anything already completed that a re-pitch would embarrassingly repeat.
+function neverMentionAgain(events: TimelineEvent[]): string[] {
+  const has = (k: string) => events.find(e => e.key === k)?.occurred;
+  const flags: string[] = [];
+  if (has("auditDelivered")) flags.push("Do not offer or re-explain the audit — it has already been delivered.");
+  if (has("appointmentBooked")) flags.push("Do not ask to book a discovery call again — one is already booked or has happened.");
+  if (has("proposalSent")) flags.push("Do not re-introduce the offer from scratch — a proposal has already been sent.");
+  if (has("outreach") && !has("replied")) flags.push("Do not reintroduce yourself or restate the opening pitch verbatim — this is a follow-up to an existing outreach.");
+  return flags;
+}
+
+// STEP 3/4 — Stage Detector & Objective Planner: the CRM's stored `status` IS
+// the canonical stage (never renamed), and stageObjective() above already
+// enforces exactly one objective per stage.
+
+// STEP 5 — Strategy Generator (AI call #1 of the pipeline).
+export interface Strategy {
+  currentStage: string;
+  nextObjective: string;
+  reasoning: string;
+  risk: string;
+  confidence: string;
+  emotion: string;
+  keyFacts: string;
+  neverMention: string;
+}
+
+function buildStrategyPrompt(lead: Lead, task: string, events: TimelineEvent[], neverMention: string[]): string {
+  return `You are the Head of Sales at DFQ Labs. Do NOT write any outward-facing message — produce ONLY the internal executive reasoning and strategy for this lead. This briefing will be handed to a separate DM Writer module that has no other access to this CRM data, so be precise and complete.
 
 TASK CONTEXT: ${task}
 
-Output in exactly this format, nothing else, no extra commentary:
-Current Stage: [the lead's actual current stage]
-Next Objective: [the single correct objective for this stage, from the CRM context below]
-Why This Step: [2-3 sentences explaining why this is the correct next action based on the CRM data below]
-Risks: [any concerns — silence, objections, missing information, risk of moving the lead backwards]
+=== VERIFIED TIMELINE (ground truth — never contradict this) ===
+${formatTimeline(events)}
+${neverMention.length ? `\nNEVER MENTION AGAIN:\n${neverMention.map(n => `- ${n}`).join("\n")}` : ""}
+
+Before answering, silently work through: what has happened, what has NOT happened, the biggest opportunity right now, the biggest risk, what should never be mentioned again, what emotion the prospect is likely feeling based on their actual language, and the single highest-probability next move.
+
+Then output in EXACTLY this format, nothing else:
+Current Stage: [the lead's actual current CRM stage]
+Next Objective: [the single correct objective for this stage — never more than one]
+Reasoning: [2-3 sentences explaining why this is the correct next action]
+Risk: [the biggest concrete risk — silence, objection, re-pitching something already done, etc.]
 Confidence: [percentage]
+Emotion: [1 short phrase describing the prospect's likely current emotional state]
+KeyFacts: [1-3 short, specific, real facts or quotes from the conversation history below worth grounding the message in, semicolon separated — never invent facts not present below]
 
 ${buildLeadContext(lead)}`;
 }
 
-export async function runReasonedReply(lead: Lead, task: string, writeInstructions: string, maxTokens = 900): Promise<string> {
-  const brief = await runAI(buildSalesBrief(lead, task), 350);
-
-  const finalPrompt = `You already reasoned through this internal sales brief for this lead — use it silently to inform your message, do not restate it, reference it explicitly, or repeat its labels in your output:
-${brief}
-
-${writeInstructions}
-
-${buildLeadContext(lead)}`;
-
-  const message = await runAI(finalPrompt, maxTokens);
-  return `${message}\n\n---STRATEGY---\n${brief}`;
+function parseStrategy(raw: string, neverMention: string[]): Strategy {
+  const grab = (label: string) => {
+    const m = raw.match(new RegExp(`${label}:\\s*(.+)`, "i"));
+    return m ? m[1].trim() : "";
+  };
+  return {
+    currentStage: grab("Current Stage"),
+    nextObjective: grab("Next Objective"),
+    reasoning: grab("Reasoning"),
+    risk: grab("Risk"),
+    confidence: grab("Confidence"),
+    emotion: grab("Emotion"),
+    keyFacts: grab("KeyFacts"),
+    neverMention: neverMention.join("; "),
+  };
 }
 
-export function followUpWriteInstructions(lead: Lead): string {
-  return `Write an extremely personalized, high-converting outbound message that pursues ONLY this stage's single objective and moves this lead from their CURRENT stage ("${lead.status}") to the next natural step in our DFQ Labs buyer funnel.
+export async function runStrategyGenerator(lead: Lead, task: string): Promise<Strategy> {
+  const events = buildTimeline(lead);
+  const neverMention = neverMentionAgain(events);
+  const raw = await runAI(buildStrategyPrompt(lead, task, events, neverMention), 400);
+  return parseStrategy(raw, neverMention);
+}
 
-${FUNNEL_PATH}
+// STEP 6 — DM Writer (AI call #2). Receives ONLY the structured strategy —
+// never the raw CRM notes or conversation dump — plus the minimal identity
+// fields needed to address the prospect correctly.
+function buildDMWriterPrompt(lead: Lead, strategy: Strategy, styleInstructions: string): string {
+  return `You are Alex, writing directly to this prospect. You do NOT have access to the raw CRM — you only have this structured briefing from your sales strategist. Write ONLY the outward-facing message. Do not restate, quote, or reference the briefing itself.
+
+=== STRATEGY BRIEFING ===
+Lead name: ${lead.name || lead.company || "the prospect"}
+Company: ${lead.company || "n/a"}
+Client archetype: ${lead.clientType || "Real Estate Developer"}
+Current Stage: ${strategy.currentStage || lead.status}
+Next Objective (pursue ONLY this): ${strategy.nextObjective || stageObjective(lead.status)}
+Reasoning: ${strategy.reasoning || "n/a"}
+Prospect's likely emotion: ${strategy.emotion || "n/a"}
+Key facts to ground the message in: ${strategy.keyFacts || "none available — do not invent any"}
+${strategy.neverMention ? `Never mention again: ${strategy.neverMention}` : ""}
+=== END BRIEFING ===
+
+${styleInstructions}`;
+}
+
+// STEP 7 — Quality Checker (AI call #3). Grades the draft; on failure, the
+// pipeline regenerates exactly once with the failure reason as a fix instruction.
+export interface QualityResult { pass: boolean; reason: string; }
+
+async function runQualityChecker(message: string, strategy: Strategy): Promise<QualityResult> {
+  const prompt = `You are a strict sales quality checker. Answer with EXACTLY one line: "PASS" or "FAIL: <one short reason>".
+
+The message FAILS if ANY of these are true:
+- It mentions or offers something listed under "Never mention again" below.
+- It confuses who is DFQ Labs vs. the prospect, or addresses the wrong person.
+- It pursues a different or additional objective than "${strategy.nextObjective}".
+- It sounds generic, robotic, or like AI marketing copy rather than an experienced consultant.
+- It states a fact as true that is not present in "Key facts" below.
+
+Never mention again: ${strategy.neverMention || "none"}
+Key facts: ${strategy.keyFacts || "none"}
+Objective: ${strategy.nextObjective || "none"}
+
+MESSAGE:
+"""
+${message}
+"""`;
+  const verdict = await runAI(prompt, 60);
+  const fail = /^FAIL/i.test(verdict.trim());
+  return { pass: !fail, reason: fail ? verdict.replace(/^FAIL:?\s*/i, "").trim() : "" };
+}
+
+// Orchestrator — runs the full 7-step pipeline and returns the message with
+// its strategy readout appended (matches the existing "---STRATEGY---" UI convention).
+export async function runSalesPipeline(lead: Lead, task: string, styleInstructions: string, maxTokens = 900): Promise<string> {
+  const strategy = await runStrategyGenerator(lead, task);
+
+  const draft = (fix?: string) => runAI(
+    buildDMWriterPrompt(lead, strategy, fix ? `${styleInstructions}\n\nIMPORTANT FIX (a quality check flagged the previous draft): ${fix}` : styleInstructions),
+    maxTokens
+  );
+
+  let message = await draft();
+  const check = await runQualityChecker(message, strategy);
+  if (!check.pass) {
+    message = await draft(check.reason);
+  }
+
+  const strategyBlock = `Current Stage: ${strategy.currentStage || lead.status}
+Next Objective: ${strategy.nextObjective}
+Reasoning: ${strategy.reasoning}
+Risk: ${strategy.risk}
+Confidence: ${strategy.confidence}`;
+
+  return `${message}\n\n---STRATEGY---\n${strategyBlock}`;
+}
+
+export function followUpWriteInstructions(): string {
+  return `Write an extremely personalized, high-converting outbound message that pursues ONLY the objective in your briefing above.
 
 Requirements:
 1. Sound like a sales strategist with 20+ years of experience closing high-ticket deals — composed, direct, zero fluff, zero desperation.
-2. Target their exact Abuja client archetype (${lead.clientType}). Ground every line in something specific from the CRM context or conversation history — never generic.
-3. Length: 120-250 words. Do not pad with filler, but do not truncate — write the complete message, fully formed, from an appropriate opener through the specific next-step ask.
-4. No emojis. No clichés or AI buzzwords.
-5. Output ONLY the message. Do not add a strategy explanation — that is appended separately.`;
+2. Ground every line in the briefing's "Key facts" — never generic, never invented.
+3. Favor natural human openers such as "One thing jumped out...", "Out of curiosity...", "I noticed...", "I had a quick thought..." over robotic AI phrasing, where they fit naturally.
+4. Length: 120-250 words. Do not pad with filler, but do not truncate — write the complete message, fully formed, from an appropriate opener through the specific next-step ask.
+5. No emojis. No clichés or AI buzzwords.
+6. Output ONLY the message. Do not add a strategy explanation — that is appended separately.`;
 }
 
 export async function runFollowUpReply(lead: Lead): Promise<string> {
-  return runReasonedReply(lead, "Draft the next outbound follow-up message to this lead, respecting this stage's single objective.", followUpWriteInstructions(lead), 900);
+  return runSalesPipeline(lead, "Draft the next outbound follow-up message to this lead.", followUpWriteInstructions(), 900);
 }
 
-export function quickReplyWriteInstructions(lead: Lead, waitHours: number): string {
-  return `This qualified prospect messaged us and has been waiting ${waitHours} hours for a reply. Write a warm, punchy, extremely natural response that continues the dialog and pursues ONLY this stage's single objective. Target their specific client type in Abuja (${lead.clientType}). Maximum 3 sentences. No emojis. Output ONLY the message — no strategy explanation, that is appended separately.`;
+export function quickReplyWriteInstructions(waitHours: number): string {
+  return `This qualified prospect has been waiting ${waitHours} hours for a reply. Write a warm, punchy, extremely natural response that continues the dialog and pursues ONLY the objective in your briefing above. Maximum 3 sentences. No emojis. Output ONLY the message — no strategy explanation, that is appended separately.`;
 }
 
 export async function runQuickReply(lead: Lead, waitHours: number): Promise<string> {
-  return runReasonedReply(lead, "Reply to this waiting prospect right now, respecting this stage's single objective.", quickReplyWriteInstructions(lead, waitHours), 350);
+  return runSalesPipeline(lead, `Reply to this waiting prospect who has been waiting ${waitHours} hours.`, quickReplyWriteInstructions(waitHours), 350);
 }
 
 // ─── Funnel path shared by every DM/follow-up prompt ───────────────────────
@@ -267,6 +429,8 @@ export function buildCEOAdvisorPrompt(leads: Lead[], revenue: any, question?: st
 
   if (question && question.trim()) {
     return `You are reasoning as the Head of Sales for DFQ Labs, answering the founder's direct strategic question. Ground your answer strictly in the CRM data below — cite specific leads, numbers, or stages where relevant. Be direct, concise, and actionable. No generic advice that ignores the data.
+
+When you reference any individual lead's next step, apply the same discipline used across the whole OS: each stage has exactly one objective, never suggest re-pitching or repeating a step a lead has already passed, and never invent facts about a lead that aren't in the snapshot below.
 
 FOUNDER'S QUESTION: "${question.trim()}"
 
