@@ -10,8 +10,8 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 
 // ── AI Provider configuration — change GEMINI_MODEL env var to swap models ──
-// gemini-2.5-flash: best for high-volume free-tier (15 RPM, 1M TPM on free plan)
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// gemini-3.1-flash-lite: fastest confirmed working model for high-volume free-tier
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 
 // ── In-memory AI health tracking ─────────────────────────────────────────────
 const aiHealth = {

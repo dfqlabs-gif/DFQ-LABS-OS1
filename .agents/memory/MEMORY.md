@@ -1,3 +1,4 @@
 - [OpenRouter free-model reasoning trap](openrouter-free-model-reasoning.md) — free-tier OpenRouter models are often reasoning models that return empty content unless configured; check before wiring up generation.
 - [DFQ Labs OS: centralized AI engine](dfq-labs-ai-engine.md) — one shared prompt/reasoning module + server-side model fallback chain; keep new AI features routed through it.
 - [DFQ Labs OS: display-label vs data-value split](dfq-labs-specialist-labels.md) — intern role display names differ from stored data keys; never rename the data keys.
+- [DFQ Labs OS: Gemini migration](dfq-labs-gemini-migration.md) — migrated from OpenRouter to Gemini; working model for this API key is gemini-3.1-flash-lite.

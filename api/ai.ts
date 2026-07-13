@@ -4,15 +4,14 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-export const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+export const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 
 // ─── Available Gemini models (used by AI Gateway UI) ──────────────────────────
-// gemini-2.5-flash is recommended for high-volume free-tier workloads.
+// gemini-3.1-flash-lite: fastest confirmed working model for high-volume free-tier.
 export const AVAILABLE_MODELS = [
-  { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash",      note: "Recommended · High Volume" },
-  { id: "gemini-2.0-flash",      label: "Gemini 2.0 Flash",      note: "Fast · Concise" },
-  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", note: "Lightweight · Fastest" },
-  { id: "gemini-1.5-flash",      label: "Gemini 1.5 Flash",      note: "Stable · Proven" },
+  { id: "gemini-3.1-flash-lite",         label: "Gemini 3.1 Flash Lite",    note: "Recommended · Fastest" },
+  { id: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Preview",  note: "Fast · High Volume" },
+  { id: "gemini-flash-lite-latest",      label: "Gemini Flash Lite Latest",  note: "Always Latest Lite" },
 ];
 
 // ── In-memory health tracking ─────────────────────────────────────────────────

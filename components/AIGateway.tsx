@@ -11,13 +11,12 @@ import {
 // GEMINI_MODEL in server.ts. All models below are Google Gemini — optimized
 // for high-volume free-tier workloads (generous RPM / TPM on the free plan).
 const MODELS = [
-  { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash",      note: "Recommended · High Volume" },
-  { id: "gemini-2.0-flash",      label: "Gemini 2.0 Flash",      note: "Fast · Concise" },
-  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", note: "Lightweight · Fastest" },
-  { id: "gemini-1.5-flash",      label: "Gemini 1.5 Flash",      note: "Stable · Proven" },
+  { id: "gemini-3.1-flash-lite",         label: "Gemini 3.1 Flash Lite",   note: "Recommended · Fastest" },
+  { id: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Preview", note: "Fast · High Volume" },
+  { id: "gemini-flash-lite-latest",      label: "Gemini Flash Lite Latest", note: "Always Latest Lite" },
 ];
 
-const DEFAULT_MODEL_ID = "gemini-2.5-flash";
+const DEFAULT_MODEL_ID = "gemini-3.1-flash-lite";
 
 type Status = "idle" | "checking" | "ok" | "error";
 
