@@ -49,7 +49,8 @@ function recordFailure(model: string, message: string) {
   aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
 }
 
-app.use(express.json());
+// 25mb limit — bulk lead imports/exports can be large JSON payloads
+app.use(express.json({ limit: "25mb" }));
 
 // ── Centralized Gemini client ─────────────────────────────────────────────────
 async function callGeminiRaw(
@@ -292,7 +293,7 @@ app.post("/api/leads", async (req, res) => {
     const leads = body.leads.filter((l: any) => l?.id);
     if (leads.length === 0) return res.json({ ok: true, count: 0 });
     try {
-      const values = leads.map((_: any, i: number) => `(${i * 2 + 1}, ${i * 2 + 2}::jsonb)`).join(", ");
+      const values = leads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
       const params = leads.flatMap((l: any) => [l.id, JSON.stringify(l)]);
       await db.query(
         `INSERT INTO leads (id, data, updated_at) VALUES ${values}
