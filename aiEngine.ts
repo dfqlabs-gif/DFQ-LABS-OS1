@@ -71,6 +71,22 @@ function extractSignals(lead: Lead): string {
   return flags.length ? flags.join("; ") : "none explicitly detected yet";
 }
 
+function relativeTime(ts: string): string {
+  if (!ts || ts === "0" || ts === "zzz" || ts.endsWith("a")) return "";
+  try {
+    const diff = Date.now() - new Date(ts).getTime();
+    if (isNaN(diff) || diff < 0) return "";
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+    if (minutes < 2) return "just now";
+    if (minutes < 60) return `${minutes}min ago`;
+    if (hours < 24) return `${hours}h ago`;
+    if (days === 1) return "yesterday";
+    return `${days} days ago`;
+  } catch { return ""; }
+}
+
 export function formatConversationLog(lead: Lead): string {
   const events: { ts: string; speaker: string; text: string }[] = [];
   if (lead.dmText) events.push({ ts: lead.dateAdded || "0", speaker: "ALEX (us)", text: lead.dmText });
@@ -84,7 +100,10 @@ export function formatConversationLog(lead: Lead): string {
   }
   events.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
   if (events.length === 0) return "No conversation yet — this is the first outbound touch to this lead.";
-  return events.map(e => `[${e.speaker}]: ${e.text}`).join("\n");
+  return events.map(e => {
+    const timeLabel = relativeTime(e.ts);
+    return `[${e.speaker}${timeLabel ? ` — ${timeLabel}` : ""}]: ${e.text}`;
+  }).join("\n");
 }
 
 export function buildLeadContext(lead: Lead): string {
@@ -323,12 +342,14 @@ export function followUpWriteInstructions(): string {
   return `Write an extremely personalized, high-converting outbound message that pursues ONLY the objective in your briefing above.
 
 Requirements:
-1. Sound like a sales strategist with 20+ years of experience closing high-ticket deals — composed, direct, zero fluff, zero desperation.
-2. Ground every line in the briefing's "Key facts" — never generic, never invented.
-3. Favor natural human openers such as "One thing jumped out...", "Out of curiosity...", "I noticed...", "I had a quick thought..." over robotic AI phrasing, where they fit naturally.
-4. Length: 120-250 words. Do not pad with filler, but do not truncate — write the complete message, fully formed, from an appropriate opener through the specific next-step ask.
-5. No emojis. No clichés or AI buzzwords.
-6. Output ONLY the message. Do not add a strategy explanation — that is appended separately.`;
+1. RESPECT FIRST: Treat the prospect as a busy, intelligent professional. Never be pushy, desperate, or pressure them. They owe you nothing.
+2. Sound like a sales strategist with 20+ years of experience — composed, direct, zero fluff, zero desperation.
+3. FACTOR IN TIMING: Check the conversation history timestamps. If the last message was days or weeks ago, acknowledge the gap naturally and warmly (e.g., "Been a minute since we last spoke..." or "Following up on what we discussed..."). If it was recent (hours), write as if the conversation is still warm and ongoing. Never pretend it is a first contact when there is history.
+4. Ground every line in the briefing's "Key facts" — never generic, never invented.
+5. Favor natural openers such as "One thing I kept coming back to...", "Out of curiosity...", "Following up on something specific..." over robotic AI phrasing.
+6. Length: 80-200 words. Do not pad with filler. Do not truncate — write a complete message from opener to a clear, low-friction next-step ask.
+7. No emojis. No clichés. No AI buzzwords ("leverage", "synergy", "supercharge", "elevate", "delve"). Zero exclamation marks.
+8. Output ONLY the message. Do not add a strategy explanation — that is appended separately.`;
 }
 
 export async function runFollowUpReply(lead: Lead): Promise<string> {
@@ -336,7 +357,20 @@ export async function runFollowUpReply(lead: Lead): Promise<string> {
 }
 
 export function quickReplyWriteInstructions(waitHours: number): string {
-  return `This qualified prospect has been waiting ${waitHours} hours for a reply. Write a warm, punchy, extremely natural response that continues the dialog and pursues ONLY the objective in your briefing above. Maximum 3 sentences. No emojis. Output ONLY the message — no strategy explanation, that is appended separately.`;
+  const timeContext = waitHours < 6
+    ? `They sent this ${waitHours} hours ago — reply as if continuing an active, warm conversation.`
+    : waitHours < 24
+    ? `They sent this ${waitHours} hours ago. Pick up the thread naturally.`
+    : waitHours < 72
+    ? `They sent this ${Math.round(waitHours / 24)} days ago. Open with something that re-establishes warmth and picks up where you left off — not apologetic, not dramatic, just natural.`
+    : `They sent this ${Math.round(waitHours / 24)} days ago. Re-engage warmly. Do not guilt-trip them for the gap. Bring a specific, new angle or reference something concrete from the prior conversation to make re-engagement feel natural and valuable.`;
+  return `${timeContext}
+
+Write a warm, punchy, extremely natural response that continues the dialog and pursues ONLY the objective in your briefing above.
+- NEVER be pushy or desperate. Treat the prospect with complete respect — they owe you nothing.
+- No emojis. No clichés. No AI buzzwords. Zero exclamation marks.
+- Maximum 3 sentences.
+- Output ONLY the message — no strategy explanation, that is appended separately.`;
 }
 
 export async function runQuickReply(lead: Lead, waitHours: number): Promise<string> {

@@ -14,6 +14,9 @@ export const AVAILABLE_MODELS = [
   { id: "gemini-flash-lite-latest",      label: "Gemini Flash Lite Latest",  note: "Always Latest Lite" },
 ];
 
+// ─── Model fallback chain (tried in order when primary 404s) ─────────────────
+const FALLBACK_MODELS = ["gemini-2.0-flash-lite", "gemini-1.5-flash-8b", "gemini-1.5-flash"];
+
 // ── In-memory health tracking ─────────────────────────────────────────────────
 const aiHealth = {
   lastSuccessAt: null as string | null,
@@ -54,18 +57,27 @@ async function callGeminiWithRetry(
   maxTokens: number,
   apiKey: string,
   retries = 2
-): Promise<string> {
+): Promise<{ text: string; model: string }> {
+  const modelsToTry = [model, ...FALLBACK_MODELS.filter(m => m !== model)];
   let lastError: any;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, 0.7, apiKey);
-    } catch (err: any) {
-      lastError = err;
-      const msg = String(err?.message ?? "");
-      const isRetryable = msg.includes("429") || msg.includes("503") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("UNAVAILABLE");
-      if (!isRetryable || attempt === retries) break;
-      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+
+  for (const tryModel of modelsToTry) {
+    let is404 = false;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const text = await callGeminiRaw(systemPrompt, userPrompt, tryModel, maxTokens, 0.7, apiKey);
+        return { text, model: tryModel };
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message ?? "");
+        is404 = msg.includes("404") || msg.toLowerCase().includes("not found");
+        if (is404) break; // this model doesn't exist — try next
+        const isRetryable = msg.includes("429") || msg.includes("503") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("UNAVAILABLE");
+        if (!isRetryable || attempt === retries) break;
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
     }
+    if (!is404) break; // non-404 error — don't try other models
   }
   throw lastError;
 }
@@ -113,12 +125,12 @@ export default async function handler(req: any, res: any) {
   const start = Date.now();
 
   try {
-    const text = await callGeminiWithRetry(systemPrompt, userPrompt, activeModel, maxTokens || 1200, apiKey);
+    const { text, model: usedModel } = await callGeminiWithRetry(systemPrompt, userPrompt, activeModel, maxTokens || 1200, apiKey);
     aiHealth.lastSuccessAt = new Date().toISOString();
-    aiHealth.lastModelUsed = activeModel;
+    aiHealth.lastModelUsed = usedModel;
     aiHealth.successCount++;
     aiHealth.totalLatencyMs += Date.now() - start;
-    return res.status(200).json({ text, model: activeModel, fellBack: false });
+    return res.status(200).json({ text, model: usedModel, fellBack: usedModel !== activeModel });
   } catch (error: any) {
     console.error("Gemini /api/ai error:", error);
     aiHealth.failureCount++;
