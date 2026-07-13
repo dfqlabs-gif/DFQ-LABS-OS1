@@ -39,12 +39,15 @@ Server starts on port 5000 (Vite middleware in dev mode).
 
 ## Required Secrets
 
-- `OPENROUTER_API_KEY` — OpenRouter API key (get one at https://openrouter.ai/settings/keys). Note: the top-level `README.md` still references a legacy `GEMINI_API_KEY`/AI Studio setup — the app was migrated to OpenRouter and no longer uses Gemini directly.
+- `GEMINI_API_KEY` — Google Gemini API key (get a free one at https://aistudio.google.com/apikey).
+- `GEMINI_MODEL` *(optional)* — Override the default model. Defaults to `gemini-2.5-flash`. Other options: `gemini-2.0-flash`, `gemini-2.5-flash-lite`, `gemini-1.5-flash`.
 
 ## Notes on the AI model
 
-- Default model is `nvidia/nemotron-nano-9b-v2:free`. Many OpenRouter free-tier models are reasoning models that spend their whole token budget "thinking" and return empty content — `callOpenRouter` in `server.ts` sets `reasoning: { exclude: true, effort: "low" }` and generous `max_tokens` to avoid this. If you swap the default model, verify it returns non-empty content via `/api/ai-status`, not just `ok: true`.
-- OpenRouter's free-tier catalog changes over time; some previously-free model slugs may 404 or rate-limit. If generation starts failing, check `/api/ai-status` with a candidate model and adjust `DEFAULT_MODEL` in `server.ts`.
+- Default model is `gemini-2.5-flash` — best for high-volume free-tier workloads (generous RPM and TPM limits on the free plan).
+- All Gemini models have a large context window (1M tokens) and no hidden reasoning token drain — reliable, consistent output.
+- The model is centralized in `server.ts` (`GEMINI_MODEL` env var). To change it globally, set `GEMINI_MODEL` in environment variables. It can also be overridden per-session via the AI Gateway tab.
+- If generation fails, check `/api/ai-status` for connection health. Gemini API keys are free at aistudio.google.com/apikey.
 
 ## API Endpoints
 

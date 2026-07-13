@@ -2,25 +2,18 @@ import express from "express";
 import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free";
-// Fallback chain — if the preferred model errors or returns empty content,
-// the next model here is tried automatically. Keep in sync with
-// AVAILABLE_MODELS in api/ai.ts and components/AIGateway.tsx.
-const AVAILABLE_MODELS = [
-  "nvidia/nemotron-nano-9b-v2:free",
-  "openai/gpt-oss-20b:free",
-  "nvidia/nemotron-3-nano-30b-a3b:free",
-  "google/gemma-4-26b-a4b-it:free",
-];
 
-// ── In-memory AI health tracking (resets on restart; used by the AI Health
-// Monitoring panel in the AI Gateway tab) ───────────────────────────────────
+// ── AI Provider configuration — change GEMINI_MODEL env var to swap models ──
+// gemini-2.5-flash: best for high-volume free-tier (15 RPM, 1M TPM on free plan)
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+// ── In-memory AI health tracking ─────────────────────────────────────────────
 const aiHealth = {
   lastSuccessAt: null as string | null,
   lastModelUsed: null as string | null,
@@ -45,155 +38,72 @@ function recordFailure(model: string, message: string) {
 
 app.use(express.json());
 
-// ── Truncation handling ─────────────────────────────────────────────────────
-// OpenRouter's free-tier reasoning models deduct their hidden "thinking"
-// tokens from max_tokens BEFORE producing visible content, even with
-// reasoning.exclude=true — a 400-token budget can burn 230+ on invisible
-// reasoning, leaving almost nothing for the actual answer, cutting it off
-// mid-sentence (finish_reason "length"). Always leave real headroom and,
-// if a response still gets cut off, retry once with a bigger budget before
-// ever showing a broken mid-word cutoff to the user.
-const SENTENCE_END_RE = /[.!?]["')\]]?(\s|$)/;
-
-function looksTruncated(text: string, finishReason: string | undefined): boolean {
-  if (finishReason !== "length") return false;
-  const trimmed = text.trim();
-  if (!trimmed) return true;
-  const lastChar = trimmed[trimmed.length - 1];
-  return !"।.!?\"')]".includes(lastChar);
-}
-
-// If a response is still cut off after retrying, trim to the last complete
-// sentence rather than shipping a fragment ending mid-word.
-function trimToCompleteSentence(text: string): string {
-  const trimmed = text.trim();
-  let lastEnd = -1;
-  const re = new RegExp(SENTENCE_END_RE, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(trimmed))) lastEnd = m.index + m[0].length;
-  if (lastEnd > trimmed.length * 0.4) return trimmed.slice(0, lastEnd).trim();
-  return trimmed; // too short to safely trim — better an over-long line than an empty one
-}
-
-// ── Shared OpenRouter helper ────────────────────────────────────────────────
-async function callOpenRouterRaw(
+// ── Centralized Gemini client ─────────────────────────────────────────────────
+async function callGeminiRaw(
   systemPrompt: string | undefined,
   userPrompt: string,
   model: string,
   maxTokens: number,
   temperature: number
-): Promise<{ text: string; finishReason: string | undefined }> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured on the server.");
-
-  const messages: { role: string; content: string }[] = [];
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  messages.push({ role: "user", content: userPrompt });
-
-  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://dfqlabs.vercel.app",
-      "X-Title": "DFQ Labs OS"
-    },
-    // Some free-tier models are reasoning models that spend part of the token
-    // budget "thinking" even with reasoning excluded from the visible output.
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens,
-      temperature,
-      reasoning: { exclude: true, effort: "low" },
-    })
-  });
-
-  if (!response.ok) {
-    const errBody = await response.json().catch(() => ({})) as any;
-    throw new Error(errBody?.error?.message || `HTTP ${response.status}`);
-  }
-
-  const data = await response.json() as any;
-  return {
-    text: data?.choices?.[0]?.message?.content ?? "",
-    finishReason: data?.choices?.[0]?.finish_reason,
-  };
-}
-
-// Calls one model, automatically retrying once with a larger token budget if
-// the response got cut off mid-sentence by the hidden-reasoning token drain.
-async function callOpenRouter(
-  systemPrompt: string | undefined,
-  userPrompt: string,
-  model: string,
-  maxTokens?: number,
-  temperature = 0.7
 ): Promise<string> {
-  const budget = Math.max(maxTokens || 1200, 600);
-  let { text, finishReason } = await callOpenRouterRaw(systemPrompt, userPrompt, model, budget, temperature);
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured on the server.");
 
-  if (looksTruncated(text, finishReason)) {
-    const retryBudget = Math.min(budget * 2, 2400);
-    const retry = await callOpenRouterRaw(systemPrompt, userPrompt, model, retryBudget, temperature);
-    if (retry.text && retry.text.trim()) {
-      text = retry.text;
-      finishReason = retry.finishReason;
-    }
-  }
-
-  if (looksTruncated(text, finishReason)) {
-    text = trimToCompleteSentence(text);
-  }
-
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model,
+    contents: userPrompt,
+    config: {
+      ...(systemPrompt ? { systemInstruction: systemPrompt } : {}),
+      maxOutputTokens: maxTokens,
+      temperature,
+    },
+  });
+  const text = response.text ?? "";
+  if (!text.trim()) throw new Error(`Model ${model} returned empty content.`);
   return text;
 }
 
-// Tries the preferred model first, then falls through the rest of
-// AVAILABLE_MODELS in order until one returns non-empty content. Never
-// throws until every model in the chain has failed.
-async function callWithFallback(
+// Retry logic with exponential backoff for transient errors (429, 503, network)
+async function callGemini(
   systemPrompt: string | undefined,
   userPrompt: string,
-  preferredModel: string,
-  maxTokens?: number,
-  temperature = 0.7
-): Promise<{ text: string; model: string; fellBack: boolean }> {
-  const chain = [preferredModel, ...AVAILABLE_MODELS.filter(m => m !== preferredModel)];
-  let lastError: any = null;
-  for (const model of chain) {
-    const start = Date.now();
+  model: string,
+  maxTokens: number = 1200,
+  temperature: number = 0.7,
+  retries: number = 2
+): Promise<string> {
+  let lastError: any;
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const text = await callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temperature);
-      if (text && text.trim()) {
-        recordSuccess(model, Date.now() - start);
-        return { text, model, fellBack: model !== preferredModel };
-      }
-      lastError = new Error(`Model ${model} returned empty content.`);
-      recordFailure(model, lastError.message);
-    } catch (error: any) {
-      lastError = error;
-      recordFailure(model, error?.message || String(error));
+      return await callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, temperature);
+    } catch (err: any) {
+      lastError = err;
+      const msg = String(err?.message ?? "");
+      const isRetryable = msg.includes("429") || msg.includes("503") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("UNAVAILABLE");
+      if (!isRetryable || attempt === retries) break;
+      // Exponential backoff: 1s, 2s
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
   }
-  throw lastError || new Error("All AI models failed.");
+  throw lastError;
 }
 
 function friendlyError(error: any): string {
   const raw = String(error?.message ?? "");
-  if (raw.includes("429") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
-    return "AI quota exceeded. Try switching to a different model in AI Gateway settings.";
+  if (raw.includes("429") || raw.includes("RESOURCE_EXHAUSTED") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
+    return "Gemini API quota exceeded. Wait a moment and try again, or check your quota at console.cloud.google.com.";
   }
-  if (raw.includes("401") || raw.includes("403")) {
-    return "Invalid OPENROUTER_API_KEY. Check your environment variables.";
+  if (raw.includes("401") || raw.includes("403") || raw.toLowerCase().includes("api key") || raw.toLowerCase().includes("invalid")) {
+    return "Invalid GEMINI_API_KEY. Check your environment variables.";
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    return "OPENROUTER_API_KEY is not configured. Add it to your environment variables.";
+  if (!process.env.GEMINI_API_KEY) {
+    return "GEMINI_API_KEY is not configured. Add it to your environment variables.";
   }
   return raw.replace(/\{[\s\S]*?\}/g, "").trim().slice(0, 200) || "AI service temporarily unavailable.";
 }
 
-// ── /api/ai — centralized AI endpoint (all features route here) ─────────────
+// ── /api/ai — centralized AI endpoint (all features route here) ───────────────
 app.post("/api/ai", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
   const { systemPrompt, userPrompt, model, maxTokens } = req.body || {};
@@ -202,29 +112,32 @@ app.post("/api/ai", async (req, res) => {
     res.status(400).json({ error: "userPrompt is required" });
     return;
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
 
-  const activeModel = model || DEFAULT_MODEL;
+  const activeModel = model || GEMINI_MODEL;
+  const start = Date.now();
   try {
-    const { text, model: usedModel, fellBack } = await callWithFallback(systemPrompt, userPrompt, activeModel, maxTokens);
-    res.json({ text, model: usedModel, fellBack });
+    const text = await callGemini(systemPrompt, userPrompt, activeModel, maxTokens || 1200);
+    recordSuccess(activeModel, Date.now() - start);
+    res.json({ text, model: activeModel, fellBack: false });
   } catch (error: any) {
-    console.error("OpenRouter /api/ai error:", error);
+    console.error("Gemini /api/ai error:", error);
+    recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
   }
 });
 
-// ── /api/ai-status — connection check / test / health (used by AI Gateway UI) ─
+// ── /api/ai-status — health check & live connection test ─────────────────────
 app.get("/api/ai-status", (req, res) => {
   res.setHeader("Content-Type", "application/json");
   const avgLatencyMs = aiHealth.successCount > 0 ? Math.round(aiHealth.totalLatencyMs / aiHealth.successCount) : null;
   res.json({
-    configured: !!process.env.OPENROUTER_API_KEY,
-    defaultModel: DEFAULT_MODEL,
-    fallbackModels: AVAILABLE_MODELS,
+    configured: !!process.env.GEMINI_API_KEY,
+    provider: "gemini",
+    defaultModel: GEMINI_MODEL,
     lastSuccessAt: aiHealth.lastSuccessAt,
     lastModelUsed: aiHealth.lastModelUsed,
     successCount: aiHealth.successCount,
@@ -236,15 +149,15 @@ app.get("/api/ai-status", (req, res) => {
 
 app.post("/api/ai-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.json({ ok: false, error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.json({ ok: false, error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
   const { model } = req.body || {};
-  const testModel = model || DEFAULT_MODEL;
+  const testModel = model || GEMINI_MODEL;
   const start = Date.now();
   try {
-    const text = await callOpenRouter(undefined, "Reply with exactly the word: CONNECTED", testModel, 10, 0);
+    const text = await callGemini(undefined, "Reply with exactly the word: CONNECTED", testModel, 10, 0, 1);
     recordSuccess(testModel, Date.now() - start);
     res.json({ ok: true, model: testModel, latencyMs: Date.now() - start, response: text.trim() });
   } catch (error: any) {
@@ -253,10 +166,9 @@ app.post("/api/ai-status", async (req, res) => {
   }
 });
 
-// ── /api/call-gemini — legacy endpoint, maps old field names to new contract ─
+// ── /api/call-gemini — legacy compatibility endpoint ─────────────────────────
 app.post("/api/call-gemini", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  // Accept both old fields (prompt/systemInstruction) and new fields (userPrompt/systemPrompt)
   const body = req.body || {};
   const userPrompt = body.userPrompt || body.prompt;
   const systemPrompt = body.systemPrompt || body.systemInstruction;
@@ -266,17 +178,20 @@ app.post("/api/call-gemini", async (req, res) => {
     res.status(400).json({ error: "prompt is required" });
     return;
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
 
-  const activeModel = model || DEFAULT_MODEL;
+  const activeModel = model || GEMINI_MODEL;
+  const start = Date.now();
   try {
-    const text = await callOpenRouter(systemPrompt, userPrompt, activeModel, maxTokens);
+    const text = await callGemini(systemPrompt, userPrompt, activeModel, maxTokens || 1200);
+    recordSuccess(activeModel, Date.now() - start);
     res.json({ text, model: activeModel });
   } catch (error: any) {
-    console.error("OpenRouter /api/call-gemini error:", error);
+    console.error("Gemini /api/call-gemini error:", error);
+    recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
   }
 });
@@ -290,8 +205,8 @@ app.post("/api/generate-dm", async (req, res) => {
     res.status(400).json({ error: "Prospect name and company are required." });
     return;
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
 
@@ -317,17 +232,20 @@ ${lastConversation ? `- Prior conversation: "${lastConversation}"` : ""}
 ${notes ? `- Notes: "${notes}"` : ""}
 Output ONLY the final message text. No meta-commentary.`;
 
-  const activeModel = model || DEFAULT_MODEL;
+  const activeModel = model || GEMINI_MODEL;
+  const start = Date.now();
   try {
-    const { text: draft } = await callWithFallback(systemPrompt, userPrompt, activeModel, 900, 0.8);
+    const draft = await callGemini(systemPrompt, userPrompt, activeModel, 900, 0.8);
+    recordSuccess(activeModel, Date.now() - start);
     res.json({ draft: draft || "Failed to generate DM." });
   } catch (error: any) {
-    console.error("OpenRouter /api/generate-dm error:", error);
+    console.error("Gemini /api/generate-dm error:", error);
+    recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
   }
 });
 
-// ── Frontend serving ─────────────────────────────────────────────────────────
+// ── Frontend serving ──────────────────────────────────────────────────────────
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -344,7 +262,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`DFQ Labs OS — OpenRouter-powered server on port ${PORT}`);
+    console.log(`DFQ Labs OS — Gemini-powered server on port ${PORT} (model: ${GEMINI_MODEL})`);
   });
 }
 

@@ -1,27 +1,21 @@
-// ─── Centralized AI Service ────────────────────────────────────────────────
-// Single entry point for ALL AI calls in DFQ Labs OS.
-// To switch models app-wide, change DEFAULT_MODEL here — no other code changes needed.
+// ─── Centralized AI Service (Vercel serverless handler) ───────────────────────
+// Powered by Google Gemini. To swap models, change GEMINI_MODEL env var —
+// no other code changes needed.
 
-// Verified against OpenRouter's live free-tier catalog on 2026-07-11 — many
-// previously-listed free slugs (DeepSeek R1, Llama 3.3 70B, Gemini 2.0 Flash,
-// Qwen 2.5 72B, Mistral 7B, Phi-3 Mini) now 404, are rate-limited upstream, or
-// are reasoning models that return empty content. If entries here start
-// failing via /api/ai-status, re-verify against https://openrouter.ai/api/v1/models
-// and swap in a working `:free` slug — do not silently leave a broken default.
-export const DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free";
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+import { GoogleGenAI } from "@google/genai";
 
-// ─── Available models (used by AI Gateway UI) ──────────────────────────────
+export const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+// ─── Available Gemini models (used by AI Gateway UI) ──────────────────────────
+// gemini-2.5-flash is recommended for high-volume free-tier workloads.
 export const AVAILABLE_MODELS = [
-  { id: "nvidia/nemotron-nano-9b-v2:free",     label: "Nemotron Nano 9B",   note: "Recommended · Balanced" },
-  { id: "openai/gpt-oss-20b:free",             label: "GPT-OSS 20B",        note: "Fast · Concise" },
-  { id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B", note: "Detailed" },
-  { id: "google/gemma-4-26b-a4b-it:free",      label: "Gemma 4 26B",        note: "Creative" },
+  { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash",      note: "Recommended · High Volume" },
+  { id: "gemini-2.0-flash",      label: "Gemini 2.0 Flash",      note: "Fast · Concise" },
+  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", note: "Lightweight · Fastest" },
+  { id: "gemini-1.5-flash",      label: "Gemini 1.5 Flash",      note: "Stable · Proven" },
 ];
 
-// In-memory health tracking. On Vercel serverless this only persists across
-// warm invocations of the same instance (best-effort), which is fine for a
-// health *indicator* — it is not meant to be a durable audit log.
+// ── In-memory health tracking ─────────────────────────────────────────────────
 const aiHealth = {
   lastSuccessAt: null as string | null,
   lastModelUsed: null as string | null,
@@ -31,133 +25,67 @@ const aiHealth = {
   recentErrors: [] as { ts: string; message: string; model: string }[],
 };
 
-// ── Truncation handling ─────────────────────────────────────────────────────
-// OpenRouter's free-tier reasoning models deduct their hidden "thinking"
-// tokens from max_tokens BEFORE producing visible content, even with
-// reasoning.exclude=true — a 400-token budget can burn 230+ on invisible
-// reasoning, leaving almost nothing for the actual answer, cutting it off
-// mid-sentence (finish_reason "length"). Always leave real headroom and,
-// if a response still gets cut off, retry once with a bigger budget before
-// ever showing a broken mid-word cutoff to the user. Keep this in sync with
-// the equivalent logic in server.ts — the two implementations aren't shared.
-const SENTENCE_END_RE = /[.!?]["')\]]?(\s|$)/;
-
-function looksTruncated(text: string, finishReason: string | undefined): boolean {
-  if (finishReason !== "length") return false;
-  const trimmed = text.trim();
-  if (!trimmed) return true;
-  const lastChar = trimmed[trimmed.length - 1];
-  return !"।.!?\"')]".includes(lastChar);
-}
-
-function trimToCompleteSentence(text: string): string {
-  const trimmed = text.trim();
-  let lastEnd = -1;
-  const re = new RegExp(SENTENCE_END_RE, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(trimmed))) lastEnd = m.index + m[0].length;
-  if (lastEnd > trimmed.length * 0.4) return trimmed.slice(0, lastEnd).trim();
-  return trimmed;
-}
-
-async function callOpenRouterRaw(systemPrompt: string | undefined, userPrompt: string, model: string, maxTokens: number, apiKey: string): Promise<{ text: string; finishReason: string | undefined }> {
-  const messages: { role: string; content: string }[] = [];
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  messages.push({ role: "user", content: userPrompt });
-
-  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://dfqlabs.vercel.app",
-      "X-Title": "DFQ Labs OS"
+async function callGeminiRaw(
+  systemPrompt: string | undefined,
+  userPrompt: string,
+  model: string,
+  maxTokens: number,
+  temperature: number,
+  apiKey: string
+): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model,
+    contents: userPrompt,
+    config: {
+      ...(systemPrompt ? { systemInstruction: systemPrompt } : {}),
+      maxOutputTokens: maxTokens,
+      temperature,
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens,
-      temperature: 0.7,
-      reasoning: { exclude: true, effort: "low" }
-    })
   });
-
-  if (!response.ok) {
-    const errBody = await response.json().catch(() => ({})) as any;
-    throw new Error(errBody?.error?.message || errBody?.message || `HTTP ${response.status}`);
-  }
-  const data = await response.json() as any;
-  return {
-    text: data?.choices?.[0]?.message?.content ?? "",
-    finishReason: data?.choices?.[0]?.finish_reason,
-  };
-}
-
-// Calls one model, automatically retrying once with a larger token budget if
-// the response got cut off mid-sentence by the hidden-reasoning token drain.
-async function callOpenRouterWithRetry(systemPrompt: string | undefined, userPrompt: string, model: string, maxTokens: number, apiKey: string): Promise<string> {
-  const budget = Math.max(maxTokens || 1200, 600);
-  let { text, finishReason } = await callOpenRouterRaw(systemPrompt, userPrompt, model, budget, apiKey);
-
-  if (looksTruncated(text, finishReason)) {
-    const retryBudget = Math.min(budget * 2, 2400);
-    const retry = await callOpenRouterRaw(systemPrompt, userPrompt, model, retryBudget, apiKey);
-    if (retry.text && retry.text.trim()) {
-      text = retry.text;
-      finishReason = retry.finishReason;
-    }
-  }
-
-  if (looksTruncated(text, finishReason)) {
-    text = trimToCompleteSentence(text);
-  }
-
+  const text = response.text ?? "";
+  if (!text.trim()) throw new Error(`Model ${model} returned empty content.`);
   return text;
 }
 
-// Tries the preferred model, then falls through AVAILABLE_MODELS in order
-// until one returns non-empty content.
-async function callWithFallback(systemPrompt: string | undefined, userPrompt: string, preferredModel: string, maxTokens: number, apiKey: string): Promise<{ text: string; model: string }> {
-  const chain = [preferredModel, ...AVAILABLE_MODELS.map(m => m.id).filter(id => id !== preferredModel)];
-  let lastError: any = null;
-  for (const model of chain) {
-    const start = Date.now();
+async function callGeminiWithRetry(
+  systemPrompt: string | undefined,
+  userPrompt: string,
+  model: string,
+  maxTokens: number,
+  apiKey: string,
+  retries = 2
+): Promise<string> {
+  let lastError: any;
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const text = await callOpenRouterWithRetry(systemPrompt, userPrompt, model, maxTokens, apiKey);
-      if (text && text.trim()) {
-        aiHealth.lastSuccessAt = new Date().toISOString();
-        aiHealth.lastModelUsed = model;
-        aiHealth.successCount++;
-        aiHealth.totalLatencyMs += Date.now() - start;
-        return { text, model };
-      }
-      lastError = new Error(`Model ${model} returned empty content.`);
-      aiHealth.failureCount++;
-    } catch (error: any) {
-      lastError = error;
-      aiHealth.failureCount++;
-      aiHealth.recentErrors.unshift({ ts: new Date().toISOString(), message: String(error?.message || error).slice(0, 200), model });
-      aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
+      return await callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, 0.7, apiKey);
+    } catch (err: any) {
+      lastError = err;
+      const msg = String(err?.message ?? "");
+      const isRetryable = msg.includes("429") || msg.includes("503") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("UNAVAILABLE");
+      if (!isRetryable || attempt === retries) break;
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
   }
-  throw lastError || new Error("All AI models failed.");
+  throw lastError;
 }
 
 export function getAIHealth() {
   const avgLatencyMs = aiHealth.successCount > 0 ? Math.round(aiHealth.totalLatencyMs / aiHealth.successCount) : null;
-  return { ...aiHealth, avgLatencyMs, fallbackModels: AVAILABLE_MODELS.map(m => m.id) };
+  return { ...aiHealth, avgLatencyMs };
 }
 
 function friendlyError(error: any): { status: number; message: string } {
   const raw = String(error?.message ?? error ?? "");
-  if (raw.includes("RESOURCE_EXHAUSTED") || raw.includes("quota") || raw.includes("429") || raw.toLowerCase().includes("rate limit")) {
-    return { status: 429, message: "AI quota exceeded. Try switching to a different model in AI Gateway settings." };
+  if (raw.includes("429") || raw.includes("RESOURCE_EXHAUSTED") || raw.includes("quota") || raw.toLowerCase().includes("rate limit")) {
+    return { status: 429, message: "Gemini API quota exceeded. Wait a moment and try again." };
   }
-  if (raw.includes("401") || raw.includes("403") || raw.toLowerCase().includes("api key") || raw.toLowerCase().includes("unauthorized")) {
-    return { status: 401, message: "Invalid OPENROUTER_API_KEY. Check your Vercel environment variables." };
+  if (raw.includes("401") || raw.includes("403") || raw.toLowerCase().includes("api key") || raw.toLowerCase().includes("invalid")) {
+    return { status: 401, message: "Invalid GEMINI_API_KEY. Check your environment variables." };
   }
   if (raw.includes("404") || raw.toLowerCase().includes("not found")) {
-    return { status: 404, message: "AI model not found. Select a different model in AI Gateway settings." };
+    return { status: 404, message: "Gemini model not found. Select a different model in AI Gateway settings." };
   }
   const clean = raw.replace(/\{[\s\S]*?\}/g, "").trim().slice(0, 240);
   return { status: 500, message: clean || "AI service temporarily unavailable. Please try again." };
@@ -170,10 +98,10 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return res.status(500).json({
-      error: "OPENROUTER_API_KEY is not configured. Add it to Vercel → Project → Settings → Environment Variables."
+      error: "GEMINI_API_KEY is not configured. Add it to your environment variables."
     });
   }
 
@@ -183,12 +111,20 @@ export default async function handler(req: any, res: any) {
   }
 
   const activeModel = model || DEFAULT_MODEL;
+  const start = Date.now();
 
   try {
-    const { text, model: usedModel } = await callWithFallback(systemPrompt, userPrompt, activeModel, maxTokens || 1200, apiKey);
-    return res.status(200).json({ text, model: usedModel, fellBack: usedModel !== activeModel });
+    const text = await callGeminiWithRetry(systemPrompt, userPrompt, activeModel, maxTokens || 1200, apiKey);
+    aiHealth.lastSuccessAt = new Date().toISOString();
+    aiHealth.lastModelUsed = activeModel;
+    aiHealth.successCount++;
+    aiHealth.totalLatencyMs += Date.now() - start;
+    return res.status(200).json({ text, model: activeModel, fellBack: false });
   } catch (error: any) {
-    console.error("OpenRouter /api/ai error:", error);
+    console.error("Gemini /api/ai error:", error);
+    aiHealth.failureCount++;
+    aiHealth.recentErrors.unshift({ ts: new Date().toISOString(), message: String(error?.message || error).slice(0, 200), model: activeModel });
+    aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
     const { status, message } = friendlyError(error);
     return res.status(status).json({ error: message });
   }

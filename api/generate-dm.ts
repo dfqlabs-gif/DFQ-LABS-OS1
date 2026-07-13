@@ -1,18 +1,15 @@
-// Serverless handler for /api/generate-dm
-// Generates a personalized outreach DM for a lead at a given pipeline stage.
-// Now powered by OpenRouter (model-agnostic).
+// Serverless handler for /api/generate-dm — powered by Google Gemini.
 
+import { GoogleGenAI } from "@google/genai";
 import { DEFAULT_MODEL } from "./ai";
-
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 
 function friendlyError(error: any): { status: number; message: string } {
   const raw = String(error?.message ?? error ?? "");
-  if (raw.includes("429") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
-    return { status: 429, message: "AI quota exceeded. Try switching to a different model in AI Gateway settings." };
+  if (raw.includes("429") || raw.includes("RESOURCE_EXHAUSTED") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
+    return { status: 429, message: "Gemini API quota exceeded. Wait a moment and try again." };
   }
   if (raw.includes("401") || raw.includes("403")) {
-    return { status: 401, message: "Invalid OPENROUTER_API_KEY. Check your Vercel environment variables." };
+    return { status: 401, message: "Invalid GEMINI_API_KEY. Check your environment variables." };
   }
   const clean = raw.replace(/\{[\s\S]*?\}/g, "").trim().slice(0, 200);
   return { status: 500, message: clean || "AI service temporarily unavailable. Please try again." };
@@ -25,9 +22,9 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
+    return res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
   }
 
   const { name, company, role, niche, channel, painPoint, stage, lastConversation, notes, model } =
@@ -107,37 +104,20 @@ Draft a single, highly effective direct message tailored perfectly for this reci
   const activeModel = model || DEFAULT_MODEL;
 
   try {
-    const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://dfqlabs.vercel.app",
-        "X-Title": "DFQ Labs OS"
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: activeModel,
+      contents: userPrompt,
+      config: {
+        systemInstruction: systemPrompt,
+        maxOutputTokens: 600,
+        temperature: 0.8,
       },
-      body: JSON.stringify({
-        model: activeModel,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        max_tokens: 400,
-        temperature: 0.8
-      })
     });
-
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({})) as any;
-      const msg = errBody?.error?.message || `HTTP ${response.status}`;
-      const { status, message } = friendlyError({ message: msg });
-      return res.status(status).json({ error: message });
-    }
-
-    const data = await response.json() as any;
-    const draft: string = data?.choices?.[0]?.message?.content ?? "Failed to generate DM.";
+    const draft: string = response.text ?? "Failed to generate DM.";
     return res.status(200).json({ draft });
   } catch (error: any) {
-    console.error("OpenRouter /api/generate-dm error:", error);
+    console.error("Gemini /api/generate-dm error:", error);
     const { status, message } = friendlyError(error);
     return res.status(status).json({ error: message });
   }

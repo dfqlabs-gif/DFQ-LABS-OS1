@@ -8,16 +8,16 @@ import {
 
 // ─── Model list mirrored from api/ai.ts (no runtime import needed) ────────
 // Keep this in sync with AVAILABLE_MODELS/DEFAULT_MODEL in api/ai.ts and
-// DEFAULT_MODEL in server.ts — see the note there about verifying free-tier
-// slugs before changing this list.
+// GEMINI_MODEL in server.ts. All models below are Google Gemini — optimized
+// for high-volume free-tier workloads (generous RPM / TPM on the free plan).
 const MODELS = [
-  { id: "nvidia/nemotron-nano-9b-v2:free",     label: "Nemotron Nano 9B",    note: "Recommended · Balanced" },
-  { id: "openai/gpt-oss-20b:free",             label: "GPT-OSS 20B",         note: "Fast · Concise" },
-  { id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B", note: "Detailed" },
-  { id: "google/gemma-4-26b-a4b-it:free",      label: "Gemma 4 26B",         note: "Creative" },
+  { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash",      note: "Recommended · High Volume" },
+  { id: "gemini-2.0-flash",      label: "Gemini 2.0 Flash",      note: "Fast · Concise" },
+  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", note: "Lightweight · Fastest" },
+  { id: "gemini-1.5-flash",      label: "Gemini 1.5 Flash",      note: "Stable · Proven" },
 ];
 
-const DEFAULT_MODEL_ID = "nvidia/nemotron-nano-9b-v2:free";
+const DEFAULT_MODEL_ID = "gemini-2.5-flash";
 
 type Status = "idle" | "checking" | "ok" | "error";
 
@@ -144,8 +144,8 @@ export function AIGateway() {
         {/* API key status */}
         <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 7, background: configured === null ? SURFACE2 : configured ? "rgba(34,197,94,0.06)" : "rgba(239,68,68,0.06)", border: `1px solid ${configured === null ? BORDER : configured ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}` }}>
           {configured === null && <span style={{ fontSize: 11, color: MUTED }}>Checking API key…</span>}
-          {configured === true && <><CheckCircle2 size={13} color="#22C55E" /><span style={{ fontSize: 11, color: "#22C55E", fontWeight: 700 }}>OPENROUTER_API_KEY is configured on the server.</span></>}
-          {configured === false && <><XCircle size={13} color="#EF4444" /><span style={{ fontSize: 11, color: "#EF4444", fontWeight: 700 }}>OPENROUTER_API_KEY is not set. Add it to Vercel → Settings → Environment Variables, then redeploy.</span></>}
+          {configured === true && <><CheckCircle2 size={13} color="#22C55E" /><span style={{ fontSize: 11, color: "#22C55E", fontWeight: 700 }}>GEMINI_API_KEY is configured on the server.</span></>}
+          {configured === false && <><XCircle size={13} color="#EF4444" /><span style={{ fontSize: 11, color: "#EF4444", fontWeight: 700 }}>GEMINI_API_KEY is not set. Add it to your environment variables.</span></>}
         </div>
       </div>
 
@@ -324,7 +324,7 @@ export function AIGateway() {
 
       {/* ── Info ────────────────────────────────────────────────────────── */}
       <div style={{ padding: "10px 14px", background: BG, border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 10, color: MUTED, lineHeight: 1.7 }}>
-        <span style={{ color: MUTED2, fontWeight: 700 }}>How to add a new key:</span> Go to <span style={{ color: G }}>openrouter.ai</span> → create an account → copy your API key → add it as <span style={{ color: G }}>OPENROUTER_API_KEY</span> in Vercel → Settings → Environment Variables, then trigger a redeploy. All models listed above are on OpenRouter's free tier.
+        <span style={{ color: MUTED2, fontWeight: 700 }}>How to add a new key:</span> Go to <span style={{ color: G }}>aistudio.google.com/apikey</span> → create a free API key → add it as <span style={{ color: G }}>GEMINI_API_KEY</span> in your Replit environment variables. Optionally set <span style={{ color: G }}>GEMINI_MODEL</span> to switch models globally. All models listed above use Google's free tier (generous RPM / TPM).
       </div>
 
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
