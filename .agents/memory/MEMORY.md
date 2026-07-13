@@ -2,3 +2,4 @@
 - [DFQ Labs OS: centralized AI engine](dfq-labs-ai-engine.md) — one shared prompt/reasoning module + server-side model fallback chain; keep new AI features routed through it.
 - [DFQ Labs OS: display-label vs data-value split](dfq-labs-specialist-labels.md) — intern role display names differ from stored data keys; never rename the data keys.
 - [DFQ Labs OS: Gemini migration](dfq-labs-gemini-migration.md) — migrated from OpenRouter to Gemini; working model for this API key is gemini-3.1-flash-lite.
+- [Edit tool $ collapsing](edit-tool-dollar-escaping.md) — Edit can silently drop one "$" from "${expr}" template-literal replacements (e.g. SQL placeholders); verify with a re-read, fall back to a script write if it collapsed.
