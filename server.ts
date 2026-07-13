@@ -3,10 +3,23 @@ import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { Pool } from "pg";
 
 dotenv.config();
 
 const app = express();
+
+// ── PostgreSQL connection pool ─────────────────────────────────────────────────
+const db = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Ensure the leads table exists on startup
+db.query(`
+  CREATE TABLE IF NOT EXISTS leads (
+    id TEXT PRIMARY KEY,
+    data JSONB NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+  )
+`).catch(err => console.error("DB table init error:", err));
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 
 // ── AI Provider configuration — change GEMINI_MODEL env var to swap models ──
@@ -256,6 +269,68 @@ Output ONLY the final message text. No meta-commentary.`;
     console.error("Gemini /api/generate-dm error:", error);
     recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
+  }
+});
+
+// ── Leads API — unified (mirrors api/leads.ts for Vercel) ─────────────────────
+
+app.get("/api/leads", async (_req, res) => {
+  try {
+    const result = await db.query("SELECT data FROM leads ORDER BY updated_at ASC");
+    res.json({ leads: result.rows.map((r: any) => r.data) });
+  } catch (err: any) {
+    console.error("GET /api/leads:", err);
+    res.status(500).json({ error: "Failed to load leads." });
+  }
+});
+
+// POST handles both single { lead } and bulk { leads }
+app.post("/api/leads", async (req, res) => {
+  const body = req.body || {};
+
+  if (Array.isArray(body.leads)) {
+    const leads = body.leads.filter((l: any) => l?.id);
+    if (leads.length === 0) return res.json({ ok: true, count: 0 });
+    try {
+      const values = leads.map((_: any, i: number) => `(${i * 2 + 1}, ${i * 2 + 2}::jsonb)`).join(", ");
+      const params = leads.flatMap((l: any) => [l.id, JSON.stringify(l)]);
+      await db.query(
+        `INSERT INTO leads (id, data, updated_at) VALUES ${values}
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        params
+      );
+      return res.json({ ok: true, count: leads.length });
+    } catch (err: any) {
+      console.error("POST /api/leads bulk:", err);
+      return res.status(500).json({ error: "Failed to bulk-import leads." });
+    }
+  }
+
+  const lead = body.lead;
+  if (!lead?.id) return res.status(400).json({ error: "lead.id is required." });
+  try {
+    await db.query(
+      `INSERT INTO leads (id, data, updated_at) VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = $2::jsonb, updated_at = NOW()`,
+      [lead.id, JSON.stringify(lead)]
+    );
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("POST /api/leads single:", err);
+    res.status(500).json({ error: "Failed to save lead." });
+  }
+});
+
+// DELETE with id in body (works on both Express and Vercel)
+app.delete("/api/leads", async (req, res) => {
+  const id = req.body?.id;
+  if (!id) return res.status(400).json({ error: "id is required." });
+  try {
+    await db.query("DELETE FROM leads WHERE id = $1", [id]);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("DELETE /api/leads:", err);
+    res.status(500).json({ error: "Failed to delete lead." });
   }
 });
 

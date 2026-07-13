@@ -611,25 +611,41 @@ export default function App() {
     };
   }, [role, authed, writeSession, logout]);
 
-  // Load database state
+  // Load leads from shared database; stats remain per-user in localStorage
   useEffect(() => {
-    (() => {
+    const loadData = async () => {
+      // Load stats from localStorage (per-user XP / streaks)
       try {
-        const r = localStorage.getItem("dfqlabs-v12");
+        const r = localStorage.getItem("dfqlabs-v12-stats");
         if (r) {
-          const d = JSON.parse(r);
-          const loadedLeads = d.leads || [];
-          const loadedStats = d.stats || { xp: 0, completedDates: [], totalFollowUps: 0, nnd: {}, dailyQueue: null };
-          
+          const s = JSON.parse(r);
+          if (s) setStats(s);
+        } else {
+          // Migrate: try to recover stats from old combined key
+          const old = localStorage.getItem("dfqlabs-v12");
+          if (old) {
+            const d = JSON.parse(old);
+            if (d.stats) setStats(d.stats);
+          }
+        }
+      } catch (_) {}
+
+      // Load leads from shared PostgreSQL via API
+      try {
+        const res = await fetch("/api/leads");
+        if (res.ok) {
+          const { leads: loadedLeads } = await res.json();
+          const rulePatched: Lead[] = [];
           let changed = false;
-          const refreshed = loadedLeads.map((l: any) => {
+
+          const refreshed = (loadedLeads as any[]).map((l: any) => {
             let assignedTo = l.assignedTo || "Unassigned";
             if (assignedTo === "Specialist A") assignedTo = "Intern A";
             if (assignedTo === "Specialist B") assignedTo = "Intern B";
-            
+
             let aiBucket = l.aiBucket;
             if (aiBucket && !BUCKETS.includes(aiBucket)) aiBucket = undefined;
-            
+
             const patched: Lead = {
               lastMeaningfulTouchpoint: l.lastMeaningfulTouchpoint || l.lastContacted || l.dateAdded,
               awaitingReplySince: l.awaitingReplySince || "",
@@ -644,7 +660,7 @@ export default function App() {
             const ruled = ruleBasedBucket(patched);
             if (ruled && patched.aiBucket !== ruled.bucket) {
               changed = true;
-              return {
+              const updated = {
                 ...patched,
                 aiBucket: ruled.bucket,
                 aiReason: `No reply for ${daysSince(patched.lastContacted || patched.dateAdded)} days — auto-moved to nurture.`,
@@ -653,25 +669,46 @@ export default function App() {
                 autoFollowUpDate: patched.autoFollowUpDate && patched.autoFollowUpDate > today() ? patched.autoFollowUpDate : addDays(ruled.days ?? 3),
                 autoFollowUpReason: "Send a pattern-interrupt re-engagement message."
               };
+              rulePatched.push(updated);
+              return updated;
             }
             return patched;
           });
-          
+
           setLeads(refreshed);
-          setStats(loadedStats);
-          if (changed) persist(refreshed, loadedStats);
+
+          // Persist any rule-based reclassifications back to the DB
+          if (changed && rulePatched.length > 0) {
+            fetch("/api/leads", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ leads: rulePatched })
+            }).catch(() => {});
+          }
         }
       } catch (_) {}
+
       setLoading(false);
-    })();
+    };
+    loadData();
   }, []);
 
-  const persist = useCallback(async (l: Lead[], s: Stats) => {
+  // persist() now only saves stats (per-user); leads live in the shared DB
+  const persist = useCallback(async (_l: Lead[], s: Stats) => {
     setSaving(true);
     try {
-      localStorage.setItem("dfqlabs-v12", JSON.stringify({ leads: l, stats: s }));
+      localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(s));
     } catch (_) {}
     setTimeout(() => setSaving(false), 600);
+  }, []);
+
+  // Save a single lead to the shared database
+  const saveLeadToDB = useCallback((lead: Lead) => {
+    fetch("/api/leads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lead })
+    }).catch(() => {});
   }, []);
 
   const persistStats = useCallback((s: Stats) => {
@@ -693,21 +730,33 @@ export default function App() {
     const fileReader = new FileReader();
     if (e.target.files && e.target.files[0]) {
       fileReader.readAsText(e.target.files[0], "UTF-8");
-      fileReader.onload = (event) => {
+      fileReader.onload = async (event) => {
         try {
           const parsed = JSON.parse(event.target?.result as string);
           if (parsed && Array.isArray(parsed.leads)) {
-            setLeads(parsed.leads);
-            if (parsed.stats) setStats(parsed.stats);
-            persist(parsed.leads, parsed.stats || stats);
-            setImportMsg("✓ Backup imported successfully.");
+            // Upload all leads to shared DB
+            const res = await fetch("/api/leads", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ leads: parsed.leads })
+            });
+            if (res.ok) {
+              setLeads(parsed.leads);
+              if (parsed.stats) {
+                setStats(parsed.stats);
+                localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
+              }
+              setImportMsg("✓ Leads uploaded to shared database — your team will see them instantly.");
+            } else {
+              setImportMsg("✗ Upload failed. Check your connection and try again.");
+            }
           } else {
             setImportMsg("✗ Invalid backup file structure.");
           }
         } catch (_) {
           setImportMsg("✗ Failed to parse JSON file.");
         }
-        setTimeout(() => setImportMsg(null), 4000);
+        setTimeout(() => setImportMsg(null), 5000);
       };
     }
   };
@@ -794,6 +843,7 @@ export default function App() {
     const next = exists ? leads.map(l => l.id === lead.id ? final : l) : [...leads, final];
     setLeads(next);
     persist(next, stats);
+    saveLeadToDB(final);
     setModal(null);
 
     // AI classification sweep
@@ -817,6 +867,7 @@ export default function App() {
             persist(updated, stats);
             return updated;
           });
+          saveLeadToDB(classified);
         }
       } catch (e) {}
       setClassifying(p => {
@@ -833,12 +884,22 @@ export default function App() {
     const next = leads.map(l => byId[l.id] ? byId[l.id] : l);
     setLeads(next);
     await persist(next, stats);
+    fetch("/api/leads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leads: updatedLeads })
+    }).catch(() => {});
   };
 
   const deleteLead = (id: string) => {
     const next = leads.filter(l => l.id !== id);
     setLeads(next);
     persist(next, stats);
+    fetch("/api/leads", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id })
+    }).catch(() => {});
   };
 
   const quickContact = async (lead: Lead) => {
@@ -862,6 +923,7 @@ export default function App() {
     setLeads(next);
     setStats(newStats);
     persist(next, newStats);
+    saveLeadToDB(touched);
 
     const activeStreak = calcStreak(newDates);
     const todayCount = newDates.filter(d => d.startsWith(today())).length;
