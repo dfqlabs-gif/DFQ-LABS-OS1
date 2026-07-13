@@ -28,6 +28,8 @@ import { LeadModal, ConversationHistoryPanel } from "./components/LeadModal";
 import { WeeklyReport } from "./components/WeeklyReport";
 import { CEOTab } from "./components/CEOTab";
 import { AIGateway } from "./components/AIGateway";
+import { MergeLeadModal } from "./components/MergeLeadModal";
+import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -549,6 +551,7 @@ export default function App() {
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [authed, setAuthed] = useState(false);
+  const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
   
   const lastActivityRef = useRef(Date.now());
   const lastSessionWriteRef = useRef(0);
@@ -657,7 +660,9 @@ export default function App() {
               aiBucket
             };
 
-            const ruled = ruleBasedBucket(patched);
+            // Leads merged away into another record are tombstoned — never
+            // reclassify, resurface, or let AI analyze them (Lead Integrity spec).
+            const ruled = patched.mergedInto ? null : ruleBasedBucket(patched);
             if (ruled && patched.aiBucket !== ruled.bucket) {
               changed = true;
               const updated = {
@@ -902,6 +907,27 @@ export default function App() {
     }).catch(() => {});
   };
 
+  // Confirms a merge from either the Duplicate Review page (both leads already
+  // persisted) or the create-lead duplicate warning (the "draft" lead may not
+  // exist in the DB yet). Never deletes — the losing record is tombstoned
+  // with mergedInto so its history stays auditable but it drops out of every
+  // active view, stat, and AI pass.
+  const handleMergeConfirm = (merged: Lead, discarded: Lead) => {
+    const discardedExists = leads.some(l => l.id === discarded.id);
+    let next = leads.map(l => (l.id === merged.id ? merged : l));
+    if (!next.some(l => l.id === merged.id)) next = [...next, merged];
+    if (discardedExists && discarded.id !== merged.id) {
+      const tombstone: Lead = { ...discarded, mergedInto: merged.id, status: "Lost" };
+      next = next.map(l => (l.id === discarded.id ? tombstone : l));
+      saveLeadToDB(tombstone);
+    }
+    setLeads(next);
+    persist(next, stats);
+    saveLeadToDB(merged);
+    setMergeCandidates(null);
+    setModal(null);
+  };
+
   const quickContact = async (lead: Lead) => {
     const now = nowISO();
     const touched: Lead = {
@@ -965,8 +991,12 @@ export default function App() {
   const lvlValue = getXPLevel(stats.xp || 0);
   const todayCountValue = (stats.completedDates || []).filter(d => d.startsWith(today())).length;
   const xpPct = lvlValue.next ? Math.min(100, Math.round(((stats.xp || 0) / lvlValue.next) * 100)) : 100;
-  const revenueValue = calcRevenue(leads);
-  const clientsValue = leads.filter(l => l.status === "Closed");
+  // Leads merged away into another record during duplicate cleanup are kept
+  // in the shared DB as a tombstone (for audit history) but excluded from
+  // every active view, stat, and AI pass — see Lead Integrity system.
+  const activeLeads = useMemo(() => leads.filter(l => !l.mergedInto), [leads]);
+  const revenueValue = calcRevenue(activeLeads);
+  const clientsValue = activeLeads.filter(l => l.status === "Closed");
 
   const TABS = [
     { key: "mission", label: "Mission Control" },
@@ -977,6 +1007,7 @@ export default function App() {
     { key: "report", label: "CEO Report" },
     { key: "coach", label: "AI Coach" },
     { key: "ceo", label: "CEO Dashboard" },
+    { key: "duplicates", label: "Duplicates" },
     { key: "gateway", label: "AI Gateway" }
   ];
 
@@ -990,7 +1021,7 @@ export default function App() {
     return (
       <InternDashboardWrapper 
         internName={internName} 
-        leads={leads} 
+        leads={activeLeads} 
         onSave={saveLead} 
         onQuickContact={quickContact} 
         classifying={classifying} 
@@ -1070,30 +1101,39 @@ export default function App() {
               <div style={{ fontSize: 20, fontWeight: 800, color: TEXT, marginTop: 4 }}>DFQLABS Mission Control</div>
             </div>
             
-            <RevenueGapSummary leads={leads} />
-            <ResponseGuardSummary leads={leads} onQuickContact={quickContact} onEdit={setModal} />
-            <MeetingIntelligenceSummary leads={leads} onSave={saveLead} />
+            <RevenueGapSummary leads={activeLeads} />
+            <ResponseGuardSummary leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} />
+            <MeetingIntelligenceSummary leads={activeLeads} onSave={saveLead} />
             
             <div style={{ height: 1, background: BORDER, margin: "4px 0 14px" }} />
             
-            <NonNegotiablesSummary leads={leads} stats={stats} onPersist={persistStats} onQuickContact={quickContact} />
-            <RelationshipRenewalQueue leads={leads} onQuickContact={quickContact} onEdit={setModal} />
-            <BetaTrackerSummary leads={leads} onEdit={setModal} />
-            <SmartBuckets leads={leads} onEdit={setModal} />
+            <NonNegotiablesSummary leads={activeLeads} stats={stats} onPersist={persistStats} onQuickContact={quickContact} />
+            <RelationshipRenewalQueue leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} />
+            <BetaTrackerSummary leads={activeLeads} onEdit={setModal} />
+            <SmartBuckets leads={activeLeads} onEdit={setModal} />
           </div>
         )}
         
-        {tab === "pipeline" && <PipelineTab leads={leads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onQuickContact={quickContact} classifying={classifying} />}
+        {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onQuickContact={quickContact} classifying={classifying} />}
         {tab === "clients" && <ClientDelivery clients={clientsValue} onEdit={setModal} />}
-        {tab === "team" && <TeamTab leads={leads} onSave={setModal} onBulkSave={bulkSaveLeads} />}
-        {tab === "strategy" && <><GrowthStrategySummary leads={leads} /><StrategicPathsSummary leads={leads} /></>}
-        {tab === "report" && <WeeklyReport leads={leads} stats={stats} revenue={revenueValue} />}
-        {tab === "coach" && <AICoach leads={leads} />}
-        {tab === "ceo" && <CEOTab leads={leads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
+        {tab === "team" && <TeamTab leads={activeLeads} onSave={setModal} onBulkSave={bulkSaveLeads} />}
+        {tab === "strategy" && <><GrowthStrategySummary leads={activeLeads} /><StrategicPathsSummary leads={activeLeads} /></>}
+        {tab === "report" && <WeeklyReport leads={activeLeads} stats={stats} revenue={revenueValue} />}
+        {tab === "coach" && <AICoach leads={activeLeads} />}
+        {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
+        {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
       </div>
       
-      {modal && <LeadModal lead={modal} leads={leads} onSave={saveLead} onClose={() => setModal(null)} />}
+      {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
+      {mergeCandidates && (
+        <MergeLeadModal
+          leadA={mergeCandidates[0]}
+          leadB={mergeCandidates[1]}
+          onClose={() => setMergeCandidates(null)}
+          onConfirm={handleMergeConfirm}
+        />
+      )}
     </div>
   );
 }
@@ -1385,7 +1425,7 @@ function InternDashboard({ internName, leads, onSave, onQuickContact, classifyin
           </div>
         )}
       </div>
-      {modal && <LeadModal lead={modal} leads={leads} onSave={onSave} onClose={() => setModal(null)} />}
+      {modal && <LeadModal lead={modal} leads={leads} onSave={onSave} onClose={() => setModal(null)} role="intern" onOpenExisting={l => setModal(l)} />}
     </div>
   );
 }

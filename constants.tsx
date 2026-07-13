@@ -456,6 +456,172 @@ export function getInternActivities(leads: Lead[], selectedDate: string) {
   return activities.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
 }
 
+// ── Lead Integrity & Duplicate Prevention ────────────────────────────────────
+// Normalization helpers used both to clean data on save and to compare leads
+// for potential duplicates. Kept separate from normalizeCompany (above) which
+// existing assignment-conflict logic already depends on.
+
+export const cleanText = (s: string | undefined | null): string => (s || "").replace(/\s+/g, " ").trim();
+
+export const normalizePhoneDigits = (s: string | undefined | null): string => {
+  const digits = (s || "").replace(/\D/g, "");
+  if (!digits) return "";
+  // Compare on the last 10 significant digits so +234 / 234 / leading-0
+  // formatting differences don't produce false negatives or positives.
+  return digits.slice(-10);
+};
+
+export const normalizeInstagramHandle = (s: string | undefined | null): string => {
+  return (s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\/(www\.)?instagram\.com\//, "")
+    .replace(/^@/, "")
+    .split("?")[0]
+    .replace(/\/+$/, "");
+};
+
+export const normalizeEmailAddress = (s: string | undefined | null): string => (s || "").trim().toLowerCase();
+
+export const normalizeContactName = (s: string | undefined | null): string => {
+  return (s || "")
+    .toLowerCase()
+    .replace(/^(mr|mrs|ms|dr|miss|engr|chief|prince|princess)\.?\s+/, "")
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+};
+
+const COMPANY_SUFFIX_WORDS = new Set(["ltd", "limited", "llc", "inc", "incorporated", "plc", "co", "company", "corp", "corporation", "group"]);
+
+export const normalizeCompanyFuzzy = (s: string | undefined | null): string => {
+  const v = (s || "").toLowerCase().trim().replace(/[^a-z0-9\s]/g, " ");
+  const words = v.split(/\s+/).filter(w => w && !COMPANY_SUFFIX_WORDS.has(w));
+  return words.join("");
+};
+
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const dp: number[] = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = tmp;
+    }
+  }
+  return dp[b.length];
+}
+
+export function textSimilarity(a: string, b: string): number {
+  if (!a && !b) return 1;
+  if (!a || !b) return 0;
+  const maxLen = Math.max(a.length, b.length);
+  if (!maxLen) return 1;
+  return 1 - levenshtein(a, b) / maxLen;
+}
+
+export interface DuplicateMatch {
+  lead: Lead;
+  confidence: number; // 0-100
+  matchedFields: string[];
+}
+
+// Fast, purely client-side (no network round-trip) scan against already-loaded
+// leads — safe to run on every keystroke without hurting lead-creation speed.
+export function findPotentialDuplicates(existingLeads: Lead[], candidate: Lead, opts?: { threshold?: number }): DuplicateMatch[] {
+  const threshold = opts?.threshold ?? 45;
+  const candCompany = normalizeCompanyFuzzy(candidate.company);
+  const candContact = normalizeContactName(candidate.name);
+  const candPhone = normalizePhoneDigits(candidate.phone);
+  const candWhatsapp = normalizePhoneDigits(candidate.whatsapp);
+  const candIg = normalizeInstagramHandle(candidate.instagram);
+  const candEmail = normalizeEmailAddress(candidate.email);
+
+  const results: DuplicateMatch[] = [];
+
+  for (const l of existingLeads) {
+    if (l.id === candidate.id || l.mergedInto) continue;
+
+    let score = 0;
+    const matched: string[] = [];
+
+    if (candPhone && normalizePhoneDigits(l.phone) === candPhone) { score += 45; matched.push("Phone"); }
+    if (candWhatsapp && normalizePhoneDigits(l.whatsapp) === candWhatsapp) { score += 45; matched.push("WhatsApp"); }
+    if (candIg && normalizeInstagramHandle(l.instagram) === candIg) { score += 45; matched.push("Instagram"); }
+    if (candEmail && normalizeEmailAddress(l.email) === candEmail) { score += 45; matched.push("Email"); }
+
+    const lCompany = normalizeCompanyFuzzy(l.company);
+    if (candCompany && lCompany) {
+      if (lCompany === candCompany) { score += 50; matched.push("Company Name"); }
+      else {
+        const sim = textSimilarity(lCompany, candCompany);
+        if (sim >= 0.84) { score += Math.round(25 * sim); matched.push("Company Name (similar)"); }
+      }
+    }
+
+    const lContact = normalizeContactName(l.name);
+    if (candContact && lContact) {
+      if (lContact === candContact) { score += 20; matched.push("Contact Name"); }
+      else {
+        const sim = textSimilarity(lContact, candContact);
+        if (sim >= 0.86) { score += Math.round(12 * sim); matched.push("Contact Name (similar)"); }
+      }
+    }
+
+    score = Math.min(100, score);
+    if (score >= threshold && matched.length) results.push({ lead: l, confidence: score, matchedFields: matched });
+  }
+
+  return results.sort((a, b) => b.confidence - a.confidence);
+}
+
+export interface DuplicatePair {
+  a: Lead;
+  b: Lead;
+  confidence: number;
+  matchedFields: string[];
+}
+
+export function duplicatePairKey(idA: string, idB: string): string {
+  return [idA, idB].sort().join("::");
+}
+
+// Full pairwise scan for the Duplicate Review page. O(n^2) but only runs when
+// that tab is open, against already-loaded leads — fine at CRM scale.
+export function scanAllDuplicates(leads: Lead[]): DuplicatePair[] {
+  const active = leads.filter(l => !l.mergedInto);
+  const pairs: DuplicatePair[] = [];
+  for (let i = 0; i < active.length; i++) {
+    const matches = findPotentialDuplicates(active.slice(i + 1), active[i]);
+    for (const m of matches) {
+      pairs.push({ a: active[i], b: m.lead, confidence: m.confidence, matchedFields: m.matchedFields });
+    }
+  }
+  return pairs.sort((a, b) => b.confidence - a.confidence);
+}
+
+export const REQUIRED_LEAD_FIELDS: Array<{ key: keyof Lead; label: string }> = [
+  { key: "name", label: "Contact Name" },
+  { key: "company", label: "Company Name" },
+  { key: "source", label: "Lead Source" },
+  { key: "assignedTo", label: "Assigned Team Member" },
+  { key: "status", label: "Pipeline Stage" }
+];
+
+export function getMissingRequiredFields(lead: Lead): string[] {
+  const missing: string[] = [];
+  if (!cleanText(lead.name)) missing.push("Contact Name");
+  if (!cleanText(lead.company)) missing.push("Company Name");
+  if (!lead.source) missing.push("Lead Source");
+  if (!lead.assignedTo || lead.assignedTo === "Unassigned") missing.push("Assigned Team Member");
+  if (!lead.status) missing.push("Pipeline Stage");
+  return missing;
+}
+
 export function findDuplicateConflict(leads: Lead[], lead: Lead) {
   const norm = normalizeCompany(lead.company);
   if (!norm || !lead.assignedTo || lead.assignedTo === "Unassigned") return null;

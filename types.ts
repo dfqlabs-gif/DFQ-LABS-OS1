@@ -3,6 +3,9 @@ export interface Lead {
   name: string;
   company: string;
   phone?: string;
+  instagram?: string;
+  whatsapp?: string;
+  email?: string;
   source: string;
   clientType: string;
   service: string;
@@ -40,6 +43,17 @@ export interface Lead {
   aiReason?: string;
   aiNextAction?: string;
   aiClassifiedAt?: string;
+  // Lead integrity / duplicate-prevention system
+  mergedInto?: string;
+  mergedFrom?: string[];
+  auditLog?: Array<{
+    ts: string;
+    by: string;
+    action: string;
+    field?: string;
+    previousValue?: string;
+    newValue?: string;
+  }>;
 }
 
 export interface Stats {
@@ -48,4 +62,5 @@ export interface Stats {
   totalFollowUps: number;
   nnd: Record<string, string[]>;
   dailyQueue: any;
+  ignoredDuplicatePairs?: string[];
 }
