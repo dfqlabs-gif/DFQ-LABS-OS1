@@ -849,7 +849,6 @@ export default function App() {
     setLeads(next);
     persist(next, stats);
     saveLeadToDB(final);
-    setModal(null);
 
     // AI classification sweep
     if (!["Closed", "Lost"].includes(final.status)) {

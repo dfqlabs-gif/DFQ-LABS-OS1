@@ -121,6 +121,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
       }
     }
     onSave(cleaned);
+    onClose();
   };
 
   const betaFilledCount = useMemo(() => {
@@ -397,7 +398,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setShowDupWarning(false)} style={{ background: "none", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 16px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
               {role === "founder" && (
-                <button onClick={() => { setDupOverridden(true); setShowDupWarning(false); onSave({ ...lead, name: cleanText(lead.name), company: cleanText(lead.company), phone: cleanText(lead.phone), instagram: cleanText(lead.instagram), whatsapp: cleanText(lead.whatsapp), email: cleanText(lead.email) }); }} style={{ background: "#EF4444", color: "#fff", border: "none", borderRadius: 6, padding: "7px 16px", fontWeight: 800, fontSize: 11, cursor: "pointer" }}>Create Anyway</button>
+                <button onClick={() => { setDupOverridden(true); setShowDupWarning(false); onSave({ ...lead, name: cleanText(lead.name), company: cleanText(lead.company), phone: cleanText(lead.phone), instagram: cleanText(lead.instagram), whatsapp: cleanText(lead.whatsapp), email: cleanText(lead.email) }); onClose(); }} style={{ background: "#EF4444", color: "#fff", border: "none", borderRadius: 6, padding: "7px 16px", fontWeight: 800, fontSize: 11, cursor: "pointer" }}>Create Anyway</button>
               )}
             </div>
           </div>
