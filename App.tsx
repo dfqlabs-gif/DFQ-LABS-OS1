@@ -39,6 +39,149 @@ const SectionLabel = ({ icon: Icon, children }: any) => (
 );
 
 // ----------------------------------------------------
+// RECENT LEADS PANEL
+// ----------------------------------------------------
+
+function RecentLeadsPanel({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) => void }) {
+  const [filter, setFilter] = useState<"today" | "3days" | "week" | "all">("week");
+  const [search, setSearch] = useState("");
+
+  const cutoff = useMemo(() => {
+    if (filter === "today") return today();
+    if (filter === "3days") return addDays(-3);
+    if (filter === "week") return addDays(-7);
+    return null;
+  }, [filter]);
+
+  const FILTERS: { key: typeof filter; label: string }[] = [
+    { key: "today", label: "Today" },
+    { key: "3days", label: "Last 3 Days" },
+    { key: "week", label: "Last 7 Days" },
+    { key: "all", label: "All Time" },
+  ];
+
+  const q = search.trim().toLowerCase();
+  const sorted = useMemo(() =>
+    [...leads]
+      .filter(l => !cutoff || (l.dateAdded && l.dateAdded >= cutoff))
+      .filter(l => !q || (l.name || "").toLowerCase().includes(q) || (l.company || "").toLowerCase().includes(q) || (l.assignedTo || "").toLowerCase().includes(q))
+      .sort((a, b) => (b.dateAdded || "").localeCompare(a.dateAdded || "")),
+    [leads, cutoff, q]
+  );
+
+  const [showAll, setShowAll] = useState(false);
+  const PAGE = 15;
+  const visible = showAll ? sorted : sorted.slice(0, PAGE);
+
+  return (
+    <div style={{ maxWidth: 900 }}>
+      {/* Header */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 11, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+          {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: TEXT, marginTop: 4 }}>
+          Recently Added Leads
+        </div>
+      </div>
+
+      {/* Filter chips + search row */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        {FILTERS.map(f => {
+          const cnt = leads.filter(l => {
+            const c = f.key === "today" ? today() : f.key === "3days" ? addDays(-3) : f.key === "week" ? addDays(-7) : null;
+            return !c || (l.dateAdded && l.dateAdded >= c);
+          }).length;
+          const active = filter === f.key;
+          return (
+            <button key={f.key} onClick={() => { setFilter(f.key); setShowAll(false); }}
+              style={{ background: active ? G_DIM : "transparent", border: `1px solid ${active ? G_BORDER : BORDER}`, color: active ? G : MUTED, borderRadius: 20, padding: "7px 14px", fontSize: 12, fontWeight: active ? 700 : 500, cursor: "pointer" }}>
+              {f.label} ({cnt})
+            </button>
+          );
+        })}
+        <div style={{ position: "relative", flex: "1 1 200px", minWidth: 160 }}>
+          <Search size={12} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: MUTED, pointerEvents: "none" }} />
+          <input
+            value={search}
+            onChange={e => { setSearch(e.target.value); setShowAll(false); }}
+            placeholder="Search by name, company or specialist…"
+            style={{ ...iStyle, paddingLeft: 30, width: "100%", boxSizing: "border-box" }}
+          />
+        </div>
+      </div>
+
+      {/* Count line */}
+      {sorted.length > 0 && (
+        <div style={{ fontSize: 10, color: MUTED, marginBottom: 10 }}>
+          {sorted.length} lead{sorted.length !== 1 ? "s" : ""}
+          {filter !== "all" && ` added ${filter === "today" ? "today" : filter === "3days" ? "in the last 3 days" : "in the last 7 days"}`}
+          {q && ` matching "${q}"`}
+        </div>
+      )}
+
+      {sorted.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "48px 0", color: MUTED, background: SURFACE, borderRadius: 12, border: `1px solid ${BORDER}` }}>
+          <div style={{ fontSize: 13, color: TEXT, fontWeight: 600, marginBottom: 4 }}>No leads found</div>
+          <div style={{ fontSize: 11 }}>Try a different time range or clear the search.</div>
+        </div>
+      ) : (
+        <>
+          {/* Table header */}
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, padding: "6px 14px", marginBottom: 4 }}>
+            {["Contact / Company", "Service", "Status", "Specialist", "Added", ""].map((h, i) => (
+              <div key={i} style={{ fontSize: 9, color: MUTED2, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>{h}</div>
+            ))}
+          </div>
+
+          {/* Rows */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {visible.map(l => {
+              const isToday = l.dateAdded === today();
+              const isYesterday = l.dateAdded === addDays(-1);
+              const dateLabel = isToday ? "Today" : isYesterday ? "Yesterday" : l.dateAdded || "—";
+              return (
+                <div key={l.id} className="dfq-card"
+                  style={{ background: SURFACE, border: `1px solid ${isToday ? G_BORDER : BORDER}`, borderLeft: `3px solid ${isToday ? G : STATUS_COLOR[l.status] || BORDER}`, borderRadius: 10, padding: "10px 14px", display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
+                  {/* Name / Company */}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.name || "—"}</div>
+                    <div style={{ fontSize: 10, color: MUTED, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.company || "—"}</div>
+                  </div>
+                  {/* Service */}
+                  <div style={{ fontSize: 10, color: MUTED2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.service || "—"}</div>
+                  {/* Status */}
+                  <div><Bdg text={l.status} color={STATUS_COLOR[l.status]} solid /></div>
+                  {/* Specialist */}
+                  <div style={{ fontSize: 10, color: MUTED }}>{l.assignedTo && l.assignedTo !== "Unassigned" ? l.assignedTo : <span style={{ color: "#EF4444" }}>Unassigned</span>}</div>
+                  {/* Date */}
+                  <div style={{ fontSize: 10, color: isToday ? G : MUTED, fontWeight: isToday ? 700 : 400 }}>{dateLabel}</div>
+                  {/* Edit */}
+                  <button onClick={() => onEdit(l)}
+                    style={{ background: G_DIM, color: G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                    Edit
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Show more / less */}
+          {sorted.length > PAGE && (
+            <div style={{ textAlign: "center", marginTop: 12 }}>
+              <button onClick={() => setShowAll(p => !p)}
+                style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 20px", fontSize: 11, cursor: "pointer" }}>
+                {showAll ? `Show fewer` : `Show all ${sorted.length} leads ↓`}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------
 // EXTRACTED SUBCOMPONENTS FOR MISSION CONTROL WORKSPACE
 // ----------------------------------------------------
 
@@ -999,6 +1142,7 @@ export default function App() {
 
   const TABS = [
     { key: "mission", label: "Mission Control" },
+    { key: "recent", label: "Recent Leads" },
     { key: "pipeline", label: "Pipeline" },
     { key: "clients", label: "Client Delivery" },
     { key: "team", label: "Team" },
@@ -1113,6 +1257,7 @@ export default function App() {
           </div>
         )}
         
+        {tab === "recent" && <RecentLeadsPanel leads={activeLeads} onEdit={setModal} />}
         {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onQuickContact={quickContact} classifying={classifying} />}
         {tab === "clients" && <ClientDelivery clients={clientsValue} onEdit={setModal} />}
         {tab === "team" && <TeamTab leads={activeLeads} onSave={setModal} onBulkSave={bulkSaveLeads} />}
