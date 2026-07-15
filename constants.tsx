@@ -40,8 +40,8 @@ export const SESSION_IDLE_MS = 4 * 60 * 60 * 1000;
 // (assignedTo, SPECIALIST_COLOR, auto-assignment) so existing lead
 // assignments never silently move — only what the user sees is renamed.
 export const SPECIALIST_DISPLAY: Record<string, string> = {
-  "Intern A": "Outreach",
-  "Intern B": "Client Relationships"
+  "Intern A": "Client Relationships",
+  "Intern B": "Outreach"
 };
 export function specialistLabel(name: string): string {
   return SPECIALIST_DISPLAY[name] || name;

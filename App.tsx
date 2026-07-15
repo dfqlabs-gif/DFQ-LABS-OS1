@@ -1160,7 +1160,7 @@ export default function App() {
 
   // Intern routing with AI Coach Integration
   if (role === "internA" || role === "internB") {
-    const internName = role === "internA" ? "Intern A" : "Intern B";
+    const internName = role === "internA" ? "Intern B" : "Intern A";
     return (
       <InternDashboardWrapper 
         internName={internName} 
@@ -1335,8 +1335,8 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
         <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: "0.1em", marginBottom: 4 }}>DFQ<span style={{color: G}}>LABS</span> <span style={{ color: MUTED, fontSize: 12, letterSpacing: "0.05em" }}>OS</span></div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 28 }}>Who's working today?</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 12 }}>
-          <RoleCard onClick={() => onSelect("internA")} color={SPECIALIST_COLOR["Intern A"]} Icon={UserCheck} label={specialistLabel("Intern A")} sub="Outbound & prospecting" />
-          <RoleCard onClick={() => onSelect("internB")} color={SPECIALIST_COLOR["Intern B"]} Icon={UserCheck} label={specialistLabel("Intern B")} sub="Client relationships" />
+          <RoleCard onClick={() => onSelect("internA")} color={SPECIALIST_COLOR["Intern A"]} Icon={UserCheck} label={ROLE_ACCESS.internA.label} sub="Outbound & prospecting" />
+          <RoleCard onClick={() => onSelect("internB")} color={SPECIALIST_COLOR["Intern B"]} Icon={UserCheck} label={ROLE_ACCESS.internB.label} sub="Client relationships" />
           <RoleCard onClick={() => onSelect("founder")} color={G} Icon={Shield} label="Founder" sub="Full command view" />
         </div>
       </div>
