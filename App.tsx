@@ -30,6 +30,7 @@ import { CEOTab } from "./components/CEOTab";
 import { AIGateway } from "./components/AIGateway";
 import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
+import { AskAI } from "./components/AskAI";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -1158,18 +1159,24 @@ export default function App() {
   if (!role) return <RoleSelect onSelect={setRole} />;
   if (!authed) return <AccessGate roleKey={role} onSuccess={() => { setAuthed(true); writeSession(role); }} onBack={() => setRole(null)} />;
 
-  // Intern routing with AI Coach Integration
-  if (role === "internA" || role === "internB") {
-    const internName = role === "internA" ? "Intern B" : "Intern A";
+  // Saadatu: combined outreach + client relationships dashboard
+  if (role === "saadatu" || role === "internA" || role === "internB") {
+    // Legacy internA/B sessions map through; saadatu sees all intern-assigned leads
+    const internNames = ["Intern A", "Intern B"];
+    const displayName = role === "internA" ? "Intern B" : role === "internB" ? "Intern A" : "Saadatu";
     return (
-      <InternDashboardWrapper 
-        internName={internName} 
-        leads={activeLeads} 
-        onSave={saveLead} 
-        onQuickContact={quickContact} 
-        classifying={classifying} 
-        onLogout={logout} 
-      />
+      <>
+        <InternDashboardWrapper
+          internNames={internNames}
+          displayName={displayName}
+          leads={activeLeads}
+          onSave={saveLead}
+          onQuickContact={quickContact}
+          classifying={classifying}
+          onLogout={logout}
+        />
+        <AskAI leads={activeLeads} />
+      </>
     );
   }
 
@@ -1278,6 +1285,7 @@ export default function App() {
           onConfirm={handleMergeConfirm}
         />
       )}
+      <AskAI leads={activeLeads} />
     </div>
   );
 }
@@ -1334,9 +1342,8 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
         </div>
         <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: "0.1em", marginBottom: 4 }}>DFQ<span style={{color: G}}>LABS</span> <span style={{ color: MUTED, fontSize: 12, letterSpacing: "0.05em" }}>OS</span></div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 28 }}>Who's working today?</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 12 }}>
-          <RoleCard onClick={() => onSelect("internA")} color={SPECIALIST_COLOR["Intern A"]} Icon={UserCheck} label={ROLE_ACCESS.internA.label} sub="Outbound & prospecting" />
-          <RoleCard onClick={() => onSelect("internB")} color={SPECIALIST_COLOR["Intern B"]} Icon={UserCheck} label={ROLE_ACCESS.internB.label} sub="Client relationships" />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, maxWidth: 340, margin: "0 auto" }}>
+          <RoleCard onClick={() => onSelect("saadatu")} color={SPECIALIST_COLOR["Intern A"]} Icon={UserCheck} label="Saadatu" sub="Outreach & client relationships" />
           <RoleCard onClick={() => onSelect("founder")} color={G} Icon={Shield} label="Founder" sub="Full command view" />
         </div>
       </div>
@@ -1378,7 +1385,7 @@ function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess
 // ENHANCED INTERN DASHBOARD (WITH AI COACH ACCESS)
 // ----------------------------------------------------
 
-function InternDashboard({ internName, leads, onSave, onQuickContact, classifying, onLogout }: any) {
+function InternDashboard({ internNames, displayName, leads, onSave, onQuickContact, classifying, onLogout }: any) {
   const [internTab, setInternTab] = useState<"queue" | "coach">("queue");
   const [range, setRange] = useState("today");
   const [search, setSearch] = useState("");
@@ -1388,7 +1395,9 @@ function InternDashboard({ internName, leads, onSave, onQuickContact, classifyin
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modal, setModal] = useState<Lead | null>(null);
 
-  const mine = useMemo(() => leads.filter((l: Lead) => l.assignedTo === internName && !["Closed", "Lost"].includes(l.status)), [leads, internName]);
+  // Show all leads assigned to any of the intern names (Saadatu covers both Intern A and Intern B)
+  const names: string[] = Array.isArray(internNames) ? internNames : [internNames];
+  const mine = useMemo(() => leads.filter((l: Lead) => names.includes(l.assignedTo || "") && !["Closed", "Lost"].includes(l.status)), [leads, internNames]);
   const tomorrowStr = addDays(1);
   const weekEnd = addDays(7);
   const RANGES = [
@@ -1439,11 +1448,11 @@ function InternDashboard({ internName, leads, onSave, onQuickContact, classifyin
       <header style={{ borderBottom: `1px solid ${BORDER}`, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.1em" }}>DFQ<span style={{color: G}}>LABS</span></span>
-          <Bdg text={specialistLabel(internName)} color={SPECIALIST_COLOR[internName]} solid icon={UserCheck} />
+          <Bdg text={displayName} color={SPECIALIST_COLOR["Intern A"]} solid icon={UserCheck} />
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <button onClick={() => setModal({
-            id: Date.now().toString(), name: "", company: "", phone: "", source: "WhatsApp", clientType: "Real Estate Developer", service: "Growth — ₦500K/mo", status: "New", priority: "Medium", assignedTo: internName, notes: "", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: today(), lastContacted: "", lastMeaningfulTouchpoint: today(), awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: getWeekKey(new Date()), completedFollowUps: [], deliveryStage: "Discovery", deliveryNote: "", betaCandidate: false, autoFollowUpDate: today(), autoFollowUpReason: "New lead."
+            id: Date.now().toString(), name: "", company: "", phone: "", source: "WhatsApp", clientType: "Real Estate Developer", service: "Growth — ₦500K/mo", status: "New", priority: "Medium", assignedTo: names[0] || "Intern A", notes: "", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: today(), lastContacted: "", lastMeaningfulTouchpoint: today(), awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: getWeekKey(new Date()), completedFollowUps: [], deliveryStage: "Discovery", deliveryNote: "", betaCandidate: false, autoFollowUpDate: today(), autoFollowUpReason: "New lead."
           })} style={{ background: G, color: "#000", border: "none", borderRadius: 6, padding: "7px 14px", fontWeight: 800, fontSize: 11, cursor: "pointer", boxShadow: `0 0 14px ${G}30`, display: "flex", alignItems: "center", gap: 5 }}><Plus size={13} />ADD LEAD</button>
           <button onClick={onLogout} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "6px 12px", fontSize: 11, cursor: "pointer" }}>Switch Role</button>
         </div>

@@ -29,6 +29,7 @@ export const MEETING_WINDOW_HOURS = 24;
 export const CEO_PASSWORD = "War_Machine26";
 export const INTERN_A_PASSWORD = "InternA_2607";
 export const INTERN_B_PASSWORD = "InternB_2607";
+export const SAADATU_PASSWORD = "Saadatu_2607";
 export const SESSION_KEY = "dfqlabs-session-v1";
 // Idle timeout before auto-logout. Raised from 15 minutes to reduce forced
 // logout friction during normal work sessions, while still locking the OS
@@ -641,6 +642,8 @@ export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
 
 export const ROLE_ACCESS = {
   founder: { password: CEO_PASSWORD, label: "Founder", color: G, Icon: Shield },
+  saadatu: { password: SAADATU_PASSWORD, label: "Saadatu", color: SPECIALIST_COLOR["Intern A"], Icon: UserCheck },
+  // Legacy keys kept so any persisted sessions still resolve; not shown on login screen
   internA: { password: INTERN_A_PASSWORD, label: "Outreach", color: SPECIALIST_COLOR["Intern A"], Icon: UserCheck },
   internB: { password: INTERN_B_PASSWORD, label: "Client Relationships", color: SPECIALIST_COLOR["Intern B"], Icon: UserCheck }
 };
