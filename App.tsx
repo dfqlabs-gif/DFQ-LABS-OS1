@@ -787,8 +787,16 @@ export default function App() {
 
           const refreshed = (loadedLeads as any[]).map((l: any) => {
             let assignedTo = l.assignedTo || "Unassigned";
-            if (assignedTo === "Specialist A") assignedTo = "Intern A";
-            if (assignedTo === "Specialist B") assignedTo = "Intern B";
+            // Normalise legacy assignedTo values to current staff names
+            const legacyMap: Record<string, string> = {
+              "Specialist A": "Sa'adatu Mohammed",
+              "Specialist B": "Abigail Dixon",
+              "Intern A": "Sa'adatu Mohammed",
+              "Intern B": "Abigail Dixon",
+              "Outreach": "Abigail Dixon",
+              "Client Relationships": "Sa'adatu Mohammed",
+            };
+            if (legacyMap[assignedTo]) assignedTo = legacyMap[assignedTo];
 
             let aiBucket = l.aiBucket;
             if (aiBucket && !BUCKETS.includes(aiBucket)) aiBucket = undefined;
@@ -1159,16 +1167,19 @@ export default function App() {
   if (!role) return <RoleSelect onSelect={setRole} />;
   if (!authed) return <AccessGate roleKey={role} onSuccess={() => { setAuthed(true); writeSession(role); }} onBack={() => setRole(null)} />;
 
-  // Saadatu: combined outreach + client relationships dashboard
-  if (role === "saadatu" || role === "internA" || role === "internB") {
-    // Legacy internA/B sessions map through; saadatu sees all intern-assigned leads
-    const internNames = ["Intern A", "Intern B"];
-    const displayName = role === "internA" ? "Intern B" : role === "internB" ? "Intern A" : "Saadatu";
+  // Staff dashboards — each person sees their own leads only
+  if (role === "saadatu" || role === "abigail" || role === "internA" || role === "internB") {
+    // Legacy internA/B sessions map to the correct person
+    const staffName =
+      role === "saadatu" ? "Sa'adatu Mohammed" :
+      role === "abigail" ? "Abigail Dixon" :
+      role === "internA" ? "Sa'adatu Mohammed" :   // internA was Client Relationships → Sa'adatu
+      "Abigail Dixon";                              // internB was Outreach → Abigail
     return (
       <>
         <InternDashboardWrapper
-          internNames={internNames}
-          displayName={displayName}
+          internNames={[staffName]}
+          displayName={staffName}
           leads={activeLeads}
           onSave={saveLead}
           onQuickContact={quickContact}
@@ -1342,8 +1353,9 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
         </div>
         <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: "0.1em", marginBottom: 4 }}>DFQ<span style={{color: G}}>LABS</span> <span style={{ color: MUTED, fontSize: 12, letterSpacing: "0.05em" }}>OS</span></div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 28 }}>Who's working today?</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, maxWidth: 340, margin: "0 auto" }}>
-          <RoleCard onClick={() => onSelect("saadatu")} color={SPECIALIST_COLOR["Intern A"]} Icon={UserCheck} label="Saadatu" sub="Outreach & client relationships" />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, maxWidth: 480, margin: "0 auto" }}>
+          <RoleCard onClick={() => onSelect("saadatu")} color={SPECIALIST_COLOR["Sa'adatu Mohammed"]} Icon={UserCheck} label="Sa'adatu" sub="Outreach & client relationships" />
+          <RoleCard onClick={() => onSelect("abigail")} color={SPECIALIST_COLOR["Abigail Dixon"]} Icon={UserCheck} label="Abigail" sub="Outreach & client relationships" />
           <RoleCard onClick={() => onSelect("founder")} color={G} Icon={Shield} label="Founder" sub="Full command view" />
         </div>
       </div>
@@ -1448,7 +1460,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
       <header style={{ borderBottom: `1px solid ${BORDER}`, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.1em" }}>DFQ<span style={{color: G}}>LABS</span></span>
-          <Bdg text={displayName} color={SPECIALIST_COLOR["Intern A"]} solid icon={UserCheck} />
+          <Bdg text={displayName} color={SPECIALIST_COLOR[displayName] || "#F59E0B"} solid icon={UserCheck} />
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <button onClick={() => setModal({

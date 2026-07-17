@@ -61,8 +61,8 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
     });
 
     const sorted = [...unassigned].sort((a, b) => scoreLead(b) - scoreLead(a));
-    let countA = leads.filter(l => l.assignedTo === "Intern A" && !["Closed", "Lost"].includes(l.status)).length;
-    let countB = leads.filter(l => l.assignedTo === "Intern B" && !["Closed", "Lost"].includes(l.status)).length;
+    let countA = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
+    let countB = leads.filter(l => l.assignedTo === "Abigail Dixon" && !["Closed", "Lost"].includes(l.status)).length;
 
     const updates = sorted.map(l => {
       const norm = normalizeCompany(l.company);
@@ -70,8 +70,8 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
       if (norm && claimedByCompany[norm]) {
         assignTo = claimedByCompany[norm];
       } else {
-        assignTo = countA <= countB ? "Intern A" : "Intern B";
-        if (assignTo === "Intern A") countA++; 
+        assignTo = countA <= countB ? "Sa'adatu Mohammed" : "Abigail Dixon";
+        if (assignTo === "Sa'adatu Mohammed") countA++;
         else countB++;
         if (norm) claimedByCompany[norm] = assignTo;
       }
@@ -79,7 +79,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
     });
 
     await onBulkSave(updates);
-    setResult(`Assigned ${updates.length} lead(s) — ${updates.filter(u => u.assignedTo === "Intern A").length} to Intern A, ${updates.filter(u => u.assignedTo === "Intern B").length} to Intern B.`);
+    setResult(`Assigned ${updates.length} lead(s) — ${updates.filter(u => u.assignedTo === "Sa'adatu Mohammed").length} to Sa'adatu, ${updates.filter(u => u.assignedTo === "Abigail Dixon").length} to Abigail.`);
     setRunning(false);
   };
 
