@@ -117,11 +117,28 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
   const monthKey = today().slice(0, 7);
   const closedThisMonth = useMemo(() => closed.filter(l => (l.lastContacted || l.dateAdded || "").startsWith(monthKey)).reduce((s, l) => s + (SERVICE_VALUE[l.service] || 0), 0), [closed, monthKey]);
 
-  // Meetings this week
+  // Week navigation (0 = current week, -1 = last week, etc.)
+  const [rollupWeekOffset, setRollupWeekOffset] = useState(0);
+
+  // Meetings this week (always current week)
   const weekStart = useMemo(() => {
     const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
     return d.toISOString().split("T")[0];
   }, []);
+
+  // Selected week for the rollup panel (can navigate backwards)
+  const { rollupWeekStart, rollupWeekEnd } = useMemo(() => {
+    const d = new Date();
+    // Go to the Monday of the current week, then shift by rollupWeekOffset weeks
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + rollupWeekOffset * 7);
+    const start = d.toISOString().split("T")[0];
+    const end = new Date(d);
+    end.setDate(d.getDate() + 6);
+    const endStr = end.toISOString().split("T")[0];
+    // Cap end at today
+    return { rollupWeekStart: start, rollupWeekEnd: endStr < today() ? endStr : today() };
+  }, [rollupWeekOffset]);
+
   const meetingsThisWeek = useMemo(() => leads.filter(l => l.meetingScheduledAt && l.meetingScheduledAt >= weekStart), [leads, weekStart]);
   const meetingsSoon = useMemo(() => active.filter(l => l.meetingScheduledAt && hoursUntil(l.meetingScheduledAt) >= -1 && hoursUntil(l.meetingScheduledAt) <= MEETING_WINDOW_HOURS), [active]);
 
@@ -323,9 +340,8 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     return report;
   }, [activitiesForSelectedDate, specialists]);
 
-  // Weekly rollup
-  const weekEnd = today();
-  const inWeek = (d: string) => d && d >= weekStart && d <= weekEnd;
+  // Weekly rollup (uses selected week, not just current week)
+  const inWeek = (d: string) => d && d >= rollupWeekStart && d <= rollupWeekEnd;
   const rollup = specialists.map(s => {
     const mine = leads.filter(l => l.assignedTo === s);
     return {
@@ -990,7 +1006,14 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
 
           {/* Weekly Rollup */}
           <div style={CARD}>
-            {SECTION_LABEL(BarChart3, `This Week — ${weekStart} to ${weekEnd} — By Intern`)}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+              {SECTION_LABEL(BarChart3, `Weekly Performance — ${rollupWeekStart} to ${rollupWeekEnd}`)}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button onClick={() => setRollupWeekOffset(o => o - 1)} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, color: TEXT, borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>← Prev Week</button>
+                {rollupWeekOffset < 0 && <button onClick={() => setRollupWeekOffset(0)} style={{ background: G_DIM, border: `1px solid ${G_BORDER}`, color: G, borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>This Week</button>}
+                {rollupWeekOffset < 0 && <button onClick={() => setRollupWeekOffset(o => Math.min(0, o + 1))} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, color: TEXT, borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>Next Week →</button>}
+              </div>
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
               {rollup.map(r => (
                 <div key={r.name} style={{ background: SURFACE2, border: `1px solid ${SPECIALIST_COLOR[r.name]}30`, borderTop: `2px solid ${SPECIALIST_COLOR[r.name]}`, borderRadius: 8, padding: "12px 14px" }}>

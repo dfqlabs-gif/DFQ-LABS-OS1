@@ -425,10 +425,14 @@ export function getInternActivities(leads: Lead[], selectedDate: string) {
           else if (log.type === "status_change") typeLabel = "Status Updated";
           else if (log.type === "note") typeLabel = "Added Note";
 
+          // Normalise legacy actor names (Intern A/B, role keys) to current staff names
+          const rawActor = log.by || actor;
+          const resolvedActor = LEGACY_ASSIGNEE_MAP[rawActor] || rawActor;
+
           activities.push({
             ts: log.ts,
             type: log.type,
-            actor: log.by || actor,
+            actor: resolvedActor,
             leadName: lead.name || "Unnamed",
             company: lead.company || "Unknown Company",
             title: typeLabel,
