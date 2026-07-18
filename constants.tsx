@@ -45,6 +45,9 @@ export const LEGACY_ASSIGNEE_MAP: Record<string, string> = {
   "Specialist B": "Abigail Dickson",
   "Outreach": "Abigail Dickson",
   "Client Relationships": "Sa'adatu Mohammed",
+  // Legacy name corrections
+  "Abigail Dixon": "Abigail Dickson",
+  "Abigail Dick": "Abigail Dickson",
 };
 export function specialistLabel(name: string): string {
   return LEGACY_ASSIGNEE_MAP[name] || name;
@@ -172,6 +175,8 @@ export const SPECIALIST_COLOR: Record<string, string> = {
   "Sa'adatu Mohammed": "#F59E0B",
   "Abigail Dickson": "#8B5CF6",
   // Legacy keys — kept so any old cached data still resolves a colour
+  "Abigail Dixon": "#8B5CF6",
+  "Abigail Dick": "#8B5CF6",
   "Intern A": "#F59E0B",
   "Intern B": "#8B5CF6"
 };
@@ -652,7 +657,7 @@ export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
 export const ROLE_ACCESS = {
   founder:  { password: CEO_PASSWORD,     label: "Founder",           color: G,       Icon: Shield    },
   saadatu:  { password: SAADATU_PASSWORD, label: "Sa'adatu Mohammed", color: "#F59E0B", Icon: UserCheck },
-  abigail:  { password: ABIGAIL_PASSWORD, label: "Abigail Dickson",     color: "#8B5CF6", Icon: UserCheck },
+  abigail:  { password: ABIGAIL_PASSWORD, label: "Abigail Dickson",   color: "#8B5CF6", Icon: UserCheck },
   // Legacy keys — sessions persisted before the rename still resolve correctly
   internA:  { password: INTERN_A_PASSWORD, label: "Outreach",           color: "#F59E0B", Icon: UserCheck },
   internB:  { password: INTERN_B_PASSWORD, label: "Client Relationships", color: "#8B5CF6", Icon: UserCheck },

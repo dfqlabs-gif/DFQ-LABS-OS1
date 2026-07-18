@@ -26,17 +26,20 @@ var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_dotenv = __toESM(require("dotenv"), 1);
 var import_vite = require("vite");
+var import_genai = require("@google/genai");
+var import_pg = require("pg");
 import_dotenv.default.config();
 var app = (0, import_express.default)();
+var db = new import_pg.Pool({ connectionString: process.env.DATABASE_URL });
+db.query(`
+  CREATE TABLE IF NOT EXISTS leads (
+    id TEXT PRIMARY KEY,
+    data JSONB NOT NULL,
+    updated_at TIMESTAMP DEFAULT NOW()
+  )
+`).catch((err) => console.error("DB table init error:", err));
 var PORT = process.env.PORT ? parseInt(process.env.PORT) : 5e3;
-var OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-var DEFAULT_MODEL = "nvidia/nemotron-nano-9b-v2:free";
-var AVAILABLE_MODELS = [
-  "nvidia/nemotron-nano-9b-v2:free",
-  "openai/gpt-oss-20b:free",
-  "nvidia/nemotron-3-nano-30b-a3b:free",
-  "google/gemma-4-26b-a4b-it:free"
-];
+var GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 var aiHealth = {
   lastSuccessAt: null,
   lastModelUsed: null,
@@ -56,69 +59,49 @@ function recordFailure(model, message) {
   aiHealth.recentErrors.unshift({ ts: (/* @__PURE__ */ new Date()).toISOString(), message: String(message).slice(0, 200), model });
   aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
 }
-app.use(import_express.default.json());
-async function callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temperature = 0.7) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured on the server.");
-  const messages = [];
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  messages.push({ role: "user", content: userPrompt });
-  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://dfqlabs.vercel.app",
-      "X-Title": "DFQ Labs OS"
-    },
-    // Some free-tier models are reasoning models that spend the whole token
-    // budget "thinking" and return empty content unless reasoning is
-    // excluded from the completion and given a low effort level.
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens || 1200,
-      temperature,
-      reasoning: { exclude: true, effort: "low" }
-    })
+app.use(import_express.default.json({ limit: "25mb" }));
+async function callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, temperature) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured on the server.");
+  const ai = new import_genai.GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model,
+    contents: userPrompt,
+    config: {
+      ...systemPrompt ? { systemInstruction: systemPrompt } : {},
+      maxOutputTokens: maxTokens,
+      temperature
+    }
   });
-  if (!response.ok) {
-    const errBody = await response.json().catch(() => ({}));
-    throw new Error(errBody?.error?.message || `HTTP ${response.status}`);
-  }
-  const data = await response.json();
-  return data?.choices?.[0]?.message?.content ?? "";
+  const text = response.text ?? "";
+  if (!text.trim()) throw new Error(`Model ${model} returned empty content.`);
+  return text;
 }
-async function callWithFallback(systemPrompt, userPrompt, preferredModel, maxTokens, temperature = 0.7) {
-  const chain = [preferredModel, ...AVAILABLE_MODELS.filter((m) => m !== preferredModel)];
-  let lastError = null;
-  for (const model of chain) {
-    const start = Date.now();
+async function callGemini(systemPrompt, userPrompt, model, maxTokens = 1200, temperature = 0.7, retries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const text = await callOpenRouter(systemPrompt, userPrompt, model, maxTokens, temperature);
-      if (text && text.trim()) {
-        recordSuccess(model, Date.now() - start);
-        return { text, model, fellBack: model !== preferredModel };
-      }
-      lastError = new Error(`Model ${model} returned empty content.`);
-      recordFailure(model, lastError.message);
-    } catch (error) {
-      lastError = error;
-      recordFailure(model, error?.message || String(error));
+      return await callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, temperature);
+    } catch (err) {
+      lastError = err;
+      const msg = String(err?.message ?? "");
+      const isRetryable = msg.includes("429") || msg.includes("503") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("UNAVAILABLE");
+      if (!isRetryable || attempt === retries) break;
+      await new Promise((r) => setTimeout(r, 1e3 * (attempt + 1)));
     }
   }
-  throw lastError || new Error("All AI models failed.");
+  throw lastError;
 }
 function friendlyError(error) {
   const raw = String(error?.message ?? "");
-  if (raw.includes("429") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
-    return "AI quota exceeded. Try switching to a different model in AI Gateway settings.";
+  if (raw.includes("429") || raw.includes("RESOURCE_EXHAUSTED") || raw.toLowerCase().includes("quota") || raw.toLowerCase().includes("rate limit")) {
+    return "Gemini API quota exceeded. Wait a moment and try again, or check your quota at console.cloud.google.com.";
   }
-  if (raw.includes("401") || raw.includes("403")) {
-    return "Invalid OPENROUTER_API_KEY. Check your environment variables.";
+  if (raw.includes("401") || raw.includes("403") || raw.toLowerCase().includes("api key") || raw.toLowerCase().includes("invalid")) {
+    return "Invalid GEMINI_API_KEY. Check your environment variables.";
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    return "OPENROUTER_API_KEY is not configured. Add it to your environment variables.";
+  if (!process.env.GEMINI_API_KEY) {
+    return "GEMINI_API_KEY is not configured. Add it to your environment variables.";
   }
   return raw.replace(/\{[\s\S]*?\}/g, "").trim().slice(0, 200) || "AI service temporarily unavailable.";
 }
@@ -129,16 +112,19 @@ app.post("/api/ai", async (req, res) => {
     res.status(400).json({ error: "userPrompt is required" });
     return;
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
-  const activeModel = model || DEFAULT_MODEL;
+  const activeModel = model || GEMINI_MODEL;
+  const start = Date.now();
   try {
-    const { text, model: usedModel, fellBack } = await callWithFallback(systemPrompt, userPrompt, activeModel, maxTokens);
-    res.json({ text, model: usedModel, fellBack });
+    const text = await callGemini(systemPrompt, userPrompt, activeModel, maxTokens || 1200);
+    recordSuccess(activeModel, Date.now() - start);
+    res.json({ text, model: activeModel, fellBack: false });
   } catch (error) {
-    console.error("OpenRouter /api/ai error:", error);
+    console.error("Gemini /api/ai error:", error);
+    recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
   }
 });
@@ -146,9 +132,9 @@ app.get("/api/ai-status", (req, res) => {
   res.setHeader("Content-Type", "application/json");
   const avgLatencyMs = aiHealth.successCount > 0 ? Math.round(aiHealth.totalLatencyMs / aiHealth.successCount) : null;
   res.json({
-    configured: !!process.env.OPENROUTER_API_KEY,
-    defaultModel: DEFAULT_MODEL,
-    fallbackModels: AVAILABLE_MODELS,
+    configured: !!process.env.GEMINI_API_KEY,
+    provider: "gemini",
+    defaultModel: GEMINI_MODEL,
     lastSuccessAt: aiHealth.lastSuccessAt,
     lastModelUsed: aiHealth.lastModelUsed,
     successCount: aiHealth.successCount,
@@ -159,15 +145,15 @@ app.get("/api/ai-status", (req, res) => {
 });
 app.post("/api/ai-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.json({ ok: false, error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.json({ ok: false, error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
   const { model } = req.body || {};
-  const testModel = model || DEFAULT_MODEL;
+  const testModel = model || GEMINI_MODEL;
   const start = Date.now();
   try {
-    const text = await callOpenRouter(void 0, "Reply with exactly the word: CONNECTED", testModel, 10, 0);
+    const text = await callGemini(void 0, "Reply with exactly the word: CONNECTED", testModel, 10, 0, 1);
     recordSuccess(testModel, Date.now() - start);
     res.json({ ok: true, model: testModel, latencyMs: Date.now() - start, response: text.trim() });
   } catch (error) {
@@ -185,16 +171,19 @@ app.post("/api/call-gemini", async (req, res) => {
     res.status(400).json({ error: "prompt is required" });
     return;
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
-  const activeModel = model || DEFAULT_MODEL;
+  const activeModel = model || GEMINI_MODEL;
+  const start = Date.now();
   try {
-    const text = await callOpenRouter(systemPrompt, userPrompt, activeModel, maxTokens);
+    const text = await callGemini(systemPrompt, userPrompt, activeModel, maxTokens || 1200);
+    recordSuccess(activeModel, Date.now() - start);
     res.json({ text, model: activeModel });
   } catch (error) {
-    console.error("OpenRouter /api/call-gemini error:", error);
+    console.error("Gemini /api/call-gemini error:", error);
+    recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
   }
 });
@@ -205,8 +194,8 @@ app.post("/api/generate-dm", async (req, res) => {
     res.status(400).json({ error: "Prospect name and company are required." });
     return;
   }
-  if (!process.env.OPENROUTER_API_KEY) {
-    res.status(500).json({ error: "OPENROUTER_API_KEY is not configured on the server." });
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
   const stageMap = {
@@ -219,7 +208,21 @@ app.post("/api/generate-dm", async (req, res) => {
     "Client Closed": { nextStage: "Referrals / Account Growth", objective: "Express appreciation and request a warm referral." }
   };
   const { nextStage, objective } = stageMap[stage] || { nextStage: "Replied / Interested", objective: "Build rapport and offer value." };
-  const systemPrompt = `You are an elite cold outreach copywriter. Your copy sounds like an authentic professional human, never robotic or generic. NEVER use clich\xE9s, AI buzzwords, or fake excitement. Keep DMs to 2-3 sentences max. Focus on one natural next step.`;
+  const systemPrompt = `You are an elite outreach strategist writing on behalf of DFQ Labs \u2014 a boutique sales consultancy for Abuja real estate brands.
+
+TONE: You are a respectful, experienced consultant \u2014 not a hungry salesperson. The prospect is a busy professional. Their time is more valuable than yours. Write from that position of confidence and courtesy.
+
+STRICT RULES:
+1. NEVER open with: "Hope you're doing well", "I came across your profile", "Great page!", or any hollow warm-up.
+2. ZERO AI buzzwords: no "synergy", "leverage" (as a verb), "revolutionize", "supercharge", "unleash", "delve", "holistic", "elevate", "disrupt".
+3. ZERO exclamation marks. ZERO emojis. Write the way a senior consultant texts \u2014 dry, precise, on-point.
+4. ONE ask per message. Low-friction. Never ask for a long meeting before trust is established.
+5. Reference something specific to this prospect's niche, company, or prior conversation \u2014 never generic copy.
+6. LENGTH: WhatsApp/Instagram/Twitter: 2-3 short sentences max. Email: 80-120 words, sharp subject line.
+7. TIMING AWARENESS: If prior conversation history is provided and shows a gap (days or weeks), pick up that thread naturally. Never pretend it is a first contact when it isn't.
+8. RESPECT THE SILENCE: If they haven't replied in a while, re-engage with value or a new angle \u2014 never guilt-trip.
+
+OUTPUT: Write ONLY the final message. No preamble, no labels, no explanations.`;
   const userPrompt = `Write a hyper-personalized outreach message for:
 - Name: ${name}, Company: ${company}, Role: ${role || "decision-maker"}
 - Niche: ${niche || "their sector"}, Channel: ${channel}
@@ -228,13 +231,69 @@ app.post("/api/generate-dm", async (req, res) => {
 ${lastConversation ? `- Prior conversation: "${lastConversation}"` : ""}
 ${notes ? `- Notes: "${notes}"` : ""}
 Output ONLY the final message text. No meta-commentary.`;
-  const activeModel = model || DEFAULT_MODEL;
+  const activeModel = model || GEMINI_MODEL;
+  const start = Date.now();
   try {
-    const { text: draft } = await callWithFallback(systemPrompt, userPrompt, activeModel, 900, 0.8);
+    const draft = await callGemini(systemPrompt, userPrompt, activeModel, 900, 0.8);
+    recordSuccess(activeModel, Date.now() - start);
     res.json({ draft: draft || "Failed to generate DM." });
   } catch (error) {
-    console.error("OpenRouter /api/generate-dm error:", error);
+    console.error("Gemini /api/generate-dm error:", error);
+    recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
+  }
+});
+app.get("/api/leads", async (_req, res) => {
+  try {
+    const result = await db.query("SELECT data FROM leads ORDER BY updated_at ASC");
+    res.json({ leads: result.rows.map((r) => r.data) });
+  } catch (err) {
+    console.error("GET /api/leads:", err);
+    res.status(500).json({ error: "Failed to load leads." });
+  }
+});
+app.post("/api/leads", async (req, res) => {
+  const body = req.body || {};
+  if (Array.isArray(body.leads)) {
+    const leads = body.leads.filter((l) => l?.id);
+    if (leads.length === 0) return res.json({ ok: true, count: 0 });
+    try {
+      const values = leads.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
+      const params = leads.flatMap((l) => [l.id, JSON.stringify(l)]);
+      await db.query(
+        `INSERT INTO leads (id, data, updated_at) VALUES ${values}
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        params
+      );
+      return res.json({ ok: true, count: leads.length });
+    } catch (err) {
+      console.error("POST /api/leads bulk:", err);
+      return res.status(500).json({ error: "Failed to bulk-import leads." });
+    }
+  }
+  const lead = body.lead;
+  if (!lead?.id) return res.status(400).json({ error: "lead.id is required." });
+  try {
+    await db.query(
+      `INSERT INTO leads (id, data, updated_at) VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = $2::jsonb, updated_at = NOW()`,
+      [lead.id, JSON.stringify(lead)]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /api/leads single:", err);
+    res.status(500).json({ error: "Failed to save lead." });
+  }
+});
+app.delete("/api/leads", async (req, res) => {
+  const id = req.body?.id;
+  if (!id) return res.status(400).json({ error: "id is required." });
+  try {
+    await db.query("DELETE FROM leads WHERE id = $1", [id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/leads:", err);
+    res.status(500).json({ error: "Failed to delete lead." });
   }
 });
 async function startServer() {
@@ -252,7 +311,7 @@ async function startServer() {
     });
   }
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`DFQ Labs OS \u2014 OpenRouter-powered server on port ${PORT}`);
+    console.log(`DFQ Labs OS \u2014 Gemini-powered server on port ${PORT} (model: ${GEMINI_MODEL})`);
   });
 }
 startServer();

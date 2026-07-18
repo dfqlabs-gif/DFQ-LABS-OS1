@@ -188,8 +188,12 @@ function RecentLeadsPanel({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) 
 
 function BetaTrackerSummary({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) => void }) {
   const candidates = leads.filter(l => l.betaCandidate);
-  const filled = candidates.filter(l => l.status === "Closed");
-  const inPlay = candidates.filter(l => !["Closed", "Lost"].includes(l.status)).sort((a, b) => scoreLead(b) - scoreLead(a));
+  // A beta candidate fills a spot the moment they're marked — whether closed or still in pipeline.
+  // Closed candidates count first (they're fully committed); open candidates fill remaining spots.
+  const closedCandidates = candidates.filter(l => l.status === "Closed");
+  const openCandidates = candidates.filter(l => !["Closed", "Lost"].includes(l.status)).sort((a, b) => scoreLead(b) - scoreLead(a));
+  const filled = [...closedCandidates, ...openCandidates].slice(0, BETA_SPOTS_TOTAL);
+  const inPlay = openCandidates;
   const spotsLeft = Math.max(0, BETA_SPOTS_TOTAL - filled.length);
   const isFull = filled.length >= BETA_SPOTS_TOTAL;
   const now = new Date();
@@ -795,6 +799,8 @@ export default function App() {
               "Intern B": "Abigail Dickson",
               "Outreach": "Abigail Dickson",
               "Client Relationships": "Sa'adatu Mohammed",
+              "Abigail Dixon": "Abigail Dickson",
+              "Abigail Dick": "Abigail Dickson",
             };
             if (legacyMap[assignedTo]) assignedTo = legacyMap[assignedTo];
 
@@ -1174,7 +1180,7 @@ export default function App() {
       role === "saadatu" ? "Sa'adatu Mohammed" :
       role === "abigail" ? "Abigail Dickson" :
       role === "internA" ? "Sa'adatu Mohammed" :   // internA was Client Relationships → Sa'adatu
-      "Abigail Dickson";                              // internB was Outreach → Abigail
+      "Abigail Dickson";                           // internB was Outreach → Abigail
     return (
       <>
         <InternDashboardWrapper
