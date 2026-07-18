@@ -40,14 +40,14 @@ export const SESSION_IDLE_MS = 4 * 60 * 60 * 1000;
 // Map legacy stored values to current names (for any data imported from old exports)
 export const LEGACY_ASSIGNEE_MAP: Record<string, string> = {
   "Intern A": "Sa'adatu Mohammed",
-  "Intern B": "Abigail Dickson",
+  "Intern B": "Abigail Dick",
   "Specialist A": "Sa'adatu Mohammed",
-  "Specialist B": "Abigail Dickson",
-  "Outreach": "Abigail Dickson",
+  "Specialist B": "Abigail Dick",
+  "Outreach": "Abigail Dick",
   "Client Relationships": "Sa'adatu Mohammed",
   // Legacy name corrections
-  "Abigail Dixon": "Abigail Dickson",
-  "Abigail Dick": "Abigail Dickson",
+  "Abigail Dixon": "Abigail Dick",
+  "Abigail Dick": "Abigail Dick",
 };
 export function specialistLabel(name: string): string {
   return LEGACY_ASSIGNEE_MAP[name] || name;
@@ -167,13 +167,13 @@ export const BUCKET_ICON_CMP: Record<string, any> = {
 };
 
 export const SILENT_DAYS_TO_NURTURE = 7;
-export const SPECIALISTS = ["Unassigned", "Alex", "Sa'adatu Mohammed", "Abigail Dickson"];
+export const SPECIALISTS = ["Unassigned", "Alex", "Sa'adatu Mohammed", "Abigail Dick"];
 
 export const SPECIALIST_COLOR: Record<string, string> = {
   "Unassigned": "#555",
   "Alex": G,
   "Sa'adatu Mohammed": "#F59E0B",
-  "Abigail Dickson": "#8B5CF6",
+  "Abigail Dick": "#8B5CF6",
   // Legacy keys — kept so any old cached data still resolves a colour
   "Abigail Dixon": "#8B5CF6",
   "Abigail Dick": "#8B5CF6",
@@ -650,14 +650,14 @@ export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
     if (existing) return existing.assignedTo;
   }
   let countA = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
-  let countB = leads.filter(l => l.assignedTo === "Abigail Dickson" && !["Closed", "Lost"].includes(l.status)).length;
-  return countA <= countB ? "Sa'adatu Mohammed" : "Abigail Dickson";
+  let countB = leads.filter(l => l.assignedTo === "Abigail Dick" && !["Closed", "Lost"].includes(l.status)).length;
+  return countA <= countB ? "Sa'adatu Mohammed" : "Abigail Dick";
 }
 
 export const ROLE_ACCESS = {
   founder:  { password: CEO_PASSWORD,     label: "Founder",           color: G,       Icon: Shield    },
   saadatu:  { password: SAADATU_PASSWORD, label: "Sa'adatu Mohammed", color: "#F59E0B", Icon: UserCheck },
-  abigail:  { password: ABIGAIL_PASSWORD, label: "Abigail Dickson",   color: "#8B5CF6", Icon: UserCheck },
+  abigail:  { password: ABIGAIL_PASSWORD, label: "Abigail Dick",   color: "#8B5CF6", Icon: UserCheck },
   // Legacy keys — sessions persisted before the rename still resolve correctly
   internA:  { password: INTERN_A_PASSWORD, label: "Outreach",           color: "#F59E0B", Icon: UserCheck },
   internB:  { password: INTERN_B_PASSWORD, label: "Client Relationships", color: "#8B5CF6", Icon: UserCheck },

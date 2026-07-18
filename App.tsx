@@ -794,13 +794,13 @@ export default function App() {
             // Normalise legacy assignedTo values to current staff names
             const legacyMap: Record<string, string> = {
               "Specialist A": "Sa'adatu Mohammed",
-              "Specialist B": "Abigail Dickson",
+              "Specialist B": "Abigail Dick",
               "Intern A": "Sa'adatu Mohammed",
-              "Intern B": "Abigail Dickson",
-              "Outreach": "Abigail Dickson",
+              "Intern B": "Abigail Dick",
+              "Outreach": "Abigail Dick",
               "Client Relationships": "Sa'adatu Mohammed",
-              "Abigail Dixon": "Abigail Dickson",
-              "Abigail Dick": "Abigail Dickson",
+              "Abigail Dixon": "Abigail Dick",
+              "Abigail Dick": "Abigail Dick",
             };
             if (legacyMap[assignedTo]) assignedTo = legacyMap[assignedTo];
 
@@ -1178,9 +1178,9 @@ export default function App() {
     // Legacy internA/B sessions map to the correct person
     const staffName =
       role === "saadatu" ? "Sa'adatu Mohammed" :
-      role === "abigail" ? "Abigail Dickson" :
+      role === "abigail" ? "Abigail Dick" :
       role === "internA" ? "Sa'adatu Mohammed" :   // internA was Client Relationships → Sa'adatu
-      "Abigail Dickson";                           // internB was Outreach → Abigail
+      "Abigail Dick";                           // internB was Outreach → Abigail
     return (
       <>
         <InternDashboardWrapper
@@ -1361,7 +1361,7 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 28 }}>Who's working today?</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, maxWidth: 480, margin: "0 auto" }}>
           <RoleCard onClick={() => onSelect("saadatu")} color={SPECIALIST_COLOR["Sa'adatu Mohammed"]} Icon={UserCheck} label="Sa'adatu" sub="Outreach & client relationships" />
-          <RoleCard onClick={() => onSelect("abigail")} color={SPECIALIST_COLOR["Abigail Dickson"]} Icon={UserCheck} label="Abigail" sub="Outreach & client relationships" />
+          <RoleCard onClick={() => onSelect("abigail")} color={SPECIALIST_COLOR["Abigail Dick"]} Icon={UserCheck} label="Abigail" sub="Outreach & client relationships" />
           <RoleCard onClick={() => onSelect("founder")} color={G} Icon={Shield} label="Founder" sub="Full command view" />
         </div>
       </div>
