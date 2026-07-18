@@ -274,7 +274,17 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
               </div>
             </div>
           ) : (
-            <div onClick={() => set("betaCandidate", !lead.betaCandidate)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", background: lead.betaCandidate ? "rgba(250,204,21,0.08)" : SURFACE2, border: `1px solid ${lead.betaCandidate ? "rgba(250,204,21,0.4)" : BORDER}`, borderRadius: 8, cursor: "pointer" }}>
+            <div
+              onClick={() => {
+                const newVal = !lead.betaCandidate;
+                set("betaCandidate", newVal);
+                // Auto-save immediately so the Mission Control tracker updates
+                // without requiring the user to scroll to and click the Save button.
+                const isExisting = leads.some(l => l.id === lead.id);
+                if (isExisting) onSave({ ...lead, betaCandidate: newVal });
+              }}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", background: lead.betaCandidate ? "rgba(250,204,21,0.08)" : SURFACE2, border: `1px solid ${lead.betaCandidate ? "rgba(250,204,21,0.4)" : BORDER}`, borderRadius: 8, cursor: "pointer" }}
+            >
               <div style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${lead.betaCandidate ? "#FACC15" : MUTED}`, background: lead.betaCandidate ? "#FACC15" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                 {lead.betaCandidate && <CheckCircle2 size={12} color="#000" />}
               </div>
