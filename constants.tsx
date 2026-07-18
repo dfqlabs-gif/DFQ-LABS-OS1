@@ -176,7 +176,6 @@ export const SPECIALIST_COLOR: Record<string, string> = {
   "Abigail Dick": "#8B5CF6",
   // Legacy keys — kept so any old cached data still resolves a colour
   "Abigail Dixon": "#8B5CF6",
-  "Abigail Dick": "#8B5CF6",
   "Intern A": "#F59E0B",
   "Intern B": "#8B5CF6"
 };

@@ -88,22 +88,21 @@ function relativeTime(ts: string): string {
 }
 
 export function formatConversationLog(lead: Lead): string {
-  const events: { ts: string; speaker: string; text: string }[] = [];
-  if (lead.dmText) events.push({ ts: lead.dateAdded || "0", speaker: "ALEX (us)", text: lead.dmText });
-  if (lead.prospectInitialResponse) events.push({ ts: (lead.dateAdded || "0") + "a", speaker: "LEAD", text: lead.prospectInitialResponse });
-  (lead.conversationLog || []).forEach(log => {
-    const speaker = log.type === "reply" ? "LEAD" : (log.by && log.by !== "Lead" ? `${log.by} (us)` : "LEAD");
-    events.push({ ts: log.ts || "0", speaker, text: log.text });
-  });
-  if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) {
-    events.push({ ts: "zzz", speaker: "LEAD", text: lead.prospectLatestResponse });
+  // Only the three key conversation fields — initial DM, initial reply, latest thread.
+  // The full conversationLog is intentionally excluded so the AI focuses on
+  // what was actually said rather than internal CRM status changes.
+  const parts: string[] = [];
+  if (lead.dmText) {
+    parts.push(`[ALEX (us) — Initial DM]: ${lead.dmText}`);
   }
-  events.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
-  if (events.length === 0) return "No conversation yet — this is the first outbound touch to this lead.";
-  return events.map(e => {
-    const timeLabel = relativeTime(e.ts);
-    return `[${e.speaker}${timeLabel ? ` — ${timeLabel}` : ""}]: ${e.text}`;
-  }).join("\n");
+  if (lead.prospectInitialResponse) {
+    parts.push(`[LEAD — Initial Reply]: ${lead.prospectInitialResponse}`);
+  }
+  if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) {
+    parts.push(`[LEAD — Latest Message]: ${lead.prospectLatestResponse}`);
+  }
+  if (parts.length === 0) return "No conversation yet — this is the first outbound touch to this lead.";
+  return parts.join("\n");
 }
 
 export function buildLeadContext(lead: Lead): string {
@@ -116,20 +115,12 @@ export function buildLeadContext(lead: Lead): string {
 Lead: ${lead.name || "Unknown"} — ${lead.company || "Unknown company"}
 Client archetype: ${lead.clientType || "Real Estate Developer"}
 Service under discussion: ${lead.service} (value ${value ? "₦" + value.toLocaleString() : "unknown"}/mo)
-Current stage: ${lead.status} (lead score: ${score}/100, historical win probability at this stage: ${Math.round((STAGE_PROBABILITY[lead.status] || 0) * 100)}%)
-Stage objective (pursue this ONE goal only): ${stageObjective(lead.status)}
 Assigned specialist: ${lead.assignedTo || "Unassigned"}
-Priority: ${lead.priority}
-Beta candidate: ${lead.betaCandidate ? "yes" : "no"}
 Days since we last contacted them: ${daysSinceContact ?? "n/a"}
 Hours currently awaiting their reply: ${hoursAwaitingReply !== null && !Number.isNaN(hoursAwaitingReply) ? Math.round(hoursAwaitingReply) : "n/a"}
-Meeting scheduled: ${lead.meetingScheduledAt || "none"}
-Next action on file: ${lead.nextAction || "none"} (due ${lead.nextActionDate || "n/a"})
-Previous AI classification: ${lead.aiBucket || "none"} — ${lead.aiReason || "n/a"}
-Likely objections/pain points detected: ${extractSignals(lead)}
 Internal notes: ${lead.notes || "none"}
 
-=== CONVERSATION HISTORY (chronological, speaker-labeled) ===
+=== CONVERSATION THREAD ===
 ${formatConversationLog(lead)}
 === END CONTEXT ===`;
 }
