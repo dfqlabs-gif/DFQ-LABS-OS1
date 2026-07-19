@@ -2,8 +2,8 @@ import { useState, useEffect, useMemo } from "react";
 import { Brain, Target, Copy as CopyIcon, CheckCircle2 } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
-import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, TEXT } from "../constants";
-import { runAI, runFollowUpReply, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildPipelinePrompt } from "../aiEngine";
+import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, MUTED2, TEXT } from "../constants";
+import { runAI, runFollowUpReply, runProspectSummary, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildPipelinePrompt } from "../aiEngine";
 
 interface AICoachProps {
   leads: Lead[];
@@ -19,6 +19,10 @@ export function AICoach({ leads }: AICoachProps) {
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // Two-step flow state for "Value DM" mode
+  const [summaryStep, setSummaryStep] = useState<'idle' | 'summarizing' | 'awaiting-confirm' | 'generating'>('idle');
+  const [prospectSummary, setProspectSummary] = useState("");
+
   useEffect(() => {
     if (sortedActive.length > 0 && (!selectedId || !sortedActive.some(l => l.id === selectedId))) {
       setSelectedId(sortedActive[0].id);
@@ -26,6 +30,13 @@ export function AICoach({ leads }: AICoachProps) {
       setSelectedId(null);
     }
   }, [sortedActive, selectedId]);
+
+  // Reset two-step state when lead or mode changes
+  useEffect(() => {
+    setSummaryStep('idle');
+    setProspectSummary('');
+    setOutput('');
+  }, [selectedId, mode]);
 
   const selected = leads.find(l => l.id === selectedId);
   const MODES = [
@@ -41,15 +52,49 @@ export function AICoach({ leads }: AICoachProps) {
     return buildClosingPlanPrompt(lead);
   };
 
+  // Step 1 — for Value DM: read the thread and show specialist where prospect is
+  const startValueDM = async () => {
+    if (!selected) return;
+    setSummaryStep('summarizing');
+    setProspectSummary('');
+    setOutput('');
+    try {
+      const summary = await runProspectSummary(selected);
+      setProspectSummary(summary);
+      setSummaryStep('awaiting-confirm');
+    } catch (e: any) {
+      setSummaryStep('idle');
+    }
+  };
+
+  // Step 2 — specialist confirmed; generate the actual DM
+  const confirmValueDM = async () => {
+    if (!selected) return;
+    setSummaryStep('generating');
+    setLoading2(true);
+    setOutput('');
+    try {
+      const text = await runFollowUpReply(selected);
+      setOutput(text);
+    } catch (e: any) {
+      setOutput('Error: ' + e.message);
+    }
+    setSummaryStep('idle');
+    setLoading2(false);
+  };
+
+  const cancelValueDM = () => {
+    setSummaryStep('idle');
+    setProspectSummary('');
+  };
+
+  // For non-DM modes (audit, objections, plan) — direct generation, no two-step needed
   const runPlaybook = async () => {
     if (!selected) return;
     setLoading2(true);
     setOutput("");
     try {
-      // "Value DM" runs through the full multi-step reasoning pipeline (Strategy
-      // Generator -> DM Writer -> Quality Checker) since it writes an outward message;
-      // the other playbooks are analytical outputs, not literal replies to send.
-      const text = mode === "followup" ? await runFollowUpReply(selected) : await runAI(buildPrompt(selected, mode), 1000);
+      const text = await runAI(buildPrompt(selected, mode), 1000);
       setOutput(text);
     } catch (e: any) {
       setOutput("Error: " + e.message);
@@ -83,6 +128,13 @@ export function AICoach({ leads }: AICoachProps) {
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {}
   };
+
+  const isValueDM = mode === "followup";
+  const dmBusy = summaryStep === 'summarizing' || summaryStep === 'generating';
+  const generateBtnDisabled = isValueDM ? (dmBusy || summaryStep === 'awaiting-confirm') : loading2;
+  const generateBtnLabel = isValueDM
+    ? (summaryStep === 'summarizing' ? "Reading thread…" : summaryStep === 'generating' ? "Writing DM…" : "Generate →")
+    : (loading2 ? "Generating…" : "Generate →");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -158,23 +210,53 @@ export function AICoach({ leads }: AICoachProps) {
                 </button>
               ))}
             </div>
+
+            {/* Value DM shows a label explaining the two-step flow */}
+            {isValueDM && (
+              <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10, lineHeight: 1.55 }}>
+                The AI will first summarise where this prospect is in the conversation for you to verify, then draft the DM.
+              </div>
+            )}
             
             <button
-              onClick={runPlaybook}
-              disabled={loading2 || !selectedId}
+              onClick={isValueDM ? startValueDM : runPlaybook}
+              disabled={generateBtnDisabled || !selectedId}
               style={{
-                background: loading2 ? SURFACE2 : G,
-                color: loading2 ? MUTED : "#000",
+                background: generateBtnDisabled ? SURFACE2 : G,
+                color: generateBtnDisabled ? MUTED : "#000",
                 border: "none",
                 borderRadius: 6,
                 padding: "9px 20px",
                 fontWeight: 800,
                 fontSize: 12,
-                cursor: loading2 || !selectedId ? "not-allowed" : "pointer"
+                cursor: (generateBtnDisabled || !selectedId) ? "not-allowed" : "pointer"
               }}
             >
-              {loading2 ? "Generating…" : "Generate →"}
+              {generateBtnLabel}
             </button>
+
+            {/* Step 1 result — prospect summary + confirm buttons */}
+            {isValueDM && summaryStep === 'awaiting-confirm' && prospectSummary && (
+              <div style={{ marginTop: 14, background: "rgba(62,207,220,0.04)", border: `1px solid ${G_BORDER}`, borderRadius: 8, padding: "14px 16px" }}>
+                <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>WHERE IS THIS PROSPECT?</div>
+                <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 12 }}>{prospectSummary}</div>
+                <div style={{ fontSize: 11, color: MUTED2, marginBottom: 12 }}>Does this match your understanding of where they are in the conversation?</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={confirmValueDM}
+                    style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "8px 18px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    Yes — Generate DM
+                  </button>
+                  <button
+                    onClick={cancelValueDM}
+                    style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             
             {output && (
               <div style={{ marginTop: 14, background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "14px 16px" }}>

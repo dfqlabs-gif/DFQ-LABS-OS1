@@ -364,6 +364,29 @@ export async function runFollowUpReply(lead: Lead): Promise<string> {
   return runSalesPipeline(lead, "Draft the next outbound follow-up message to this lead.", followUpWriteInstructions(), 900);
 }
 
+// ─── Prospect Position Summary — Step 1 of the two-step DM generation flow ──
+// Reads the conversation thread and produces a short human-readable summary of
+// where the prospect is in the buyer journey. The outreach specialist reads and
+// confirms this before the DM is actually generated (step 2).
+export async function runProspectSummary(lead: Lead): Promise<string> {
+  const sender = lead.assignedTo || "a DFQ Labs team member";
+  const prompt = `You are a senior sales analyst reviewing a WhatsApp/Instagram DM conversation thread.
+
+${buildLeadContext(lead)}
+
+Based on the CRM context and conversation thread above, write a short, clear 3-4 sentence summary so the outreach specialist can quickly verify the situation before a reply is drafted.
+
+Cover exactly:
+1. Who sent the initial outreach (use the assigned specialist name "${sender}" if present, otherwise "the DFQ Labs team")
+2. What the prospect's last message said or what their current stance is
+3. What their emotional state or level of interest appears to be
+4. What the correct single next move is to advance this conversation
+
+Format as a clean paragraph — no bullet points, no headers, no labels. Sound like a sharp sales manager briefing their team member in 3-4 sentences. Write ONLY the summary, nothing else.`;
+
+  return runAI(prompt, 400);
+}
+
 export function quickReplyWriteInstructions(waitHours: number): string {
   const timeContext = waitHours < 6
     ? `They sent this ${waitHours} hours ago — reply as if continuing an active, warm conversation.`

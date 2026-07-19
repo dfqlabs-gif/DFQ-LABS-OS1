@@ -3,11 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
+    <title>DFQLABS OS</title>
+    <style>
+      /* Light mode — CSS filter inversion applied to root. Images/videos are
+         double-inverted so they render correctly in both modes. */
+      body.light-mode {
+        filter: invert(1) hue-rotate(180deg);
+      }
+      body.light-mode img,
+      body.light-mode video,
+      body.light-mode canvas,
+      body.light-mode svg image {
+        filter: invert(1) hue-rotate(180deg);
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/main.tsx"></script>
   </body>
 </html>
-

@@ -19,7 +19,7 @@ import {
   SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE, specialistLabel
 } from "./constants";
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
-import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply } from "./aiEngine";
+import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspectSummary } from "./aiEngine";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -368,18 +368,38 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
     return hoursSince(b.awaitingReplySince) - hoursSince(a.awaitingReplySince);
   });
   const [outputs, setOutputs] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState<Record<string, boolean>>({});
+  const [steps, setSteps] = useState<Record<string, string>>({});
+  const [summaries, setSummaries] = useState<Record<string, string>>({});
 
-  const gen = async (lead: Lead) => {
-    setLoading(p => ({ ...p, [lead.id]: true }));
-    setOutputs(p => ({ ...p, [lead.id]: "" }));
+  // Step 1 — read the thread and summarise where the prospect is for the specialist to verify.
+  const startGen = async (lead: Lead) => {
+    setSteps(p => ({ ...p, [lead.id]: 'summarizing' }));
+    setSummaries(p => ({ ...p, [lead.id]: '' }));
+    setOutputs(p => ({ ...p, [lead.id]: '' }));
+    try {
+      const summary = await runProspectSummary(lead);
+      setSummaries(p => ({ ...p, [lead.id]: summary }));
+      setSteps(p => ({ ...p, [lead.id]: 'awaiting-confirm' }));
+    } catch {
+      setSteps(p => ({ ...p, [lead.id]: 'idle' }));
+    }
+  };
+
+  // Step 2 — specialist confirmed; generate the actual reply.
+  const confirmGen = async (lead: Lead) => {
+    setSteps(p => ({ ...p, [lead.id]: 'generating' }));
     try {
       const text = await runQuickReply(lead, Math.floor(hoursSince(lead.awaitingReplySince)));
       setOutputs(p => ({ ...p, [lead.id]: text }));
     } catch (e: any) {
       setOutputs(p => ({ ...p, [lead.id]: "Error: " + e.message }));
     }
-    setLoading(p => ({ ...p, [lead.id]: false }));
+    setSteps(p => ({ ...p, [lead.id]: 'idle' }));
+  };
+
+  const cancelGen = (lead: Lead) => {
+    setSteps(p => ({ ...p, [lead.id]: 'idle' }));
+    setSummaries(p => ({ ...p, [lead.id]: '' }));
   };
 
   if (ranked.length === 0) return null;
@@ -394,7 +414,9 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
         {ranked.map(l => {
           const wait = Math.floor(hoursSince(l.awaitingReplySince));
           const dm = outputs[l.id];
-          const isLoad = loading[l.id];
+          const step = steps[l.id] || 'idle';
+          const summary = summaries[l.id];
+          const busy = step === 'summarizing' || step === 'generating';
           return (
             <div key={l.id} style={{ background: SURFACE2, border: "1px solid rgba(239,68,68,0.25)", borderLeft: "3px solid #EF4444", borderRadius: 10, overflow: "hidden" }}>
               <div style={{ padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -404,11 +426,28 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
                   <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Replied</button>
-                  <button onClick={() => gen(l)} disabled={isLoad} style={{ background: isLoad ? SURFACE : "rgba(239,68,68,0.1)", color: isLoad ? MUTED : "#EF4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: isLoad ? "not-allowed" : "pointer" }}>{isLoad ? "Drafting…" : "Suggest Reply →"}</button>
+                  <button onClick={() => startGen(l)} disabled={busy || step === 'awaiting-confirm'} style={{ background: busy ? SURFACE : "rgba(239,68,68,0.1)", color: busy ? MUTED : "#EF4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer" }}>
+                    {step === 'summarizing' ? "Reading thread…" : step === 'generating' ? "Drafting…" : "Suggest Reply →"}
+                  </button>
                   <button onClick={() => onEdit(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "6px 9px", fontSize: 11, cursor: "pointer" }}>Edit</button>
                 </div>
               </div>
-              {dm && (
+
+              {/* Step 1 — show prospect summary for specialist to confirm */}
+              {step === 'awaiting-confirm' && summary && (
+                <div style={{ padding: "12px 14px", background: "rgba(62,207,220,0.04)", borderTop: `1px solid ${BORDER}` }}>
+                  <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>WHERE IS THIS PROSPECT?</div>
+                  <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 10 }}>{summary}</div>
+                  <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10 }}>Does this match? If yes, the AI will draft a reply that moves them forward.</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => confirmGen(l)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "7px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate Reply</button>
+                    <button onClick={() => cancelGen(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2 — generated reply */}
+              {dm && step === 'idle' && (
                 <div style={{ padding: "12px 14px", background: SURFACE2, borderTop: `1px solid ${BORDER}` }}>
                   <div style={{ fontSize: 12, lineHeight: 1.85, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10 }}>{dm}</div>
                   <CopyBtn text={dm} />
@@ -1408,7 +1447,10 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
   const [range, setRange] = useState("today");
   const [search, setSearch] = useState("");
   const [dmOutputs, setDmOutputs] = useState<Record<string, string>>({});
-  const [dmLoading, setDmLoading] = useState<Record<string, boolean>>({});
+  // dmStep tracks the two-step DM generation flow per lead:
+  // 'idle' | 'summarizing' | 'awaiting-confirm' | 'generating'
+  const [dmStep, setDmStep] = useState<Record<string, string>>({});
+  const [dmSummary, setDmSummary] = useState<Record<string, string>>({});
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modal, setModal] = useState<Lead | null>(null);
@@ -1442,16 +1484,36 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
     : mine.filter(matchesRange)
   ).sort((a: Lead, b: Lead) => scoreLead(b) - scoreLead(a));
 
-  const generateDM = async (lead: Lead) => {
-    setDmLoading(p => ({ ...p, [lead.id]: true }));
-    setDmOutputs(p => ({ ...p, [lead.id]: "" }));
+  // Step 1 — read the conversation thread and show the specialist a plain-English
+  // summary of where the prospect is. The specialist confirms before the DM is drafted.
+  const startDMFlow = async (lead: Lead) => {
+    setDmStep(p => ({ ...p, [lead.id]: 'summarizing' }));
+    setDmSummary(p => ({ ...p, [lead.id]: '' }));
+    setDmOutputs(p => ({ ...p, [lead.id]: '' }));
+    try {
+      const summary = await runProspectSummary(lead);
+      setDmSummary(p => ({ ...p, [lead.id]: summary }));
+      setDmStep(p => ({ ...p, [lead.id]: 'awaiting-confirm' }));
+    } catch (e: any) {
+      setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
+    }
+  };
+
+  // Step 2 — specialist confirmed the summary; now generate the actual DM.
+  const confirmAndGenerateDM = async (lead: Lead) => {
+    setDmStep(p => ({ ...p, [lead.id]: 'generating' }));
     try {
       const text = await runFollowUpReply(lead);
       setDmOutputs(p => ({ ...p, [lead.id]: text }));
     } catch (e: any) {
-      setDmOutputs(p => ({ ...p, [lead.id]: "Error: " + e.message }));
+      setDmOutputs(p => ({ ...p, [lead.id]: 'Error: ' + e.message }));
     }
-    setDmLoading(p => ({ ...p, [lead.id]: false }));
+    setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
+  };
+
+  const cancelDMFlow = (lead: Lead) => {
+    setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
+    setDmSummary(p => ({ ...p, [lead.id]: '' }));
   };
 
   const saveReply = (lead: Lead) => {
@@ -1534,7 +1596,8 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {filtered.map((lead: Lead) => {
                   const dm = dmOutputs[lead.id];
-                  const isLoad = dmLoading[lead.id];
+                  const step = dmStep[lead.id] || 'idle';
+                  const summary = dmSummary[lead.id];
                   const due = effectiveDue(lead);
                   const isOverdue = due && due < today();
                   const meetingFlag = detectMeetingRequest(lead) && !meetingQualified(lead);
@@ -1557,20 +1620,34 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                           </div>
                         </div>
                         <div style={{ display: "flex", gap: 6 }}>
-                          <button onClick={() => generateDM(lead)} disabled={isLoad} style={{ background: isLoad ? SURFACE2 : G_DIM, color: isLoad ? MUTED : G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700 }}>{isLoad ? "Writing…" : "Draft DM"}</button>
+                          <button onClick={() => startDMFlow(lead)} disabled={!!dmStep[lead.id] && dmStep[lead.id] !== 'idle'} style={{ background: (dmStep[lead.id] && dmStep[lead.id] !== 'idle') ? SURFACE2 : G_DIM, color: (dmStep[lead.id] && dmStep[lead.id] !== 'idle') ? MUTED : G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700 }}>{dmStep[lead.id] === 'summarizing' ? "Reading thread…" : dmStep[lead.id] === 'generating' ? "Writing…" : "Draft DM"}</button>
                           <button onClick={() => onQuickContact(lead)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700 }}>✓ Contacted</button>
                           <button onClick={() => setExpandedId(expanded ? null : lead.id)} style={{ background: expanded ? G_DIM : "transparent", border: `1px solid ${expanded ? G_BORDER : BORDER}`, color: expanded ? G : MUTED, borderRadius: 6, padding: "6px 10px", fontSize: 11 }}>{expanded ? "Hide" : "Thread"}</button>
                           <button onClick={() => setModal(lead)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED2, borderRadius: 6, padding: "6px 10px", fontSize: 11 }}>Edit</button>
                         </div>
                       </div>
 
-                      {dm && (
+                      {/* Step 1 result — show prospect summary and ask specialist to confirm */}
+                      {step === 'awaiting-confirm' && summary && (
+                        <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: "rgba(62,207,220,0.04)" }}>
+                          <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>WHERE IS THIS PROSPECT?</div>
+                          <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 12 }}>{summary}</div>
+                          <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10 }}>Does this match your understanding of where they are?</div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => confirmAndGenerateDM(lead)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "7px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate DM</button>
+                            <button onClick={() => cancelDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Step 2 result — show the generated DM */}
+                      {dm && step === 'idle' && (
                         <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: SURFACE2 }}>
                           <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>SUGGESTED CONVERSATION MESSAGE</div>
                           <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 8 }}>{dm}</div>
                           <div style={{ display: "flex", gap: 8 }}>
                             <CopyBtn text={dm} />
-                            <button onClick={() => generateDM(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
+                            <button onClick={() => startDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
                           </div>
                         </div>
                       )}

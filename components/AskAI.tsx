@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from "react";
-import { MessageCircle, X, Send, AtSign } from "lucide-react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { MessageCircle, X, Send, AtSign, Sun, Moon } from "lucide-react";
 import { Lead } from "../types";
 import {
   G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, TEXT, MUTED, MUTED2, iStyle, STATUS_COLOR,
@@ -60,6 +60,27 @@ RESPONSE FORMAT — always follow this exactly:
 
 If no lead was referenced, answer the user's question helpfully and briefly.`;
 
+// ─── Draggable bubble position ───────────────────────────────────────────────
+function loadBubblePos() {
+  try {
+    const saved = localStorage.getItem("dfq-bubble-pos");
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return { bottom: 24, right: 24 };
+}
+
+function saveBubblePos(pos: { bottom: number; right: number }) {
+  try { localStorage.setItem("dfq-bubble-pos", JSON.stringify(pos)); } catch {}
+}
+
+function loadDarkMode() {
+  try {
+    const saved = localStorage.getItem("dfq-dark-mode");
+    return saved !== "false"; // default to dark
+  } catch {}
+  return true;
+}
+
 export function AskAI({ leads }: AskAIProps) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -68,8 +89,19 @@ export function AskAI({ leads }: AskAIProps) {
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionResults, setMentionResults] = useState<Lead[]>([]);
   const [referencedLead, setReferencedLead] = useState<Lead | null>(null);
+  const [darkMode, setDarkMode] = useState(loadDarkMode);
+
+  // Draggable bubble position
+  const [bubblePos, setBubblePos] = useState(loadBubblePos);
+  const posRef = useRef(bubblePos);
+  const dragRef = useRef<{ startX: number; startY: number; startBottom: number; startRight: number } | null>(null);
+  const isDragging = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    posRef.current = bubblePos;
+  }, [bubblePos]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -79,6 +111,75 @@ export function AskAI({ leads }: AskAIProps) {
     if (open) setTimeout(() => inputRef.current?.focus(), 80);
   }, [open]);
 
+  // Sync dark mode with body class
+  useEffect(() => {
+    if (darkMode) {
+      document.body.classList.remove("light-mode");
+    } else {
+      document.body.classList.add("light-mode");
+    }
+    localStorage.setItem("dfq-dark-mode", String(darkMode));
+  }, [darkMode]);
+
+  // Restore saved light/dark preference on mount
+  useEffect(() => {
+    if (!loadDarkMode()) {
+      document.body.classList.add("light-mode");
+    }
+  }, []);
+
+  const toggleDarkMode = () => setDarkMode(d => !d);
+
+  // ─── Drag handlers ────────────────────────────────────────────────────────
+  const onBubbleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const pos = posRef.current;
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startBottom: pos.bottom,
+      startRight: pos.right,
+    };
+    isDragging.current = false;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = ev.clientX - dragRef.current.startX;
+      const dy = ev.clientY - dragRef.current.startY;
+      if (!isDragging.current && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+        isDragging.current = true;
+      }
+      if (!isDragging.current) return;
+      const BUBBLE_SIZE = 54;
+      const newRight = Math.max(8, Math.min(window.innerWidth - BUBBLE_SIZE - 8, dragRef.current.startRight - dx));
+      const newBottom = Math.max(8, Math.min(window.innerHeight - BUBBLE_SIZE - 8, dragRef.current.startBottom + dy));
+      const newPos = { bottom: newBottom, right: newRight };
+      posRef.current = newPos;
+      setBubblePos(newPos);
+    };
+
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      saveBubblePos(posRef.current);
+      // Delay clearing so the click handler can check isDragging first
+      setTimeout(() => { isDragging.current = false; }, 50);
+      dragRef.current = null;
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
+  const onBubbleClick = useCallback(() => {
+    if (isDragging.current) return; // was a drag, not a click
+    setOpen(o => !o);
+  }, []);
+
+  // ─── Chat panel position (just above the bubble) ─────────────────────────
+  const panelWidth = typeof window !== "undefined" ? Math.min(440, window.innerWidth - 32) : 420;
+
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setInput(val);
@@ -86,7 +187,6 @@ export function AskAI({ leads }: AskAIProps) {
     const atIdx = val.lastIndexOf("@");
     if (atIdx !== -1) {
       const query = val.slice(atIdx + 1);
-      // Only show dropdown if query has no spaces (still typing the mention word)
       if (!query.includes(" ") || query.length < 20) {
         setMentionQuery(query.toLowerCase());
         const q = query.toLowerCase();
@@ -138,7 +238,6 @@ export function AskAI({ leads }: AskAIProps) {
 
       const raw: string = data.text || "";
 
-      // Parse DM and strategy sections
       const dmMarker = "📨 SUGGESTED MESSAGE";
       const stratMarker = "📊 STRATEGY";
       const hasDm = raw.includes(dmMarker);
@@ -163,35 +262,47 @@ export function AskAI({ leads }: AskAIProps) {
     setLoading(false);
   };
 
-  const panelWidth = typeof window !== "undefined" ? Math.min(440, window.innerWidth - 32) : 420;
+  // Chat panel opens above the bubble
+  const BUBBLE_SIZE = 54;
+  const panelBottom = bubblePos.bottom + BUBBLE_SIZE + 10;
 
   return (
     <>
-      {/* Floating bubble */}
-      <button
-        onClick={() => setOpen(o => !o)}
-        title="Ask AI"
+      {/* Draggable floating bubble */}
+      <div
+        onMouseDown={onBubbleMouseDown}
+        onClick={onBubbleClick}
+        title="Drag to move · Click to open Ask AI"
         style={{
-          position: "fixed", bottom: 24, right: 24, zIndex: 1100,
-          width: 54, height: 54, borderRadius: "50%",
+          position: "fixed",
+          bottom: bubblePos.bottom,
+          right: bubblePos.right,
+          zIndex: 1100,
+          width: BUBBLE_SIZE,
+          height: BUBBLE_SIZE,
+          borderRadius: "50%",
           background: open ? "#1a1a1a" : `linear-gradient(135deg, ${G} 0%, #00b8c4 100%)`,
           border: open ? `1px solid ${G_BORDER}` : "none",
-          cursor: "pointer",
+          cursor: "grab",
           boxShadow: open ? `0 2px 12px rgba(0,0,0,0.4)` : `0 4px 22px ${G}55`,
           display: "flex", alignItems: "center", justifyContent: "center",
-          transition: "all 0.2s ease",
+          transition: "background 0.2s ease, border 0.2s ease, box-shadow 0.2s ease",
+          userSelect: "none",
         }}
       >
         {open
           ? <X size={20} color={G} />
           : <MessageCircle size={20} color="#000" strokeWidth={2.5} />
         }
-      </button>
+      </div>
 
-      {/* Chat panel */}
+      {/* Chat panel — positioned relative to bubble */}
       {open && (
         <div style={{
-          position: "fixed", bottom: 88, right: 24, zIndex: 1050,
+          position: "fixed",
+          bottom: panelBottom,
+          right: bubblePos.right,
+          zIndex: 1050,
           width: panelWidth,
           maxHeight: "72vh",
           background: "#111",
@@ -209,14 +320,34 @@ export function AskAI({ leads }: AskAIProps) {
             borderBottom: `1px solid ${BORDER}`,
             background: `linear-gradient(180deg, rgba(62,207,220,0.07), transparent)`,
             flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
           }}>
-            <div style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.08em" }}>
-              DFQ<span style={{ color: G }}>LABS</span>{" "}
-              <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}>Ask AI</span>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.08em" }}>
+                DFQ<span style={{ color: G }}>LABS</span>{" "}
+                <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}>Ask AI</span>
+              </div>
+              <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>
+                Type <span style={{ color: G, fontWeight: 700 }}>@name</span> to pull a prospect's CRM context and get a DM + strategy.
+              </div>
             </div>
-            <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>
-              Type <span style={{ color: G, fontWeight: 700 }}>@name</span> to pull a prospect's CRM context and get a DM + strategy.
-            </div>
+            {/* Light / Dark mode toggle */}
+            <button
+              onClick={toggleDarkMode}
+              title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+              style={{
+                background: "transparent",
+                border: `1px solid ${BORDER}`,
+                borderRadius: 8,
+                padding: "6px 8px",
+                cursor: "pointer",
+                color: MUTED2,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              {darkMode ? <Sun size={14} /> : <Moon size={14} />}
+            </button>
           </div>
 
           {/* Messages */}
