@@ -116,6 +116,25 @@ export function buildLeadContext(lead: Lead): string {
   const daysSinceContact = lead.lastContacted ? daysSince(lead.lastContacted) : null;
   const hoursAwaitingReply = lead.awaitingReplySince ? hoursSince(lead.awaitingReplySince) : null;
 
+  // Inject readable attachment content so the AI can reference exchanged documents
+  const textAttachments = (lead.attachments || []).filter(a =>
+    a.mimeType.startsWith("text/") || a.mimeType === "application/json"
+  );
+  const binaryAttachments = (lead.attachments || []).filter(a =>
+    !a.mimeType.startsWith("text/") && a.mimeType !== "application/json"
+  );
+  const attachmentBlock = [
+    textAttachments.length > 0
+      ? `=== ATTACHED FILES (readable) ===\n` + textAttachments.map(a =>
+          `--- ${a.name} (${a.mimeType}) ---\n${a.content.length > 4000 ? a.content.slice(0, 4000) + "\n[truncated]" : a.content}`
+        ).join("\n\n")
+      : "",
+    binaryAttachments.length > 0
+      ? `=== ATTACHED FILES (binary — not readable but on file) ===\n` +
+        binaryAttachments.map(a => `- ${a.name} (${a.mimeType}, ${(a.size / 1024).toFixed(0)} KB)`).join("\n")
+      : "",
+  ].filter(Boolean).join("\n\n");
+
   return `=== CRM CONTEXT ===
 Lead: ${lead.name || "Unknown"} — ${lead.company || "Unknown company"}
 Client archetype: ${lead.clientType || "Real Estate Developer"}
@@ -127,7 +146,7 @@ Internal notes: ${lead.notes || "none"}
 
 === CONVERSATION THREAD ===
 ${formatConversationLog(lead)}
-=== END CONTEXT ===`;
+${attachmentBlock ? "\n" + attachmentBlock + "\n" : ""}=== END CONTEXT ===`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

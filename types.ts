@@ -1,3 +1,12 @@
+export interface LeadAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  content: string; // raw text for text/json/html; base64 data URL for pdf/images
+  uploadedAt: string;
+}
+
 export interface Lead {
   id: string;
   name: string;
@@ -54,6 +63,7 @@ export interface Lead {
     previousValue?: string;
     newValue?: string;
   }>;
+  attachments?: LeadAttachment[];
 }
 
 export interface Stats {

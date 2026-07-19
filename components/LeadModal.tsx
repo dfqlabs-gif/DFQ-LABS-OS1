@@ -1,7 +1,7 @@
-import { useState, useMemo } from "react";
-import { X, UserCheck, AlertTriangle, Calendar, Sprout, Ticket, Lock, CheckCircle2, Brain, GitMerge, ExternalLink, Search, ShieldAlert } from "lucide-react";
+import { useState, useMemo, useRef } from "react";
+import { X, UserCheck, AlertTriangle, Calendar, Sprout, Ticket, Lock, CheckCircle2, Brain, GitMerge, ExternalLink, Search, ShieldAlert, Paperclip, Trash2, FileText, Image } from "lucide-react";
 import React from "react";
-import { Lead } from "../types";
+import { Lead, LeadAttachment } from "../types";
 import { 
   CLIENT_TYPES, 
   SOURCES, 
@@ -100,6 +100,36 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
   const [pendingDuplicates, setPendingDuplicates] = useState<DuplicateMatch[]>([]);
   const [showDupWarning, setShowDupWarning] = useState(false);
   const [dupOverridden, setDupOverridden] = useState(false);
+
+  // ── Attachments ───────────────────────────────────────────────────────────
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    setUploadError(null);
+    files.forEach(file => {
+      if (file.size > 5 * 1024 * 1024) {
+        setUploadError(`${file.name} exceeds the 5 MB limit.`);
+        return;
+      }
+      const reader = new FileReader();
+      const isText = file.type.startsWith("text/") || file.type === "application/json";
+      reader.onload = ev => {
+        const att: LeadAttachment = {
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+          name: file.name,
+          mimeType: file.type || "application/octet-stream",
+          size: file.size,
+          content: ev.target?.result as string,
+          uploadedAt: new Date().toISOString(),
+        };
+        setLead(p => ({ ...p, attachments: [...(p.attachments || []), att] }));
+      };
+      isText ? reader.readAsText(file) : reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  };
 
   const handleSaveClick = () => {
     if (!canSave) return;
@@ -345,7 +375,55 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
           <Fld label="Notes">
             <textarea value={lead.notes} onChange={e => set("notes", e.target.value)} placeholder="Objections, context, key details…" rows={2} style={{ ...iStyle, resize: "vertical" }} />
           </Fld>
-          
+
+          {/* ── Attachments ─────────────────────────────────────────────── */}
+          <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", display: "flex", alignItems: "center", gap: 5 }}>
+              <Paperclip size={11} /> ATTACHMENTS — feeds the AI
+            </div>
+            <div style={{ fontSize: 10, color: MUTED }}>Upload contracts, proposals, conversation exports, screenshots — text files are read directly by the AI when drafting messages. Max 5 MB per file.</div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.json,.txt,.html,.htm"
+              style={{ display: "none" }}
+              onChange={handleFileUpload}
+            />
+
+            {(lead.attachments || []).map(att => (
+              <div key={att.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#0d0d0d", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "7px 10px" }}>
+                {att.mimeType.startsWith("image/")
+                  ? <Image size={13} color={G} style={{ flexShrink: 0 }} />
+                  : <FileText size={13} color={G} style={{ flexShrink: 0 }} />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: "#ccc", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.name}</div>
+                  <div style={{ fontSize: 9, color: MUTED }}>{att.mimeType} · {(att.size / 1024).toFixed(0)} KB · {new Date(att.uploadedAt).toLocaleDateString("en-GB")}</div>
+                </div>
+                {att.mimeType.startsWith("image/") && (
+                  <img src={att.content} alt={att.name} style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, flexShrink: 0 }} />
+                )}
+                <button
+                  onClick={() => set("attachments", (lead.attachments || []).filter(a => a.id !== att.id))}
+                  style={{ background: "none", border: "none", color: MUTED, cursor: "pointer", padding: 4, flexShrink: 0 }}
+                  title="Remove attachment"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "7px 12px", fontSize: 11, color: MUTED, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, width: "fit-content" }}
+            >
+              <Paperclip size={12} /> Attach files
+            </button>
+
+            {uploadError && <div style={{ fontSize: 10, color: "#EF4444" }}>{uploadError}</div>}
+          </div>
+
           {isClient && (
             <div style={{ background: SURFACE2, border: "1px solid rgba(34,197,94,0.2)", borderRadius: 8, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ fontSize: 9, color: "#22C55E", fontWeight: 700, letterSpacing: "0.1em" }}>CLIENT DELIVERY</div>
