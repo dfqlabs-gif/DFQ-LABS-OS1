@@ -142,8 +142,7 @@ function RecentLeadsPanel({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) 
               const isYesterday = l.dateAdded === addDays(-1);
               const dateLabel = isToday ? "Today" : isYesterday ? "Yesterday" : l.dateAdded || "—";
               return (
-                <div key={l.id} className="dfq-card"
-                  className="leads-grid-row" style={{ background: SURFACE, border: `1px solid ${isToday ? G_BORDER : BORDER}`, borderLeft: `3px solid ${isToday ? G : STATUS_COLOR[l.status] || BORDER}`, borderRadius: 10, padding: "10px 14px", display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
+                <div key={l.id} className="dfq-card leads-grid-row" style={{ background: SURFACE, border: `1px solid ${isToday ? G_BORDER : BORDER}`, borderLeft: `3px solid ${isToday ? G : STATUS_COLOR[l.status] || BORDER}`, borderRadius: 10, padding: "10px 14px", display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
                   {/* Name / Company */}
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.name || "—"}</div>

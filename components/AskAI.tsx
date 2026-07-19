@@ -130,47 +130,73 @@ export function AskAI({ leads }: AskAIProps) {
 
   const toggleDarkMode = () => setDarkMode(d => !d);
 
-  // ─── Drag handlers ────────────────────────────────────────────────────────
-  const onBubbleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
+  // ─── Shared drag logic (used by both mouse and touch) ────────────────────
+  const startDrag = useCallback((startX: number, startY: number) => {
     const pos = posRef.current;
     dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
+      startX,
+      startY,
       startBottom: pos.bottom,
       startRight: pos.right,
     };
     isDragging.current = false;
+  }, []);
 
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      const dx = ev.clientX - dragRef.current.startX;
-      const dy = ev.clientY - dragRef.current.startY;
-      if (!isDragging.current && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-        isDragging.current = true;
-      }
-      if (!isDragging.current) return;
-      const BUBBLE_SIZE = 54;
-      const newRight = Math.max(8, Math.min(window.innerWidth - BUBBLE_SIZE - 8, dragRef.current.startRight - dx));
-      const newBottom = Math.max(8, Math.min(window.innerHeight - BUBBLE_SIZE - 8, dragRef.current.startBottom + dy));
-      const newPos = { bottom: newBottom, right: newRight };
-      posRef.current = newPos;
-      setBubblePos(newPos);
-    };
+  const moveDrag = useCallback((clientX: number, clientY: number) => {
+    if (!dragRef.current) return;
+    const dx = clientX - dragRef.current.startX;
+    const dy = clientY - dragRef.current.startY;
+    if (!isDragging.current && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+      isDragging.current = true;
+    }
+    if (!isDragging.current) return;
+    const BUBBLE_SIZE = 54;
+    const newRight = Math.max(8, Math.min(window.innerWidth - BUBBLE_SIZE - 8, dragRef.current.startRight - dx));
+    const newBottom = Math.max(8, Math.min(window.innerHeight - BUBBLE_SIZE - 8, dragRef.current.startBottom + dy));
+    const newPos = { bottom: newBottom, right: newRight };
+    posRef.current = newPos;
+    setBubblePos(newPos);
+  }, []);
 
+  const endDrag = useCallback(() => {
+    saveBubblePos(posRef.current);
+    setTimeout(() => { isDragging.current = false; }, 50);
+    dragRef.current = null;
+  }, []);
+
+  // ─── Mouse drag handlers ──────────────────────────────────────────────────
+  const onBubbleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    startDrag(e.clientX, e.clientY);
+
+    const onMove = (ev: MouseEvent) => moveDrag(ev.clientX, ev.clientY);
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
-      saveBubblePos(posRef.current);
-      // Delay clearing so the click handler can check isDragging first
-      setTimeout(() => { isDragging.current = false; }, 50);
-      dragRef.current = null;
+      endDrag();
     };
-
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
-  }, []);
+  }, [startDrag, moveDrag, endDrag]);
+
+  // ─── Touch drag handlers ──────────────────────────────────────────────────
+  const onBubbleTouchStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    startDrag(touch.clientX, touch.clientY);
+
+    const onMove = (ev: TouchEvent) => {
+      ev.preventDefault(); // prevent page scroll while dragging bubble
+      moveDrag(ev.touches[0].clientX, ev.touches[0].clientY);
+    };
+    const onUp = () => {
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onUp);
+      endDrag();
+    };
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("touchend", onUp);
+  }, [startDrag, moveDrag, endDrag]);
 
   const onBubbleClick = useCallback(() => {
     if (isDragging.current) return; // was a drag, not a click
@@ -271,6 +297,7 @@ export function AskAI({ leads }: AskAIProps) {
       {/* Draggable floating bubble */}
       <div
         onMouseDown={onBubbleMouseDown}
+        onTouchStart={onBubbleTouchStart}
         onClick={onBubbleClick}
         title="Drag to move · Click to open Ask AI"
         style={{
