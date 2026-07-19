@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { MessageCircle, X, Send, AtSign, Sun, Moon } from "lucide-react";
+import { MessageCircle, X, Send, AtSign } from "lucide-react";
 import { Lead } from "../types";
 import {
   G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, TEXT, MUTED, MUTED2, iStyle, STATUS_COLOR,
@@ -73,14 +73,6 @@ function saveBubblePos(pos: { bottom: number; right: number }) {
   try { localStorage.setItem("dfq-bubble-pos", JSON.stringify(pos)); } catch {}
 }
 
-function loadDarkMode() {
-  try {
-    const saved = localStorage.getItem("dfq-dark-mode");
-    return saved !== "false"; // default to dark
-  } catch {}
-  return true;
-}
-
 export function AskAI({ leads }: AskAIProps) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -89,7 +81,6 @@ export function AskAI({ leads }: AskAIProps) {
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionResults, setMentionResults] = useState<Lead[]>([]);
   const [referencedLead, setReferencedLead] = useState<Lead | null>(null);
-  const [darkMode, setDarkMode] = useState(loadDarkMode);
 
   // Draggable bubble position
   const [bubblePos, setBubblePos] = useState(loadBubblePos);
@@ -110,25 +101,6 @@ export function AskAI({ leads }: AskAIProps) {
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 80);
   }, [open]);
-
-  // Sync dark mode with body class
-  useEffect(() => {
-    if (darkMode) {
-      document.body.classList.remove("light-mode");
-    } else {
-      document.body.classList.add("light-mode");
-    }
-    localStorage.setItem("dfq-dark-mode", String(darkMode));
-  }, [darkMode]);
-
-  // Restore saved light/dark preference on mount
-  useEffect(() => {
-    if (!loadDarkMode()) {
-      document.body.classList.add("light-mode");
-    }
-  }, []);
-
-  const toggleDarkMode = () => setDarkMode(d => !d);
 
   // ─── Shared drag logic (used by both mouse and touch) ────────────────────
   const startDrag = useCallback((startX: number, startY: number) => {
@@ -358,23 +330,6 @@ export function AskAI({ leads }: AskAIProps) {
                 Type <span style={{ color: G, fontWeight: 700 }}>@name</span> to pull a prospect's CRM context and get a DM + strategy.
               </div>
             </div>
-            {/* Light / Dark mode toggle */}
-            <button
-              onClick={toggleDarkMode}
-              title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
-              style={{
-                background: "transparent",
-                border: `1px solid ${BORDER}`,
-                borderRadius: 8,
-                padding: "6px 8px",
-                cursor: "pointer",
-                color: MUTED2,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              {darkMode ? <Sun size={14} /> : <Moon size={14} />}
-            </button>
           </div>
 
           {/* Messages */}

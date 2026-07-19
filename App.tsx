@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { 
   Flame, Sprout, Circle, Ticket, Calendar, Clock3, 
-  UserCheck, Plus, Shield, Search, Upload, Download
+  UserCheck, Plus, Shield, Search, Upload, Download, Sun, Moon
 } from "lucide-react";
 
 import { Lead, Stats } from "./types";
@@ -738,7 +738,16 @@ export default function App() {
   const [role, setRole] = useState<string | null>(null);
   const [authed, setAuthed] = useState(false);
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
-  
+
+  // ── Dark mode ──────────────────────────────────────────────────────────────
+  const [darkMode, setDarkMode] = useState(() => {
+    try { const s = localStorage.getItem("dfq-dark-mode"); return s !== "false"; } catch { return true; }
+  });
+  useEffect(() => {
+    document.body.classList.toggle("light-mode", !darkMode);
+    try { localStorage.setItem("dfq-dark-mode", String(darkMode)); } catch {}
+  }, [darkMode]);
+
   const lastActivityRef = useRef(Date.now());
   const lastSessionWriteRef = useRef(0);
 
@@ -1287,6 +1296,13 @@ export default function App() {
             <button onClick={() => setModal({
               id: Date.now().toString(), name: "", company: "", phone: "", source: "WhatsApp", clientType: "Real Estate Developer", service: "Growth — ₦500K/mo", status: "New", priority: "Medium", assignedTo: "Unassigned", notes: "", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: today(), lastContacted: "", lastMeaningfulTouchpoint: today(), awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: getWeekKey(new Date()), completedFollowUps: [], deliveryStage: "Discovery", deliveryNote: "", betaCandidate: false, autoFollowUpDate: today(), autoFollowUpReason: "New lead."
             })} style={{ background: G, color: "#000", border: "none", borderRadius: 6, padding: "7px 14px", fontWeight: 800, fontSize: 11, cursor: "pointer", boxShadow: `0 0 14px ${G}30`, display: "flex", alignItems: "center", gap: 5 }}><Plus size={13} />ADD LEAD</button>
+            <button
+              onClick={() => setDarkMode(d => !d)}
+              title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+              style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "6px 8px", cursor: "pointer", color: MUTED, display: "flex", alignItems: "center" }}
+            >
+              {darkMode ? <Sun size={13} /> : <Moon size={13} />}
+            </button>
             <button onClick={logout} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "6px 12px", fontSize: 11, cursor: "pointer" }}>Switch Role</button>
           </div>
         </div>
