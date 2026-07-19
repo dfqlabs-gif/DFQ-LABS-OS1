@@ -129,7 +129,7 @@ function RecentLeadsPanel({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) 
       ) : (
         <>
           {/* Table header */}
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, padding: "6px 14px", marginBottom: 4 }}>
+          <div className="leads-grid-header" style={{ display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, padding: "6px 14px", marginBottom: 4 }}>
             {["Contact / Company", "Service", "Status", "Specialist", "Added", ""].map((h, i) => (
               <div key={i} style={{ fontSize: 9, color: MUTED2, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>{h}</div>
             ))}
@@ -143,7 +143,7 @@ function RecentLeadsPanel({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) 
               const dateLabel = isToday ? "Today" : isYesterday ? "Yesterday" : l.dateAdded || "—";
               return (
                 <div key={l.id} className="dfq-card"
-                  style={{ background: SURFACE, border: `1px solid ${isToday ? G_BORDER : BORDER}`, borderLeft: `3px solid ${isToday ? G : STATUS_COLOR[l.status] || BORDER}`, borderRadius: 10, padding: "10px 14px", display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
+                  className="leads-grid-row" style={{ background: SURFACE, border: `1px solid ${isToday ? G_BORDER : BORDER}`, borderLeft: `3px solid ${isToday ? G : STATUS_COLOR[l.status] || BORDER}`, borderRadius: 10, padding: "10px 14px", display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
                   {/* Name / Company */}
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.name || "—"}</div>
@@ -206,7 +206,7 @@ function BetaTrackerSummary({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead
         <SectionLabel icon={Ticket}>Beta Spot Tracker — {BETA_MONTH_LABEL}</SectionLabel>
         {isJuly && !isFull && <span style={{ fontSize: 10, color: "#FACC15" }}>{daysLeftInMonth} days left in July</span>}
       </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <div className="beta-spots-row" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         {Array.from({ length: BETA_SPOTS_TOTAL }).map((_, i) => {
           const taken = i < filled.length;
           return (
@@ -1264,7 +1264,7 @@ export default function App() {
             <Bdg text="FOUNDER" color={G} solid icon={Shield} />
           </div>
           
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 180px", justifyContent: "center" }}>
+          <div className="dfq-header-center" style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 180px", justifyContent: "center" }}>
             <Flame size={14} color={streakValue > 0 ? G : MUTED} />
             <span style={{ fontSize: 11, fontWeight: 800, color: streakValue > 0 ? G : MUTED }}>{streakValue}d</span>
             <div style={{ flex: "1 1 80px", maxWidth: 120 }}>
@@ -1279,7 +1279,7 @@ export default function App() {
             <div style={{ fontSize: 11, background: G_DIM, border: `1px solid ${G_BORDER}`, borderRadius: 5, padding: "2px 8px", color: G, fontWeight: 700 }}>{todayCountValue} today</div>
           </div>
           
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="dfq-header-right" style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             <input ref={importRef} type="file" accept=".json" onChange={importData} style={{ display: "none" }} />
             <button onClick={() => importRef.current?.click()} style={{ background: "transparent", color: MUTED, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Upload size={12} /></button>
             <button onClick={exportData} style={{ background: "transparent", color: G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Download size={12} /></button>
@@ -1299,7 +1299,7 @@ export default function App() {
         ))}
       </div>
       
-      <div style={{ padding: "16px 14px" }}>
+      <div className="dfq-main-content" style={{ padding: "16px 14px" }}>
         {tab === "mission" && (
           <div>
             <div style={{ marginBottom: 14 }}>

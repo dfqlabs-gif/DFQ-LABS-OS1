@@ -1,0 +1,137 @@
+/* ───────────────────────────────────────────────────────────
+   DFQLABS OS — Mobile / responsive overrides
+   Base app uses inline styles; this file adds class-targeted
+   media-query overrides so the UI fits phone screens.
+─────────────────────────────────────────────────────────── */
+
+/* Prevent horizontal bleed on every screen size */
+html, body, #root {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* ── Small phones (≤ 600 px) ──────────────────────────────── */
+@media (max-width: 600px) {
+
+  /* ── Global spacing ── */
+  .dfq-main-content {
+    padding: 10px 8px !important;
+  }
+
+  /* ── Main header: hide XP bar to save space ── */
+  .dfq-header-center {
+    display: none !important;
+  }
+  /* Header right: let buttons wrap */
+  .dfq-header-right {
+    flex-wrap: wrap !important;
+    gap: 4px !important;
+  }
+
+  /* ── Lead list: 6-column table → card layout ── */
+  .leads-grid-header {
+    display: none !important;
+  }
+  .leads-grid-row {
+    /* name+status on left, edit button on right */
+    grid-template-columns: 1fr auto !important;
+    grid-template-rows: auto auto !important;
+    row-gap: 4px !important;
+    column-gap: 8px !important;
+  }
+  /* Slot 1 (name/company) → col 1 row 1 */
+  .leads-grid-row > *:nth-child(1) { grid-column: 1; grid-row: 1; }
+  /* Slot 2 (service) → hidden */
+  .leads-grid-row > *:nth-child(2) { display: none !important; }
+  /* Slot 3 (status badge) → col 1 row 2 */
+  .leads-grid-row > *:nth-child(3) { grid-column: 1; grid-row: 2; }
+  /* Slot 4 (specialist) → hidden */
+  .leads-grid-row > *:nth-child(4) { display: none !important; }
+  /* Slot 5 (date) → hidden */
+  .leads-grid-row > *:nth-child(5) { display: none !important; }
+  /* Slot 6 (edit button) → col 2, spans both rows */
+  .leads-grid-row > *:nth-child(6) {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-self: center;
+  }
+
+  /* ── Pipeline rows (same 6-col grid used in PipelineTab) ── */
+  .pipeline-grid-header {
+    display: none !important;
+  }
+  .pipeline-grid-row {
+    grid-template-columns: 1fr auto !important;
+    grid-template-rows: auto auto !important;
+    row-gap: 4px !important;
+    column-gap: 8px !important;
+  }
+  .pipeline-grid-row > *:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .pipeline-grid-row > *:nth-child(2) { display: none !important; }
+  .pipeline-grid-row > *:nth-child(3) { grid-column: 1; grid-row: 2; }
+  .pipeline-grid-row > *:nth-child(4) { display: none !important; }
+  .pipeline-grid-row > *:nth-child(5) { display: none !important; }
+  .pipeline-grid-row > *:nth-child(6) {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-self: center;
+  }
+
+  /* ── Lead modal: 2-col field grids → single column ── */
+  .lead-modal-grid-2 {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* ── Lead modal outer: full-height on mobile ── */
+  .lead-modal-outer {
+    padding: 0 !important;
+    align-items: flex-end !important;
+  }
+  .lead-modal-inner {
+    border-radius: 16px 16px 0 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    max-height: 92vh;
+    overflow-y: auto;
+    padding: 18px 14px !important;
+  }
+
+  /* ── AskAI bubble & panel ── */
+  .askai-panel {
+    width: calc(100vw - 20px) !important;
+    min-width: unset !important;
+    max-width: 100vw !important;
+  }
+
+  /* ── Beta tracker spots: wrap on very small screens ── */
+  .beta-spots-row {
+    flex-wrap: wrap !important;
+    gap: 6px !important;
+  }
+
+  /* ── Smart buckets stats grid → stack ── */
+  .buckets-stats-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* ── Team / strategy cards with fixed 2-col grid ── */
+  .dfq-2col-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* ── Intern queue filter pills: allow wrapping ── */
+  .intern-range-pills {
+    flex-wrap: wrap !important;
+  }
+}
+
+/* ── Tablets (601–900 px): loosen things but keep 2-col ── */
+@media (min-width: 601px) and (max-width: 900px) {
+  .dfq-header-center {
+    flex: unset !important;
+    max-width: 160px !important;
+  }
+  .lead-modal-inner {
+    max-width: 96vw !important;
+  }
+}

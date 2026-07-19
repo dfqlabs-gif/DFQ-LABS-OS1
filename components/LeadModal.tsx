@@ -141,8 +141,8 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
     : "";
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 12, overflowY: "auto" }}>
-      <div style={{ background: "#0d0d0d", border: `1px solid ${BORDER}`, borderRadius: 12, width: "100%", maxWidth: 520, padding: 22, margin: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.6)" }}>
+    <div className="lead-modal-outer" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 12, overflowY: "auto" }}>
+      <div className="lead-modal-inner" style={{ background: "#0d0d0d", border: `1px solid ${BORDER}`, borderRadius: 12, width: "100%", maxWidth: 520, padding: 22, margin: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.6)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <span style={{ fontWeight: 800, fontSize: 12, color: G, letterSpacing: "0.1em" }}>
             {initial.name || initial.company ? "EDIT LEAD" : "NEW LEAD"}
@@ -153,7 +153,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
         </div>
         
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div className="lead-modal-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <Fld label="Contact Name">
               <input value={lead.name} onChange={e => set("name", e.target.value)} placeholder="Jane Doe" style={iStyle} />
             </Fld>
@@ -176,7 +176,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
             </div>
           )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div className="lead-modal-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <Fld label="Phone">
               <input value={lead.phone || ""} onChange={e => set("phone", e.target.value)} placeholder="+234 …" style={iStyle} type="tel" />
             </Fld>
@@ -185,7 +185,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
             </Fld>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div className="lead-modal-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <Fld label="Instagram">
               <input value={lead.instagram || ""} onChange={e => set("instagram", e.target.value)} placeholder="@handle" style={iStyle} />
             </Fld>
@@ -216,7 +216,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
             </select>
           </Fld>
           
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div className="lead-modal-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <Fld label="Source">
               <select value={lead.source} onChange={e => set("source", e.target.value)} style={{ ...iStyle, cursor: "pointer" }}>
                 {SOURCES.map(o => <option key={o}>{o}</option>)}
