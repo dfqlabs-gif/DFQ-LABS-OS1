@@ -31,6 +31,7 @@ import { AIGateway } from "./components/AIGateway";
 import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
+import { AIQAPanel } from "./components/AIQAPanel";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -445,11 +446,12 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
                 </div>
               )}
 
-              {/* Step 2 — generated reply */}
+              {/* Step 2 — generated reply + QA pipeline */}
               {dm && step === 'idle' && (
                 <div style={{ padding: "12px 14px", background: SURFACE2, borderTop: `1px solid ${BORDER}` }}>
                   <div style={{ fontSize: 12, lineHeight: 1.85, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10 }}>{dm}</div>
                   <CopyBtn text={dm} />
+                  <AIQAPanel draft={dm} lead={l} onRegenerate={() => confirmGen(l)} />
                 </div>
               )}
             </div>
@@ -886,6 +888,18 @@ export default function App() {
           });
 
           setLeads(refreshed);
+
+          // Rebuild completedDates from lead data so the dashboard stays accurate
+          // even if localStorage was cleared or a different device is used.
+          setStats(prev => {
+            const fromLeads = (refreshed as Lead[]).flatMap(l => l.completedFollowUps || []);
+            const existing = prev.completedDates || [];
+            const merged = Array.from(new Set([...existing, ...fromLeads])).sort();
+            if (merged.length === existing.length) return prev;
+            const updated = { ...prev, completedDates: merged };
+            try { localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(updated)); } catch {}
+            return updated;
+          });
 
           // Persist any rule-based reclassifications back to the DB
           if (changed && rulePatched.length > 0) {
@@ -1655,7 +1669,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                         </div>
                       )}
 
-                      {/* Step 2 result — show the generated DM */}
+                      {/* Step 2 result — show the generated DM + QA pipeline */}
                       {dm && step === 'idle' && (
                         <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: SURFACE2 }}>
                           <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>SUGGESTED CONVERSATION MESSAGE</div>
@@ -1664,6 +1678,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                             <CopyBtn text={dm} />
                             <button onClick={() => startDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
                           </div>
+                          <AIQAPanel draft={dm} lead={lead} onRegenerate={() => confirmAndGenerateDM(lead)} />
                         </div>
                       )}
 
