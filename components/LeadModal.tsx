@@ -109,8 +109,8 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
     const files = Array.from(e.target.files || []);
     setUploadError(null);
     files.forEach(file => {
-      if (file.size > 5 * 1024 * 1024) {
-        setUploadError(`${file.name} exceeds the 5 MB limit.`);
+      if (file.size > 50 * 1024 * 1024) {
+        setUploadError(`${file.name} exceeds the 50 MB limit.`);
         return;
       }
       const reader = new FileReader();
@@ -381,7 +381,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
             <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", display: "flex", alignItems: "center", gap: 5 }}>
               <Paperclip size={11} /> ATTACHMENTS — feeds the AI
             </div>
-            <div style={{ fontSize: 10, color: MUTED }}>Upload contracts, proposals, conversation exports, screenshots — text files are read directly by the AI when drafting messages. Max 5 MB per file.</div>
+            <div style={{ fontSize: 10, color: MUTED }}>Upload contracts, proposals, conversation exports, screenshots — text files are read directly by the AI when drafting messages. Max 50 MB per file.</div>
 
             <input
               ref={fileInputRef}
