@@ -1,15 +1,17 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { MessageCircle, X, Send, AtSign } from "lucide-react";
+import { MessageCircle, X, Send, AtSign, ShieldCheck } from "lucide-react";
 import { Lead } from "../types";
 import {
   G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, TEXT, MUTED, MUTED2, iStyle, STATUS_COLOR,
 } from "../constants";
+import { runQAReview, runQAAdjust } from "../aiQA";
 
 interface AiMessage {
   role: "user" | "ai";
   text: string;
   dm?: string;
   strategy?: string;
+  qaFiltered?: boolean;  // true when the DM passed through the QA pipeline
 }
 
 interface AskAIProps {
@@ -124,7 +126,7 @@ export function AskAI({ leads }: AskAIProps) {
     if (!isDragging.current) return;
     const BUBBLE_SIZE = 54;
     const newRight = Math.max(8, Math.min(window.innerWidth - BUBBLE_SIZE - 8, dragRef.current.startRight - dx));
-    const newBottom = Math.max(8, Math.min(window.innerHeight - BUBBLE_SIZE - 8, dragRef.current.startBottom + dy));
+    const newBottom = Math.max(8, Math.min(window.innerHeight - BUBBLE_SIZE - 8, dragRef.current.startBottom - dy));
     const newPos = { bottom: newBottom, right: newRight };
     posRef.current = newPos;
     setBubblePos(newPos);
@@ -253,7 +255,27 @@ export function AskAI({ leads }: AskAIProps) {
         strategy = raw.slice(raw.indexOf(stratMarker) + stratMarker.length).trim();
       }
 
-      setMessages(prev => [...prev, { role: "ai", text: raw, dm: dm || undefined, strategy: strategy || undefined }]);
+      // ── QA filtering — only when we have a lead context and a generated DM ──
+      // Route the DM text through the same quality gate used in the main intern
+      // dashboard so chat-bubble DMs meet the same standard.
+      let finalDm = dm;
+      let qaFiltered = false;
+      if (dm && lead) {
+        try {
+          const review = await runQAReview(dm, lead);
+          if (review.needsAdjustment) {
+            const adjusted = await runQAAdjust(dm, review, lead);
+            if (adjusted && adjusted.trim()) {
+              finalDm = adjusted.trim();
+              qaFiltered = true;
+            }
+          }
+        } catch {
+          // QA is best-effort; if it fails, keep the original draft
+        }
+      }
+
+      setMessages(prev => [...prev, { role: "ai", text: raw, dm: finalDm || undefined, strategy: strategy || undefined, qaFiltered }]);
     } catch (err: any) {
       setMessages(prev => [...prev, { role: "ai", text: "Error: " + err.message }]);
     }

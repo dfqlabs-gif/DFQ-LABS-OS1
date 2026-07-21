@@ -103,6 +103,13 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
   const dayBeforeYesterdayStr = addDays(-2);
   const [showInternSection, setShowInternSection] = useState(false);
 
+  // ── Team workload expandable ───────────────────────────────────────────────
+  // expandedSpecialist = null (all collapsed) or the name currently expanded.
+  // staffActivityDate is independent from selectedActivityDate so expanding a
+  // team member row doesn't affect the old Intern Monitor's date picker.
+  const [expandedSpecialist, setExpandedSpecialist] = useState<string | null>(null);
+  const [staffActivityDate, setStaffActivityDate] = useState(today());
+
   // ── Core computed metrics ─────────────────────────────────────────────────
   const active = useMemo(() => leads.filter(l => !["Closed", "Lost"].includes(l.status)), [leads]);
   const closed = useMemo(() => leads.filter(l => l.status === "Closed"), [leads]);
@@ -339,6 +346,29 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     });
     return report;
   }, [activitiesForSelectedDate, specialists]);
+
+  // ── Staff activity breakdown for the expandable team workload section ─────
+  // Uses `staffActivityDate` (independent from `selectedActivityDate`)
+  const staffActivitiesForDate = useMemo(() => getInternActivities(leads, staffActivityDate), [leads, staffActivityDate]);
+  const staffStatsForDate = useMemo(() => {
+    const report: Record<string, any> = {};
+    specialists.forEach(s => {
+      const myActs = staffActivitiesForDate.filter(a => a.actor === s);
+      report[s] = {
+        newConvos:       myActs.filter(a => a.type === "dm").length,
+        followUps:       myActs.filter(a => a.type === "follow_up").length,
+        replies:         myActs.filter(a => a.type === "reply").length,
+        auditRequested:  myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
+        auditDelivered:  myActs.filter(a => a.type === "status_change" && (a.text === "Audit Delivered" || a.text === "Value Given")).length,
+        callsBooked:     myActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Booked").length,
+        callsDone:       myActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Done").length,
+        proposalsSent:   myActs.filter(a => a.type === "status_change" && a.text === "Proposal Sent").length,
+        closes:          myActs.filter(a => a.type === "status_change" && a.text === "Closed").length,
+        events:          myActs,
+      };
+    });
+    return report;
+  }, [staffActivitiesForDate, specialists]);
 
   // Weekly rollup (uses selected week, not just current week)
   const inWeek = (d: string) => d && d >= rollupWeekStart && d <= rollupWeekEnd;
@@ -789,24 +819,29 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
       ───────────────────────────────────────────────────────────────────── */}
       <div style={CARD}>
         {SECTION_LABEL(DollarSign, "Revenue Forecast")}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
-          {[
-            { label: "GUARANTEED", value: forecast.guaranteed, color: "#22C55E", desc: "Closed deals" },
-            { label: "LIKELY (60%+)", value: forecast.likely, color: G, desc: "High-probability pipeline" },
-            { label: "POSSIBLE (20%+)", value: forecast.possible, color: "#F59E0B", desc: "Mid-stage leads" },
-            { label: "STRETCH (ALL)", value: forecast.stretch, color: "#8B5CF6", desc: "Full pipeline potential" },
-          ].map(f => (
-            <div key={f.label} style={{ textAlign: "center", padding: "14px 10px", background: SURFACE2, borderRadius: 10, border: `1px solid ${BORDER}`, borderTop: `2px solid ${f.color}` }}>
-              <div style={{ fontSize: 8, color: MUTED, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>{f.label}</div>
-              <div style={{ fontSize: 18, fontWeight: 900, color: f.color, letterSpacing: "-0.02em" }}>{fmt(f.value)}</div>
-              <div style={{ fontSize: 9, color: MUTED2, marginTop: 4 }}>{f.desc}</div>
-            </div>
-          ))}
+        {/* Scrollable wrapper so cards don't get clipped on narrow screens */}
+        <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" as any }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(150px,1fr))", gap: 10, minWidth: 560 }}>
+            {[
+              { label: "GUARANTEED", value: forecast.guaranteed, color: "#22C55E", desc: "Closed deals (actual)" },
+              { label: "LIKELY (60%+)", value: forecast.likely, color: G, desc: "Weighted high-prob pipeline" },
+              { label: "POSSIBLE (20%+)", value: forecast.possible, color: "#F59E0B", desc: "Mid-stage leads (raw)" },
+              { label: "STRETCH (ALL)", value: forecast.stretch, color: "#8B5CF6", desc: "Full raw pipeline potential" },
+            ].map(f => (
+              <div key={f.label} style={{ textAlign: "center", padding: "14px 10px", background: SURFACE2, borderRadius: 10, border: `1px solid ${BORDER}`, borderTop: `2px solid ${f.color}` }}>
+                <div style={{ fontSize: 8, color: MUTED, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>{f.label}</div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: f.color, letterSpacing: "-0.02em" }}>{fmt(f.value)}</div>
+                <div style={{ fontSize: 9, color: MUTED2, marginTop: 4 }}>{f.desc}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* ─────────────────────────────────────────────────────────────────────
           SECTION 8 — TEAM PERFORMANCE DASHBOARD
+          Rows are clickable — click any specialist to expand their daily
+          activity breakdown with an independent date picker.
       ───────────────────────────────────────────────────────────────────── */}
       <div style={CARD}>
         {SECTION_LABEL(UserCheck, "Team Performance Dashboard")}
@@ -814,35 +849,104 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr>
-                {["Team Member", "Role", "Active Leads", "DMs Today", "Replies", "Meetings", "Deals Closed", "Revenue", "Productivity"].map(h => (
+                {["Team Member", "Role", "Active Leads", "DMs Today", "Replies", "Meetings", "Deals Closed", "Revenue", "Productivity", ""].map(h => (
                   <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontSize: 8, color: MUTED, fontWeight: 700, letterSpacing: "0.08em", borderBottom: `1px solid ${BORDER}`, whiteSpace: "nowrap" }}>{h.toUpperCase()}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {teamPerf.map((p, idx) => (
-                <tr key={p.name} style={{ borderBottom: `1px solid ${BORDER}` }}>
-                  <td style={{ padding: "10px 10px", fontWeight: 800, color: SPECIALIST_COLOR[p.name] || TEXT, whiteSpace: "nowrap" }}>
-                    {idx === 0 && <Star size={10} color="#F59E0B" style={{ marginRight: 4, display: "inline" }} />}
-                    {specialistLabel(p.name)}
-                  </td>
-                  <td style={{ padding: "10px 10px", color: MUTED2, fontSize: 10, whiteSpace: "nowrap" }}>{p.name === "Alex" ? "Founder" : p.name.includes("Intern") ? "Intern" : "Team"}</td>
-                  <td style={{ padding: "10px 10px", fontWeight: 700, color: TEXT }}>{p.activeLeads}</td>
-                  <td style={{ padding: "10px 10px", fontWeight: 700, color: G }}>{p.dmsSent}</td>
-                  <td style={{ padding: "10px 10px", fontWeight: 700, color: "#F59E0B" }}>{p.repliesGot}</td>
-                  <td style={{ padding: "10px 10px", fontWeight: 700, color: "#F97316" }}>{p.meetBk}</td>
-                  <td style={{ padding: "10px 10px", fontWeight: 700, color: "#22C55E" }}>{p.closedDeals}</td>
-                  <td style={{ padding: "10px 10px", fontWeight: 700, color: "#22C55E", whiteSpace: "nowrap" }}>{p.revenue > 0 ? fmt(p.revenue) : "—"}</td>
-                  <td style={{ padding: "10px 10px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <div style={{ width: 50, height: 4, background: BORDER, borderRadius: 2, overflow: "hidden" }}>
-                        <div style={{ width: `${Math.min(100, p.prodScore)}%`, height: "100%", background: health_color(p.prodScore), borderRadius: 2 }} />
-                      </div>
-                      <span style={{ fontSize: 10, fontWeight: 700, color: health_color(p.prodScore) }}>{p.prodScore}</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {teamPerf.map((p, idx) => {
+                const isExpanded = expandedSpecialist === p.name;
+                const sColor = SPECIALIST_COLOR[p.name] || TEXT;
+                const dayStats = staffStatsForDate[p.name] || {};
+                return (
+                  <React.Fragment key={p.name}>
+                    <tr
+                      onClick={() => setExpandedSpecialist(isExpanded ? null : p.name)}
+                      style={{ borderBottom: isExpanded ? "none" : `1px solid ${BORDER}`, cursor: "pointer", background: isExpanded ? `${sColor}08` : "transparent", transition: "background 0.15s" }}
+                    >
+                      <td style={{ padding: "10px 10px", fontWeight: 800, color: sColor, whiteSpace: "nowrap" }}>
+                        {idx === 0 && <Star size={10} color="#F59E0B" style={{ marginRight: 4, display: "inline" }} />}
+                        {specialistLabel(p.name)}
+                      </td>
+                      <td style={{ padding: "10px 10px", color: MUTED2, fontSize: 10, whiteSpace: "nowrap" }}>{p.name === "Alex" ? "Founder" : p.name.includes("Intern") ? "Intern" : "Team"}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: TEXT }}>{p.activeLeads}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: G }}>{p.dmsSent}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#F59E0B" }}>{p.repliesGot}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#F97316" }}>{p.meetBk}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#22C55E" }}>{p.closedDeals}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#22C55E", whiteSpace: "nowrap" }}>{p.revenue > 0 ? fmt(p.revenue) : "—"}</td>
+                      <td style={{ padding: "10px 10px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ width: 50, height: 4, background: BORDER, borderRadius: 2, overflow: "hidden" }}>
+                            <div style={{ width: `${Math.min(100, p.prodScore)}%`, height: "100%", background: health_color(p.prodScore), borderRadius: 2 }} />
+                          </div>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: health_color(p.prodScore) }}>{p.prodScore}</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: "10px 10px", color: MUTED, fontSize: 10, whiteSpace: "nowrap" }}>
+                        <ChevronRight size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+                      </td>
+                    </tr>
+                    {/* ── Expandable daily activity panel ── */}
+                    {isExpanded && (
+                      <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                        <td colSpan={10} style={{ padding: "0 0 12px 0" }}>
+                          <div style={{ background: `${sColor}08`, border: `1px solid ${sColor}25`, borderRadius: 10, padding: "14px 18px", margin: "0 0 4px 0" }}>
+                            {/* Date picker row */}
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: sColor }}>Activity for {specialistLabel(p.name)}</span>
+                              {[{ label: "Today", val: today() }, { label: "Yesterday", val: addDays(-1) }, { label: "2 Days Ago", val: addDays(-2) }].map(d => (
+                                <button key={d.label} onClick={e => { e.stopPropagation(); setStaffActivityDate(d.val); }} style={{ background: staffActivityDate === d.val ? G_DIM : "transparent", border: `1px solid ${staffActivityDate === d.val ? G_BORDER : BORDER}`, color: staffActivityDate === d.val ? G : MUTED, borderRadius: 5, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>{d.label}</button>
+                              ))}
+                              <input type="date" value={staffActivityDate} onChange={e => { e.stopPropagation(); setStaffActivityDate(e.target.value); }} onClick={e => e.stopPropagation()} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, color: TEXT, fontSize: 10, borderRadius: 5, padding: "3px 7px", outline: "none" }} />
+                            </div>
+                            {/* Stat tiles */}
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(110px,1fr))", gap: 8, marginBottom: 14 }}>
+                              {[
+                                { label: "New DMs Sent", val: dayStats.newConvos || 0, color: G },
+                                { label: "Follow-ups", val: dayStats.followUps || 0, color: "#3B82F6" },
+                                { label: "Replies Logged", val: dayStats.replies || 0, color: "#F59E0B" },
+                                { label: "Audits Requested", val: dayStats.auditRequested || 0, color: "#a855f7" },
+                                { label: "Audits Delivered", val: dayStats.auditDelivered || 0, color: "#ec4899" },
+                                { label: "Calls Booked", val: dayStats.callsBooked || 0, color: "#F97316" },
+                                { label: "Calls Done", val: dayStats.callsDone || 0, color: "#06B6D4" },
+                                { label: "Proposals Sent", val: dayStats.proposalsSent || 0, color: "#8B5CF6" },
+                                { label: "Closes", val: dayStats.closes || 0, color: "#22C55E" },
+                              ].map(stat => (
+                                <div key={stat.label} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px", textAlign: "center" }}>
+                                  <div style={{ fontSize: 18, fontWeight: 900, color: stat.color }}>{stat.val}</div>
+                                  <div style={{ fontSize: 9, color: MUTED2, marginTop: 3 }}>{stat.label}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {/* Event log */}
+                            {(dayStats.events || []).length > 0 ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 200, overflowY: "auto" }}>
+                                {(dayStats.events as any[]).map((act: any, i: number) => {
+                                  const timeStr = new Date(act.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+                                  return (
+                                    <div key={i} style={{ borderLeft: `2px solid ${sColor}`, paddingLeft: 10, paddingBottom: 4 }}>
+                                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: TEXT }}>
+                                        <span style={{ color: MUTED2 }}>{act.title}</span>
+                                        <span style={{ color: MUTED }}>{timeStr !== "Invalid Date" ? timeStr : ""}</span>
+                                      </div>
+                                      <div style={{ fontSize: 10, color: MUTED, marginTop: 2, fontWeight: 600 }}>{act.company}</div>
+                                      {act.text && <div style={{ fontSize: 10, color: "#999", marginTop: 1, whiteSpace: "pre-wrap" }}>{act.text.slice(0, 100)}{act.text.length > 100 ? "…" : ""}</div>}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 11, color: MUTED, textAlign: "center", padding: "12px 0" }}>No events logged for {staffActivityDate}.</div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

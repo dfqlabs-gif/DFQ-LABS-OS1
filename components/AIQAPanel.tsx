@@ -13,10 +13,15 @@ import {
   G, G_DIM, G_BORDER, BORDER, SURFACE2, MUTED, MUTED2, TEXT,
 } from "../constants";
 
+export interface QARegenerateContext {
+  originalDraft: string;
+  adjustedDraft?: string;
+}
+
 interface AIQAPanelProps {
   draft: string;
   lead: Lead;
-  onRegenerate: () => void;
+  onRegenerate: (ctx?: QARegenerateContext) => void;
 }
 
 type Phase =
@@ -265,7 +270,7 @@ export function AIQAPanel({ draft, lead, onRegenerate }: AIQAPanelProps) {
 
           {validation.status === "rejected" && (
             <button
-              onClick={onRegenerate}
+              onClick={() => onRegenerate({ originalDraft: draft, adjustedDraft: adjusted || undefined })}
               style={{
                 background: "rgba(239,68,68,0.1)", color: "#EF4444",
                 border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6,
@@ -273,7 +278,7 @@ export function AIQAPanel({ draft, lead, onRegenerate }: AIQAPanelProps) {
                 display: "flex", alignItems: "center", gap: 5,
               }}
             >
-              <RefreshCw size={11} /> Regenerate Draft
+              <RefreshCw size={11} /> Regenerate (Improved)
             </button>
           )}
         </div>

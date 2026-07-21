@@ -19,7 +19,8 @@ import {
   SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE, specialistLabel
 } from "./constants";
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
-import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspectSummary } from "./aiEngine";
+import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspectSummary, DraftContext } from "./aiEngine";
+import { QARegenerateContext } from "./components/AIQAPanel";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -853,6 +854,11 @@ export default function App() {
             };
             if (legacyMap[assignedTo]) assignedTo = legacyMap[assignedTo];
 
+            // "Value Given" is the same as "Audit Delivered" — remap on load
+            // so it disappears as a distinct status without losing any data.
+            let status = l.status || "New";
+            if (status === "Value Given") status = "Audit Delivered";
+
             let aiBucket = l.aiBucket;
             if (aiBucket && !BUCKETS.includes(aiBucket)) aiBucket = undefined;
 
@@ -864,6 +870,7 @@ export default function App() {
               conversationLog: l.conversationLog || [],
               ...l,
               assignedTo,
+              status,  // use remapped status (Value Given → Audit Delivered)
               aiBucket
             };
 
@@ -1474,12 +1481,23 @@ function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess
 function InternDashboard({ internNames, displayName, leads, onSave, onQuickContact, classifying, onLogout }: any) {
   const [internTab, setInternTab] = useState<"queue" | "coach">("queue");
   const [range, setRange] = useState("today");
+
+  // Dark mode — shared with Founder view via localStorage key "dfq-dark-mode"
+  const [darkMode, setDarkMode] = useState(() => {
+    try { const s = localStorage.getItem("dfq-dark-mode"); return s !== "false"; } catch { return true; }
+  });
+  useEffect(() => {
+    document.body.classList.toggle("light-mode", !darkMode);
+    try { localStorage.setItem("dfq-dark-mode", String(darkMode)); } catch {}
+  }, [darkMode]);
   const [search, setSearch] = useState("");
   const [dmOutputs, setDmOutputs] = useState<Record<string, string>>({});
   // dmStep tracks the two-step DM generation flow per lead:
   // 'idle' | 'summarizing' | 'awaiting-confirm' | 'generating'
   const [dmStep, setDmStep] = useState<Record<string, string>>({});
   const [dmSummary, setDmSummary] = useState<Record<string, string>>({});
+  // Tracks original + adjusted drafts per lead for the learning loop
+  const [dmPriorContext, setDmPriorContext] = useState<Record<string, DraftContext>>({});
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modal, setModal] = useState<Lead | null>(null);
@@ -1529,11 +1547,26 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
   };
 
   // Step 2 — specialist confirmed the summary; now generate the actual DM.
-  const confirmAndGenerateDM = async (lead: Lead) => {
+  // priorCtx is populated on regeneration cycles (learning loop): it carries
+  // the original draft + QA-adjusted draft so the next generation can improve on both.
+  const confirmAndGenerateDM = async (lead: Lead, priorCtx?: DraftContext) => {
     setDmStep(p => ({ ...p, [lead.id]: 'generating' }));
+
+    // Build full context: always include the specialist-confirmed summary from step 1.
+    const summary = dmSummary[lead.id];
+    const context: DraftContext | undefined = (summary || priorCtx) ? {
+      summary: priorCtx?.summary || summary || undefined,
+      originalDraft: priorCtx?.originalDraft,
+      adjustedDraft: priorCtx?.adjustedDraft,
+    } : undefined;
+
     try {
-      const text = await runFollowUpReply(lead);
+      const text = await runFollowUpReply(lead, context);
       setDmOutputs(p => ({ ...p, [lead.id]: text }));
+      // Save original draft (without strategy block) for the learning loop.
+      // On next "Regenerate", the QA panel passes it back via onRegenerate(ctx).
+      const cleanDraft = text.split('\n\n---STRATEGY---')[0].trim();
+      setDmPriorContext(p => ({ ...p, [lead.id]: { summary: summary || undefined, originalDraft: cleanDraft } }));
     } catch (e: any) {
       setDmOutputs(p => ({ ...p, [lead.id]: 'Error: ' + e.message }));
     }
@@ -1563,6 +1596,13 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
           <button onClick={() => setModal({
             id: Date.now().toString(), name: "", company: "", phone: "", source: "WhatsApp", clientType: "Real Estate Developer", service: "Growth — ₦500K/mo", status: "New", priority: "Medium", assignedTo: names[0] || "Intern A", notes: "", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: today(), lastContacted: "", lastMeaningfulTouchpoint: today(), awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: getWeekKey(new Date()), completedFollowUps: [], deliveryStage: "Discovery", deliveryNote: "", betaCandidate: false, autoFollowUpDate: today(), autoFollowUpReason: "New lead."
           })} style={{ background: G, color: "#000", border: "none", borderRadius: 6, padding: "7px 14px", fontWeight: 800, fontSize: 11, cursor: "pointer", boxShadow: `0 0 14px ${G}30`, display: "flex", alignItems: "center", gap: 5 }}><Plus size={13} />ADD LEAD</button>
+          <button
+            onClick={() => setDarkMode((d: boolean) => !d)}
+            title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+            style={{ background: "transparent", border: `1px solid ${BORDER}`, borderRadius: 6, padding: "6px 8px", cursor: "pointer", color: MUTED, display: "flex", alignItems: "center" }}
+          >
+            {darkMode ? <Sun size={13} /> : <Moon size={13} />}
+          </button>
           <button onClick={onLogout} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "6px 12px", fontSize: 11, cursor: "pointer" }}>Switch Role</button>
         </div>
       </header>
@@ -1650,7 +1690,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                         </div>
                         <div style={{ display: "flex", gap: 6 }}>
                           <button onClick={() => startDMFlow(lead)} disabled={!!dmStep[lead.id] && dmStep[lead.id] !== 'idle'} style={{ background: (dmStep[lead.id] && dmStep[lead.id] !== 'idle') ? SURFACE2 : G_DIM, color: (dmStep[lead.id] && dmStep[lead.id] !== 'idle') ? MUTED : G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700 }}>{dmStep[lead.id] === 'summarizing' ? "Reading thread…" : dmStep[lead.id] === 'generating' ? "Writing…" : "Draft DM"}</button>
-                          <button onClick={() => onQuickContact(lead)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700 }}>✓ Contacted</button>
+                          <button onClick={() => onQuickContact(lead)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700 }}>✓ Followed Up</button>
                           <button onClick={() => setExpandedId(expanded ? null : lead.id)} style={{ background: expanded ? G_DIM : "transparent", border: `1px solid ${expanded ? G_BORDER : BORDER}`, color: expanded ? G : MUTED, borderRadius: 6, padding: "6px 10px", fontSize: 11 }}>{expanded ? "Hide" : "Thread"}</button>
                           <button onClick={() => setModal(lead)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED2, borderRadius: 6, padding: "6px 10px", fontSize: 11 }}>Edit</button>
                         </div>
@@ -1678,7 +1718,15 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                             <CopyBtn text={dm} />
                             <button onClick={() => startDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
                           </div>
-                          <AIQAPanel draft={dm} lead={lead} onRegenerate={() => confirmAndGenerateDM(lead)} />
+                          <AIQAPanel draft={dm} lead={lead} onRegenerate={(ctx?: QARegenerateContext) => {
+                            // Learning loop: pass the original draft + QA-adjusted draft back into generation
+                            const learningCtx: DraftContext = {
+                              summary: dmSummary[lead.id],
+                              originalDraft: ctx?.originalDraft || dmPriorContext[lead.id]?.originalDraft,
+                              adjustedDraft: ctx?.adjustedDraft,
+                            };
+                            confirmAndGenerateDM(lead, learningCtx);
+                          }} />
                         </div>
                       )}
 
@@ -1852,7 +1900,7 @@ function LeadRow({ lead, onEdit, onDelete, onSave, onQuickContact, classifying }
           {isOverdue && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "#EF4444", fontWeight: 700 }}>OVERDUE</span>}
         </div>
         <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap" }}>
-          {!["Closed", "Lost"].includes(lead.status) && <button onClick={() => onQuickContact(lead)} style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.3)", color: "#22C55E", borderRadius: 5, padding: "3px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>✓ Contacted</button>}
+          {!["Closed", "Lost"].includes(lead.status) && <button onClick={() => onQuickContact(lead)} style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.3)", color: "#22C55E", borderRadius: 5, padding: "3px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>✓ Followed Up</button>}
           <button onClick={() => setExp(!exp)} style={{ background: exp ? G_DIM : "transparent", border: `1px solid ${exp ? G_BORDER : BORDER}`, color: exp ? G : MUTED, borderRadius: 5, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>Thread</button>
           <button onClick={() => onEdit(lead)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED2, borderRadius: 5, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>Edit</button>
           {confirmDel ? (

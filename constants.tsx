@@ -59,7 +59,7 @@ export const STATUSES = [
   "Replied",
   "Audit Requested",
   "Audit Delivered",
-  "Value Given",
+  // "Value Given" removed — same as "Audit Delivered". Kept in STATUS_COLOR/STAGE_PROBABILITY for backward compat with existing leads.
   "Discovery Call Booked",
   "Discovery Call Done",
   "Proposal Sent",

@@ -278,10 +278,30 @@ export async function runStrategyGenerator(lead: Lead, task: string): Promise<St
   return parseStrategy(raw, neverMention);
 }
 
+// ─── Context from a prior generation cycle (summary + previous drafts) ──────
+export interface DraftContext {
+  summary?: string;         // prospect position summary the specialist confirmed
+  originalDraft?: string;   // first AI draft before QA
+  adjustedDraft?: string;   // QA-adjusted version (if one was produced)
+}
+
 // STEP 6 — DM Writer (AI call #2). Receives ONLY the structured strategy —
 // never the raw CRM notes or conversation dump — plus the minimal identity
 // fields needed to address the prospect correctly.
-function buildDMWriterPrompt(lead: Lead, strategy: Strategy, styleInstructions: string): string {
+// priorContext is threaded in when the specialist clicks "Regenerate" after QA,
+// so the new draft improves on both previous versions rather than starting cold.
+function buildDMWriterPrompt(lead: Lead, strategy: Strategy, styleInstructions: string, priorContext?: DraftContext): string {
+  let priorBlock = "";
+  if (priorContext) {
+    const parts: string[] = [];
+    if (priorContext.summary) parts.push(`SPECIALIST-CONFIRMED SUMMARY OF PROSPECT'S POSITION:\n${priorContext.summary}`);
+    if (priorContext.originalDraft) parts.push(`ORIGINAL DRAFT (first attempt — do not repeat its mistakes):\n${priorContext.originalDraft}`);
+    if (priorContext.adjustedDraft) parts.push(`QA-ADJUSTED DRAFT (improved version — build on its strengths, fix remaining issues):\n${priorContext.adjustedDraft}`);
+    if (parts.length > 0) {
+      priorBlock = `\n=== IMPROVEMENT CONTEXT (use this to write a BETTER version) ===\n${parts.join("\n\n")}\nWrite an improved draft that takes the strongest elements of the above and fixes any remaining problems. Do NOT repeat phrases verbatim from either draft.\n=== END IMPROVEMENT CONTEXT ===\n`;
+    }
+  }
+
   return `You are Alex, writing directly to this prospect. You do NOT have access to the raw CRM — you only have this structured briefing from your sales strategist. Write ONLY the outward-facing message. Do not restate, quote, or reference the briefing itself.
 
 === STRATEGY BRIEFING ===
@@ -294,7 +314,7 @@ Reasoning: ${strategy.reasoning || "n/a"}
 Prospect's likely emotion: ${strategy.emotion || "n/a"}
 Key facts to ground the message in: ${strategy.keyFacts || "none available — do not invent any"}
 ${strategy.neverMention ? `Never mention again: ${strategy.neverMention}` : ""}
-=== END BRIEFING ===
+=== END BRIEFING ===${priorBlock}
 
 ${styleInstructions}`;
 }
@@ -330,11 +350,13 @@ ${message}
 
 // Orchestrator — runs the full 7-step pipeline and returns the message with
 // its strategy readout appended (matches the existing "---STRATEGY---" UI convention).
-export async function runSalesPipeline(lead: Lead, task: string, styleInstructions: string, maxTokens = 900): Promise<string> {
+// priorContext is passed on regeneration cycles so the DM Writer can improve on
+// previous drafts rather than starting from scratch.
+export async function runSalesPipeline(lead: Lead, task: string, styleInstructions: string, maxTokens = 900, priorContext?: DraftContext): Promise<string> {
   const strategy = await runStrategyGenerator(lead, task);
 
   const draft = (fix?: string) => runAI(
-    buildDMWriterPrompt(lead, strategy, fix ? `${styleInstructions}\n\nIMPORTANT FIX (a quality check flagged the previous draft): ${fix}` : styleInstructions),
+    buildDMWriterPrompt(lead, strategy, fix ? `${styleInstructions}\n\nIMPORTANT FIX (a quality check flagged the previous draft): ${fix}` : styleInstructions, priorContext),
     maxTokens
   );
 
@@ -379,8 +401,15 @@ HOW TO WRITE (this is the most important part — read every word):
 - Output ONLY the message. Nothing else. No labels, no quotes around it, no explanation.`;
 }
 
-export async function runFollowUpReply(lead: Lead): Promise<string> {
-  return runSalesPipeline(lead, "Draft the next outbound follow-up message to this lead.", followUpWriteInstructions(), 900);
+export async function runFollowUpReply(lead: Lead, priorContext?: DraftContext): Promise<string> {
+  // If a prospect summary was confirmed by the specialist, prepend it to the task
+  // description so the Strategy Generator and DM Writer are both aligned with what
+  // the specialist verified before clicking "Yes — Generate DM".
+  let task = "Draft the next outbound follow-up message to this lead.";
+  if (priorContext?.summary) {
+    task = `Draft the next outbound follow-up message to this lead. The outreach specialist reviewed the conversation and confirmed this summary of the prospect's current position: "${priorContext.summary}" — treat this as ground truth for where the prospect is right now.`;
+  }
+  return runSalesPipeline(lead, task, followUpWriteInstructions(), 900, priorContext);
 }
 
 // ─── Prospect Position Summary — Step 1 of the two-step DM generation flow ──
@@ -518,7 +547,13 @@ ${buildPipelineContext(leads)}`;
 
 export function buildCEOAdvisorPrompt(leads: Lead[], revenue: any, question?: string): string {
   const snapshot = buildPipelineContext(leads);
-  const revenueLine = `Revenue — guaranteed: ₦${Math.round(revenue?.guaranteed || 0).toLocaleString()}, likely: ₦${Math.round(revenue?.likely || 0).toLocaleString()}, weighted: ₦${Math.round(revenue?.weighted || 0).toLocaleString()}.`;
+  // Clearly label the two different pipeline figures so the AI never conflates them.
+  // RAW pipeline = sum of SERVICE_VALUE for all active leads (no probability weighting).
+  // WEIGHTED pipeline = each lead's SERVICE_VALUE × STAGE_PROBABILITY (expected value).
+  // The dashboard "PIPELINE VALUE" card shows the RAW figure; "WEIGHTED" is different.
+  const active = leads.filter(l => !["Closed", "Lost"].includes(l.status));
+  const rawPipeline = active.reduce((s, l) => s + (SERVICE_VALUE[l.service] || 0), 0);
+  const revenueLine = `Revenue — guaranteed (closed): ₦${Math.round(revenue?.guaranteed || 0).toLocaleString()} | Raw pipeline (unweighted active leads): ₦${Math.round(rawPipeline).toLocaleString()} | Weighted pipeline (probability-adjusted): ₦${Math.round(revenue?.weighted || 0).toLocaleString()} | Likely (60%+ prob): ₦${Math.round(revenue?.likely || 0).toLocaleString()}. Do NOT present the raw pipeline and weighted pipeline as the same number — they are materially different.`;
 
   if (question && question.trim()) {
     return `You are reasoning as the Head of Sales for DFQ Labs, answering the founder's direct strategic question. Ground your answer strictly in the CRM data below — cite specific leads, numbers, or stages where relevant. Be direct, concise, and actionable. No generic advice that ignores the data.
