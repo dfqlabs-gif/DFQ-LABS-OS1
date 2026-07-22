@@ -1869,6 +1869,16 @@ function PipelineTab({ leads, onEdit, onDelete, onSave, onQuickContact, classify
           <LeadRow key={l.id} lead={l} onEdit={onEdit} onDelete={onDelete} onSave={onSave} onQuickContact={onQuickContact} classifying={classifying?.has(l.id)} />
         ))}
       </div>
+      {sorted.length > visibleCount && (
+        <div style={{ textAlign: "center", marginTop: 14 }}>
+          <button
+            onClick={() => setVisibleCount(c => c + 50)}
+            style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 8, padding: "9px 24px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+          >
+            Load More ({sorted.length - visibleCount} remaining)
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -58,9 +58,30 @@ FINAL SELF-CHECK before answering: would Alex, the founder of DFQ Labs, personal
 
 export const SYSTEM_PROMPT = `${BUSINESS_CONTEXT}\n\n${REASONING_ENGINE_IDENTITY}\n\n${SPEAKER_RULES}\n\n${THINKING_FRAMEWORK}`;
 
+// ─── Strip markdown formatting from AI responses ──────────────────────────────
+// Gemini (and other models) sometimes return asterisks, hashes, and other
+// markdown syntax. This strips them so output is clean plain text.
+export function stripMarkdown(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/#{1,6} ?/g, '')       // headings
+    .replace(/\*\*(.+?)\*\*/gs, '$1') // bold **text**
+    .replace(/\*(.+?)\*/gs, '$1')    // italic *text*
+    .replace(/_{2}(.+?)_{2}/gs, '$1') // bold __text__
+    .replace(/_(.+?)_/gs, '$1')       // italic _text_
+    .replace(/~~(.+?)~~/gs, '$1')     // strikethrough
+    .replace(/`{3}[\s\S]*?`{3}/g, '') // fenced code blocks
+    .replace(/`([^`]+)`/g, '$1')      // inline code
+    .replace(/^\s*[-*+] /gm, '')      // unordered list markers
+    .replace(/^\s*\d+\. /gm, '')      // ordered list markers (remove number+dot)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // markdown links → just label
+    .trim();
+}
+
 // ─── Central entry point — every AI feature should call this, not callClaude directly ───
 export async function runAI(userPrompt: string, maxTokens = 900): Promise<string> {
-  return callClaude(SYSTEM_PROMPT, userPrompt, maxTokens);
+  const raw = await callClaude(SYSTEM_PROMPT, userPrompt, maxTokens);
+  return stripMarkdown(raw);
 }
 
 // ─── Context Builder ────────────────────────────────────────────────────────
@@ -499,6 +520,37 @@ ${buildLeadContext(lead)}`;
 
 export function buildClosingPlanPrompt(lead: Lead): string {
   return `Write a sharp 60-day closing plan for this lead, tailored to their client archetype's typical decision cycle and grounded in their specific CRM history. Provide highly tactical recommendations for closing them into our Beta Partnership Program (60 days at no cost, ₦100,000 commitment fee). Provide actions at each stage.
+
+${buildLeadContext(lead)}`;
+}
+
+export function buildClosingDMPrompt(lead: Lead): string {
+  return `You are Alex from DFQ Labs writing a closing DM directly to this prospect on WhatsApp or Instagram DM.
+
+This lead is at a point where the goal is to close them — either into our paid service or the Beta Partnership Program (60 days fully managed at no cost, only ₦100,000 commitment fee to verify alignment).
+
+Write ONE powerful, short closing message (2-4 sentences max). Requirements:
+- Address any known objections from the conversation naturally — never pretend they weren't raised.
+- Offer a clear, easy YES — make the next step feel like a no-brainer.
+- Sound like a confident advisor, not a desperate salesperson.
+- Zero emojis. Zero exclamation marks. Zero AI buzzwords.
+- If the Beta Program is the right fit, introduce or restate it cleanly.
+- Output ONLY the message. No labels. No strategy block.
+
+${buildLeadContext(lead)}`;
+}
+
+export function buildFollowUpDMPrompt(lead: Lead): string {
+  return `You are Alex from DFQ Labs writing a follow-up DM to this prospect on WhatsApp or Instagram DM.
+
+This is a direct follow-up in an active conversation. Do NOT restart the relationship or reintroduce yourself.
+
+Write ONE focused follow-up message (2-4 sentences). Requirements:
+- Pick up exactly where the last exchange left off.
+- Pursue ONLY the single correct next objective for this lead's current stage.
+- Refer to something specific from their conversation history — never generic.
+- Zero emojis. Zero exclamation marks. Zero AI buzzwords.
+- Output ONLY the message. No labels. No explanation.
 
 ${buildLeadContext(lead)}`;
 }

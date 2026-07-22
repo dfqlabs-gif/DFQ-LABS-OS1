@@ -4,7 +4,7 @@ import React from "react";
 import { Lead } from "../types";
 import { AIQAPanel } from "./AIQAPanel";
 import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, MUTED2, TEXT } from "../constants";
-import { runAI, runFollowUpReply, runProspectSummary, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildPipelinePrompt } from "../aiEngine";
+import { runAI, runFollowUpReply, runProspectSummary, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildClosingDMPrompt, buildFollowUpDMPrompt, buildPipelinePrompt } from "../aiEngine";
 
 interface AICoachProps {
   leads: Lead[];
@@ -42,13 +42,14 @@ export function AICoach({ leads }: AICoachProps) {
   const selected = leads.find(l => l.id === selectedId);
   const MODES = [
     { key: "followup", label: "Value DM" },
-    { key: "audit", label: "Audit Pitch" },
+    { key: "followupdm", label: "Follow-up DM" },
+    { key: "closingdm", label: "Closing DM" },
     { key: "objections", label: "Rebuttals" },
-    { key: "plan", label: "Closing Plan" }
   ];
 
   const buildPrompt = (lead: Lead, m: string) => {
-    if (m === "audit") return buildAuditPrompt(lead);
+    if (m === "followupdm") return buildFollowUpDMPrompt(lead);
+    if (m === "closingdm") return buildClosingDMPrompt(lead);
     if (m === "objections") return buildObjectionsPrompt(lead);
     return buildClosingPlanPrompt(lead);
   };

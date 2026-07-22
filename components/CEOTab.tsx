@@ -16,7 +16,8 @@ import {
   hoursUntil, touchpointDate, RELATIONSHIP_WARNING_DAYS, RELATIONSHIP_RENEWAL_DAYS,
   RESPONSE_GUARD_HOURS, MEETING_WINDOW_HOURS, scoreLead
 } from "../constants";
-import { buildCEOAdvisorPrompt, runAI } from "../aiEngine";
+import { buildCEOAdvisorPrompt, runAI, runProspectSummary, runFollowUpReply } from "../aiEngine";
+import { runQAReview, runQAAdjust } from "../aiQA";
 
 interface CEOTabProps {
   leads: Lead[];
@@ -102,6 +103,74 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
   const yesterdayStr = addDays(-1);
   const dayBeforeYesterdayStr = addDays(-2);
   const [showInternSection, setShowInternSection] = useState(false);
+
+  // ── Draft DM state for priority opportunities ──────────────────────────────
+  const [draftDMLead, setDraftDMLead] = useState<Lead | null>(null);
+  const [draftDMStep, setDraftDMStep] = useState<'idle'|'summarizing'|'awaiting-confirm'|'generating'|'done'>('idle');
+  const [draftDMSummary, setDraftDMSummary] = useState('');
+  const [draftDMOutput, setDraftDMOutput] = useState('');
+  const [draftDMCopied, setDraftDMCopied] = useState(false);
+
+  const startDraftDM = async (lead: Lead) => {
+    setDraftDMLead(lead);
+    setDraftDMStep('summarizing');
+    setDraftDMSummary('');
+    setDraftDMOutput('');
+    setDraftDMCopied(false);
+    try {
+      const summary = await runProspectSummary(lead);
+      setDraftDMSummary(summary);
+      setDraftDMStep('awaiting-confirm');
+    } catch {
+      setDraftDMStep('idle');
+      setDraftDMLead(null);
+    }
+  };
+
+  const confirmDraftDM = async () => {
+    if (!draftDMLead) return;
+    setDraftDMStep('generating');
+    try {
+      let text = await runFollowUpReply(draftDMLead, { summary: draftDMSummary });
+      // Strip strategy block for display
+      const stratIdx = text.indexOf('---STRATEGY---');
+      if (stratIdx !== -1) text = text.slice(0, stratIdx).trim();
+      // QA pass
+      try {
+        const review = await runQAReview(text, draftDMLead);
+        if (review.needsAdjustment) {
+          const adjusted = await runQAAdjust(review, text, draftDMLead!);
+          if (adjusted && adjusted.trim()) text = adjusted.trim();
+        }
+      } catch { /* QA best-effort */ }
+      setDraftDMOutput(text);
+      setDraftDMStep('done');
+    } catch (e: any) {
+      setDraftDMOutput('Error: ' + e.message);
+      setDraftDMStep('done');
+    }
+  };
+
+  const cancelDraftDM = () => {
+    setDraftDMLead(null);
+    setDraftDMStep('idle');
+    setDraftDMSummary('');
+    setDraftDMOutput('');
+  };
+
+  const copyDraftDM = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = draftDMOutput;
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setDraftDMCopied(true);
+      setTimeout(() => setDraftDMCopied(false), 2000);
+    } catch {}
+  };
 
   // ── Team workload expandable ───────────────────────────────────────────────
   // expandedSpecialist = null (all collapsed) or the name currently expanded.
@@ -201,11 +270,14 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
   }, [leads, active, closed, closeRate, weekStart, pipelineValue, guaranteedRevenue, specialists]);
 
   // ── Funnel stage data ─────────────────────────────────────────────────────
-  const FUNNEL_STAGES = ["New", "DM Sent", "Replied", "Audit Requested", "Audit Delivered", "Value Given", "Discovery Call Booked", "Discovery Call Done", "Proposal Sent", "Closed"];
+  // "Value Given" removed — it's the same as "Audit Delivered". Leads in that
+  // legacy status are counted under "Audit Delivered" via STATUS_COLOR/STAGE_PROBABILITY.
+  const FUNNEL_STAGES = ["New", "DM Sent", "Replied", "Audit Requested", "Audit Delivered", "Discovery Call Booked", "Discovery Call Done", "Proposal Sent", "Closed"];
   const funnelData = useMemo(() => {
     return FUNNEL_STAGES.map(stage => {
-      const count = leads.filter(l => l.status === stage).length;
-      const value = leads.filter(l => l.status === stage).reduce((s, l) => s + (SERVICE_VALUE[l.service] || 0), 0);
+      // Count "Value Given" under "Audit Delivered" for backward compat
+      const count = leads.filter(l => l.status === stage || (stage === "Audit Delivered" && l.status === "Value Given")).length;
+      const value = leads.filter(l => l.status === stage || (stage === "Audit Delivered" && l.status === "Value Given")).reduce((s, l) => s + (SERVICE_VALUE[l.service] || 0), 0);
       return { stage, count, value };
     });
   }, [leads]);
@@ -216,20 +288,21 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     for (let i = 0; i < funnelData.length - 1; i++) {
       const from = funnelData[i];
       const to = funnelData[i + 1];
-      // Count leads that have reached or passed `to.stage`
       const fromReached = leads.filter(l => {
-        const fi = FUNNEL_STAGES.indexOf(l.status);
+        const status = l.status === "Value Given" ? "Audit Delivered" : l.status;
+        const fi = FUNNEL_STAGES.indexOf(status);
         return fi >= i;
       }).length;
       const toReached = leads.filter(l => {
-        const fi = FUNNEL_STAGES.indexOf(l.status);
+        const status = l.status === "Value Given" ? "Audit Delivered" : l.status;
+        const fi = FUNNEL_STAGES.indexOf(status);
         return fi >= i + 1;
       }).length;
       const convRate = fromReached > 0 ? Math.round((toReached / fromReached) * 100) : 0;
       // Expected benchmarks per stage
       const benchmarks: Record<string, number> = {
         "New": 70, "DM Sent": 35, "Replied": 55, "Audit Requested": 65,
-        "Audit Delivered": 60, "Value Given": 55, "Discovery Call Booked": 75,
+        "Audit Delivered": 60, "Discovery Call Booked": 75,
         "Discovery Call Done": 70, "Proposal Sent": 45
       };
       const expected = benchmarks[from.stage] || 50;
@@ -310,14 +383,16 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     const activeLeads = mine.filter(l => !["Closed", "Lost"].includes(l.status));
     const closedDeals = mine.filter(l => l.status === "Closed");
     const todayActs = getInternActivities(leads, today()).filter(a => a.actor === s);
-    const dmsSent = todayActs.filter(a => a.type === "dm").length;
-    const repliesGot = todayActs.filter(a => a.type === "reply").length;
-    const meetBk = mine.filter(l => (l.status === "Discovery Call Booked" || l.meetingScheduledAt) && (l.dateAdded || "") >= weekStart).length;
+    const dmsSent = todayActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length;
+    const repliesGot = todayActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length;
+    const auditReq = todayActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length;
+    const auditDel = todayActs.filter(a => a.type === "status_change" && (a.text === "Audit Delivered" || a.text === "Value Given")).length;
+    const callBooked = todayActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Booked").length;
+    const callDone = todayActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Done").length;
     const revenue = closedDeals.reduce((s, l) => s + (SERVICE_VALUE[l.service] || 0), 0);
-    const responseTime = mine.filter(l => l.awaitingReplySince).length === 0 ? 95 : 60;
-    const prodScore = Math.min(100, Math.round((dmsSent * 10) + (repliesGot * 15) + (meetBk * 20) + (closedDeals.length * 25)));
-    return { name: s, activeLeads: activeLeads.length, closedDeals: closedDeals.length, dmsSent, repliesGot, meetBk, revenue, responseTime, prodScore };
-  }).sort((a, b) => b.prodScore - a.prodScore), [leads, specialists, weekStart]);
+    const prodScore = Math.min(100, Math.round((dmsSent * 10) + (repliesGot * 15) + (auditReq * 10) + (auditDel * 15) + (callBooked * 20) + (callDone * 20) + (closedDeals.length * 25)));
+    return { name: s, activeLeads: activeLeads.length, closedDeals: closedDeals.length, dmsSent, repliesGot, auditReq, auditDel, callBooked, callDone, revenue, prodScore };
+  }).sort((a, b) => b.prodScore - a.prodScore), [leads, specialists]);
 
   // ── Live activity feed ─────────────────────────────────────────────────────
   const liveActivity = useMemo(() => {
@@ -334,14 +409,12 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     specialists.forEach(s => {
       const myActs = activitiesForSelectedDate.filter(a => a.actor === s);
       report[s] = {
-        newLeads: myActs.filter(a => a.type === "add").length,
-        outreaches: myActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length,
+        dmsSent: myActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length,
         replies: myActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length,
         auditsRequested: myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
         auditsDelivered: myActs.filter(a => a.type === "status_change" && (a.text === "Audit Delivered" || a.text === "Value Given")).length,
-        meetingsBooked: myActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Booked").length,
-        proposalsSent: myActs.filter(a => a.type === "status_change" && a.text === "Proposal Sent").length,
-        clientsClosed: myActs.filter(a => a.type === "status_change" && a.text === "Closed").length,
+        callsBooked: myActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Booked").length,
+        callsDone: myActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Done").length,
       };
     });
     return report;
@@ -754,14 +827,53 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
       ───────────────────────────────────────────────────────────────────── */}
       <div style={CARD}>
         {SECTION_LABEL(Target, "Highest Priority Opportunities")}
+
+        {/* Draft DM inline panel */}
+        {draftDMLead && (
+          <div style={{ background: G_DIM, border: `1px solid ${G_BORDER}`, borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: G, marginBottom: 8 }}>
+              Drafting DM for {draftDMLead.name || draftDMLead.company}
+            </div>
+            {draftDMStep === 'summarizing' && (
+              <div style={{ fontSize: 11, color: MUTED }}>Reading conversation thread…</div>
+            )}
+            {draftDMStep === 'awaiting-confirm' && draftDMSummary && (
+              <>
+                <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.08em", marginBottom: 6 }}>WHERE IS THIS PROSPECT?</div>
+                <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 12 }}>{draftDMSummary}</div>
+                <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>Does this match your understanding of where they are?</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={confirmDraftDM} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "8px 18px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate DM</button>
+                  <button onClick={cancelDraftDM} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "8px 14px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
+                </div>
+              </>
+            )}
+            {draftDMStep === 'generating' && (
+              <div style={{ fontSize: 11, color: MUTED }}>Writing DM through AI + QA pipeline…</div>
+            )}
+            {draftDMStep === 'done' && draftDMOutput && (
+              <>
+                <div style={{ fontSize: 12, lineHeight: 1.8, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10, background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px" }}>{draftDMOutput}</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={copyDraftDM} style={{ background: draftDMCopied ? "rgba(34,197,94,0.1)" : "transparent", border: `1px solid ${draftDMCopied ? "rgba(34,197,94,0.4)" : BORDER}`, color: draftDMCopied ? "#22C55E" : TEXT, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                    {draftDMCopied ? "Copied!" : "Copy DM"}
+                  </button>
+                  <button onClick={cancelDraftDM} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 5, padding: "5px 12px", fontSize: 10, cursor: "pointer" }}>Close</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 10 }}>
           {priorityLeads.map(({ lead: l, score, value, prob }, idx) => {
             const urgency = l.awaitingReplySince ? `Awaiting reply ${Math.round(hoursSince(l.awaitingReplySince))}h` : l.nextActionDate && l.nextActionDate <= today() ? "Overdue follow-up" : l.meetingScheduledAt ? "Meeting scheduled" : "Active";
             const daysSinceContact = l.lastContacted ? daysSince(l.lastContacted) : null;
+            const isDrafting = draftDMLead?.id === l.id && draftDMStep !== 'idle';
             return (
-              <div key={l.id} style={{ background: SURFACE2, border: `1px solid ${idx === 0 ? G_BORDER : BORDER}`, borderTop: `2px solid ${idx === 0 ? G : BORDER}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", transition: "border-color 0.15s" }} onClick={() => onEdit(l)}>
-                <div style={{ display: "flex", justify: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                  <div style={{ flex: 1 }}>
+              <div key={l.id} style={{ background: SURFACE2, border: `1px solid ${idx === 0 ? G_BORDER : BORDER}`, borderTop: `2px solid ${idx === 0 ? G : BORDER}`, borderRadius: 10, padding: "14px 16px", transition: "border-color 0.15s" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div style={{ flex: 1, cursor: "pointer" }} onClick={() => onEdit(l)}>
                     <div style={{ fontSize: 12, fontWeight: 800, color: TEXT, marginBottom: 1 }}>{l.name || "—"}</div>
                     <div style={{ fontSize: 10, color: MUTED2 }}>{l.company}</div>
                   </div>
@@ -776,8 +888,17 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div style={{ fontSize: 9, color: MUTED }}>{daysSinceContact !== null ? `${daysSinceContact}d since contact` : "Never contacted"}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, fontWeight: 700, color: G }}>
-                    Score {score} <ChevronRight size={10} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <button
+                      onClick={() => startDraftDM(l)}
+                      disabled={isDrafting || (!!draftDMLead && draftDMStep !== 'idle')}
+                      style={{ background: G_DIM, border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "4px 10px", fontSize: 10, fontWeight: 700, cursor: (isDrafting || (!!draftDMLead && draftDMStep !== 'idle')) ? "not-allowed" : "pointer", opacity: (!!draftDMLead && draftDMStep !== 'idle' && draftDMLead.id !== l.id) ? 0.4 : 1 }}
+                    >
+                      {isDrafting ? "Drafting…" : "Draft DM"}
+                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, fontWeight: 700, color: G, cursor: "pointer" }} onClick={() => onEdit(l)}>
+                      Score {score} <ChevronRight size={10} />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -849,7 +970,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr>
-                {["Team Member", "Role", "Active Leads", "DMs Today", "Replies", "Meetings", "Deals Closed", "Revenue", "Productivity", ""].map(h => (
+                {["Team Member", "Role", "Active Leads", "DMs Today", "Replies", "Audit Req", "Audit Del", "Call Booked", "Call Done", "Closed", "Revenue", "Productivity", ""].map(h => (
                   <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontSize: 8, color: MUTED, fontWeight: 700, letterSpacing: "0.08em", borderBottom: `1px solid ${BORDER}`, whiteSpace: "nowrap" }}>{h.toUpperCase()}</th>
                 ))}
               </tr>
@@ -873,7 +994,10 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
                       <td style={{ padding: "10px 10px", fontWeight: 700, color: TEXT }}>{p.activeLeads}</td>
                       <td style={{ padding: "10px 10px", fontWeight: 700, color: G }}>{p.dmsSent}</td>
                       <td style={{ padding: "10px 10px", fontWeight: 700, color: "#F59E0B" }}>{p.repliesGot}</td>
-                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#F97316" }}>{p.meetBk}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#a855f7" }}>{p.auditReq}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#ec4899" }}>{p.auditDel}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#F97316" }}>{p.callBooked}</td>
+                      <td style={{ padding: "10px 10px", fontWeight: 700, color: "#06B6D4" }}>{p.callDone}</td>
                       <td style={{ padding: "10px 10px", fontWeight: 700, color: "#22C55E" }}>{p.closedDeals}</td>
                       <td style={{ padding: "10px 10px", fontWeight: 700, color: "#22C55E", whiteSpace: "nowrap" }}>{p.revenue > 0 ? fmt(p.revenue) : "—"}</td>
                       <td style={{ padding: "10px 10px" }}>
@@ -1041,7 +1165,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
       <div style={{ marginBottom: 8 }}>
         <button onClick={() => setShowInternSection(s => !s)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED2, borderRadius: 8, padding: "9px 16px", fontSize: 11, cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
           <BarChart3 size={12} />
-          {showInternSection ? "Hide" : "Show"} Intern Activity Monitor & Conversation Logs
+          {showInternSection ? "Hide" : "Show"} Team Activity Monitor & Conversation Logs
           <ChevronRight size={11} style={{ marginLeft: "auto", transform: showInternSection ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
         </button>
       </div>
@@ -1051,7 +1175,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
           {/* Intern Activity Monitor */}
           <div style={CARD}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-              {SECTION_LABEL(Calendar, "Intern Activity Monitor & Audit")}
+              {SECTION_LABEL(Calendar, "Team Activity Monitor & Audit")}
               <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                 {[{ label: "Today", val: today() }, { label: "Yesterday", val: yesterdayStr }, { label: "2 Days Ago", val: dayBeforeYesterdayStr }].map(p => (
                   <button key={p.label} onClick={() => setSelectedActivityDate(p.val)} style={{ background: selectedActivityDate === p.val ? G_DIM : "transparent", border: `1px solid ${selectedActivityDate === p.val ? G_BORDER : BORDER}`, color: selectedActivityDate === p.val ? G : MUTED, borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>{p.label}</button>
@@ -1064,14 +1188,14 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 10, marginBottom: 14 }}>
               {specialists.map(s => {
-                const r = internStatsForSelectedDate[s] || { newLeads: 0, outreaches: 0, replies: 0, auditsRequested: 0, auditsDelivered: 0, meetingsBooked: 0, proposalsSent: 0, clientsClosed: 0 };
+                const r = internStatsForSelectedDate[s] || { dmsSent: 0, replies: 0, auditsRequested: 0, auditsDelivered: 0, callsBooked: 0, callsDone: 0 };
                 return (
                   <div key={s} style={{ background: SURFACE2, border: `1px solid ${SPECIALIST_COLOR[s]}30`, borderTop: `2px solid ${SPECIALIST_COLOR[s]}`, borderRadius: 8, padding: "12px 14px" }}>
                     <div style={{ fontSize: 11, fontWeight: 800, color: SPECIALIST_COLOR[s], marginBottom: 8, display: "flex", alignItems: "center", gap: 4 }}>
                       <UserCheck size={12} /> {specialistLabel(s)}
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                      {[["New Leads Added", r.newLeads, TEXT], ["Outreach Sent", r.outreaches, G], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audits Delivered", r.auditsDelivered, "#ec4899"], ["Meetings Booked", r.meetingsBooked, "#F97316"], ["Proposals Sent", r.proposalsSent, "#06B6D4"], ["Clients Closed", r.clientsClosed, "#22C55E"]].map(([label, val, color]) => (
+                      {[["New DM Sent", r.dmsSent, G], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audit Delivered", r.auditsDelivered, "#ec4899"], ["Discovery Call Booked", r.callsBooked, "#F97316"], ["Discovery Call Done", r.callsDone, "#06B6D4"]].map(([label, val, color]) => (
                         <div key={label as string} style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                           <span style={{ color: MUTED2 }}>{label}:</span>
                           <span style={{ fontWeight: 700, color: color as string }}>{val as number}</span>

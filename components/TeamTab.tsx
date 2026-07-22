@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Users, UserCheck, AlertTriangle, FileText, Rocket } from "lucide-react";
+import { Users, UserCheck, AlertTriangle, FileText, Rocket, Calendar, Search, ChevronRight } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
 import { 
@@ -8,15 +8,23 @@ import {
   calcRevenue, 
   alphaSort, 
   fmt, 
+  today,
+  addDays,
   G, 
+  G_DIM,
+  G_BORDER,
   SURFACE, 
   SURFACE2, 
-  BORDER, 
-  MUTED, 
+  BORDER,
+  MUTED,
+  MUTED2,
+  TEXT,
+  iStyle,
   SPECIALISTS, 
   SPECIALIST_COLOR, 
   specialistLabel,
-  STATUS_COLOR 
+  STATUS_COLOR,
+  getInternActivities
 } from "../constants";
 
 interface TeamTabProps {
@@ -28,6 +36,8 @@ interface TeamTabProps {
 export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [expandedSpecialist, setExpandedSpecialist] = useState<string | null>(null);
+  const [activityDate, setActivityDate] = useState(today());
 
   const unassigned = leads.filter(l => (!l.assignedTo || l.assignedTo === "Unassigned") && !["Closed", "Lost"].includes(l.status));
   
@@ -96,24 +106,171 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
     };
   });
 
+  // Activity breakdown for a selected date
+  const activityStats = useMemo(() => {
+    const acts = getInternActivities(leads, activityDate);
+    const report: Record<string, any> = {};
+    SPECIALISTS.filter(s => s !== "Unassigned").forEach(s => {
+      const myActs = acts.filter(a => a.actor === s);
+      report[s] = {
+        dmsSent: myActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length,
+        replies: myActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length,
+        auditsRequested: myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
+        auditsDelivered: myActs.filter(a => a.type === "status_change" && (a.text === "Audit Delivered" || a.text === "Value Given")).length,
+        callsBooked: myActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Booked").length,
+        callsDone: myActs.filter(a => a.type === "status_change" && a.text === "Discovery Call Done").length,
+        leadsAdded: myActs.filter(a => a.type === "add").length,
+        events: myActs,
+      };
+    });
+    return report;
+  }, [leads, activityDate]);
+
+  const specialistLeads = (name: string) =>
+    alphaSort(leads.filter(l => l.assignedTo === name));
+
   return (
     <div>
+      {/* ── Team Workload (clickable cards) ─────────────────────────────────── */}
       <div className="dfq-card" style={{ background: SURFACE, border: `1px solid rgba(62,207,220,0.22)`, borderRadius: 12, padding: "16px 18px", marginBottom: 14 }}>
         <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
           <Users size={12} /> Team Workload
         </div>
+        <div style={{ fontSize: 11, color: MUTED, marginBottom: 12 }}>Click on a team member to see their detailed activity breakdown.</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
-          {bySpecialist.map(s => (
-            <div key={s.name} style={{ background: SURFACE2, border: `1px solid ${SPECIALIST_COLOR[s.name]}30`, borderTop: `2px solid ${SPECIALIST_COLOR[s.name]}`, borderRadius: 8, padding: "12px 14px" }}>
-              <div style={{ fontSize: 12, fontWeight: 800, color: SPECIALIST_COLOR[s.name], display: "flex", alignItems: "center", gap: 5 }}>
-                <UserCheck size={13} /> {specialistLabel(s.name)}
+          {bySpecialist.map(s => {
+            const isExpanded = expandedSpecialist === s.name;
+            return (
+              <div
+                key={s.name}
+                onClick={() => setExpandedSpecialist(isExpanded ? null : s.name)}
+                style={{
+                  background: isExpanded ? `${SPECIALIST_COLOR[s.name]}18` : SURFACE2,
+                  border: `1px solid ${isExpanded ? SPECIALIST_COLOR[s.name] : SPECIALIST_COLOR[s.name] + "30"}`,
+                  borderTop: `2px solid ${SPECIALIST_COLOR[s.name]}`,
+                  borderRadius: 8,
+                  padding: "12px 14px",
+                  cursor: "pointer",
+                  transition: "background 0.15s, border-color 0.15s"
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 800, color: SPECIALIST_COLOR[s.name], display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><UserCheck size={13} /> {specialistLabel(s.name)}</span>
+                  <ChevronRight size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.2s", flexShrink: 0 }} />
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 900, marginTop: 6, color: "#fff" }}>{s.active}</div>
+                <div style={{ fontSize: 9, color: MUTED }}>active leads</div>
+                <div style={{ fontSize: 10, color: "#888", marginTop: 6 }}>{s.hot} hot · {s.closed} closed · {fmt(s.revenue)} guaranteed</div>
               </div>
-              <div style={{ fontSize: 20, fontWeight: 900, marginTop: 6, color: "#fff" }}>{s.active}</div>
-              <div style={{ fontSize: 9, color: MUTED }}>active leads</div>
-              <div style={{ fontSize: 10, color: "#888", marginTop: 6 }}>{s.hot} hot · {s.closed} closed · {fmt(s.revenue)} guaranteed</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
+
+        {/* ── Expanded Specialist Activity Panel ─────────────────────────── */}
+        {expandedSpecialist && (() => {
+          const sColor = SPECIALIST_COLOR[expandedSpecialist] || G;
+          const stats = activityStats[expandedSpecialist] || {};
+          const sLeads = specialistLeads(expandedSpecialist);
+          const activeLeads = sLeads.filter(l => !["Closed", "Lost"].includes(l.status));
+          return (
+            <div style={{ background: `${sColor}08`, border: `1px solid ${sColor}30`, borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: sColor, marginBottom: 14 }}>
+                {specialistLabel(expandedSpecialist)} — Activity Details
+              </div>
+
+              {/* Date Picker */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+                <Calendar size={12} color={sColor} />
+                <span style={{ fontSize: 10, color: MUTED2, fontWeight: 600 }}>View activity for:</span>
+                {[{ label: "Today", val: today() }, { label: "Yesterday", val: addDays(-1) }, { label: "2 Days Ago", val: addDays(-2) }].map(d => (
+                  <button
+                    key={d.label}
+                    onClick={e => { e.stopPropagation(); setActivityDate(d.val); }}
+                    style={{ background: activityDate === d.val ? G_DIM : "transparent", border: `1px solid ${activityDate === d.val ? G_BORDER : BORDER}`, color: activityDate === d.val ? G : MUTED, borderRadius: 5, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+                <input
+                  type="date"
+                  value={activityDate}
+                  onClick={e => e.stopPropagation()}
+                  onChange={e => { e.stopPropagation(); setActivityDate(e.target.value); }}
+                  style={{ background: SURFACE2, border: `1px solid ${BORDER}`, color: TEXT, fontSize: 10, borderRadius: 5, padding: "3px 7px", outline: "none" }}
+                />
+              </div>
+
+              {/* Activity stat tiles */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(110px,1fr))", gap: 8, marginBottom: 16 }}>
+                {[
+                  { label: "Leads Added", val: stats.leadsAdded || 0, color: "#22C55E" },
+                  { label: "New DMs Sent", val: stats.dmsSent || 0, color: G },
+                  { label: "Replies Received", val: stats.replies || 0, color: "#F59E0B" },
+                  { label: "Audits Requested", val: stats.auditsRequested || 0, color: "#a855f7" },
+                  { label: "Audits Delivered", val: stats.auditsDelivered || 0, color: "#ec4899" },
+                  { label: "Calls Booked", val: stats.callsBooked || 0, color: "#F97316" },
+                  { label: "Calls Done", val: stats.callsDone || 0, color: "#06B6D4" },
+                ].map(stat => (
+                  <div key={stat.label} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px", textAlign: "center" }}>
+                    <div style={{ fontSize: 18, fontWeight: 900, color: stat.color }}>{stat.val}</div>
+                    <div style={{ fontSize: 9, color: MUTED2, marginTop: 3 }}>{stat.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Event log for that date */}
+              {(stats.events || []).length > 0 ? (
+                <div>
+                  <div style={{ fontSize: 9, color: MUTED2, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+                    Chronological Events — {activityDate}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+                    {(stats.events as any[]).map((act: any, i: number) => {
+                      const timeStr = new Date(act.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+                      return (
+                        <div key={i} style={{ borderLeft: `2px solid ${sColor}`, paddingLeft: 10, paddingBottom: 4 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: TEXT }}>
+                            <span style={{ color: MUTED2 }}>{act.title}</span>
+                            <span style={{ color: MUTED }}>{timeStr !== "Invalid Date" ? timeStr : ""}</span>
+                          </div>
+                          <div style={{ fontSize: 10, color: MUTED, marginTop: 2, fontWeight: 600 }}>{act.company}</div>
+                          {act.text && <div style={{ fontSize: 10, color: "#999", marginTop: 1, whiteSpace: "pre-wrap" }}>{act.text.slice(0, 100)}{act.text.length > 100 ? "…" : ""}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: MUTED, textAlign: "center", padding: "12px 0" }}>No events logged for {activityDate}.</div>
+              )}
+
+              {/* All their leads */}
+              <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${sColor}25` }}>
+                <div style={{ fontSize: 9, color: MUTED2, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+                  All Active Leads ({activeLeads.length})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 240, overflowY: "auto" }}>
+                  {activeLeads.map(l => (
+                    <div
+                      key={l.id}
+                      onClick={e => { e.stopPropagation(); onSave(l); }}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 10px", background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 7, cursor: "pointer", flexWrap: "wrap", gap: 6 }}
+                    >
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#fff" }}>
+                        {l.name || l.company} <span style={{ color: MUTED, fontWeight: 400 }}>{l.company && l.name ? `· ${l.company}` : ""}</span>
+                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 4, background: `${STATUS_COLOR[l.status]}20`, border: `1px solid ${STATUS_COLOR[l.status]}50`, color: STATUS_COLOR[l.status], fontWeight: 700 }}>
+                        {l.status}
+                      </span>
+                    </div>
+                  ))}
+                  {activeLeads.length === 0 && <div style={{ fontSize: 11, color: MUTED }}>No active leads.</div>}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
           <div style={{ fontSize: 11, color: MUTED }}>{unassigned.length} lead{unassigned.length !== 1 ? "s" : ""} unassigned right now.</div>
           <button

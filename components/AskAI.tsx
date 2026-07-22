@@ -5,6 +5,7 @@ import {
   G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, TEXT, MUTED, MUTED2, iStyle, STATUS_COLOR,
 } from "../constants";
 import { runQAReview, runQAAdjust } from "../aiQA";
+import { stripMarkdown } from "../aiEngine";
 
 interface AiMessage {
   role: "user" | "ai";
@@ -236,7 +237,7 @@ export function AskAI({ leads }: AskAIProps) {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
-      const raw: string = data.text || "";
+      const raw: string = stripMarkdown(data.text || "");
 
       const dmMarker = "📨 SUGGESTED MESSAGE";
       const stratMarker = "📊 STRATEGY";
@@ -264,7 +265,7 @@ export function AskAI({ leads }: AskAIProps) {
         try {
           const review = await runQAReview(dm, lead);
           if (review.needsAdjustment) {
-            const adjusted = await runQAAdjust(dm, review, lead);
+            const adjusted = await runQAAdjust(review, dm, lead);
             if (adjusted && adjusted.trim()) {
               finalDm = adjusted.trim();
               qaFiltered = true;
