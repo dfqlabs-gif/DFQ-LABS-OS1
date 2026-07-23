@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DFQ Labs OS — System Overview</title>
+<style>
+  :root {
+    --g: #3ECFDC;
+    --bg: #050505;
+    --surface: #0e0e0e;
+    --surface2: #141414;
+    --border: #1f1f1f;
+    --text: #f0f0f0;
+    --muted: #666;
+    --muted2: #888;
+    --amber: #F59E0B;
+    --purple: #8B5CF6;
+    --green: #22C55E;
+    --red: #EF4444;
+    --orange: #F97316;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; overflow: hidden; }
+
+  .slide {
+    display: none;
+    width: 100vw; height: 100vh;
+    padding: 60px 80px;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .slide.active { display: flex; }
+
+  /* Grid overlay */
+  .slide::before {
+    content: '';
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(62,207,220,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(62,207,220,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+  }
+
+  .slide-num {
+    position: absolute; top: 24px; right: 32px;
+    font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .12em;
+    font-variant-numeric: tabular-nums;
+  }
+  .logo {
+    position: absolute; top: 22px; left: 32px;
+    font-size: 12px; font-weight: 800; letter-spacing: .12em; color: var(--muted2);
+  }
+  .logo span { color: var(--g); }
+
+  /* ── Typography ── */
+  .eyebrow {
+    font-size: 10px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--g); margin-bottom: 16px;
+  }
+  h1 { font-size: clamp(36px,5vw,64px); font-weight: 900; line-height: 1.08; letter-spacing: -.02em; }
+  h2 { font-size: clamp(26px,3.5vw,44px); font-weight: 800; line-height: 1.15; letter-spacing: -.01em; }
+  h3 { font-size: 20px; font-weight: 700; }
+  p, li { font-size: 15px; color: var(--muted2); line-height: 1.75; }
+  p strong, li strong { color: var(--text); }
+  ul { list-style: none; }
+  ul li::before { content: '→ '; color: var(--g); }
+
+  .accent { color: var(--g); }
+  .dim { color: var(--muted); }
+
+  /* ── Cards / Grids ── */
+  .card-grid {
+    display: grid; gap: 16px;
+    margin-top: 32px;
+  }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .cols-4 { grid-template-columns: repeat(4,1fr); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+  }
+  .card .label { font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .card .val { font-size: 28px; font-weight: 900; }
+  .card .sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .card .desc { font-size: 13px; color: var(--muted2); margin-top: 8px; line-height: 1.6; }
+
+  .tag {
+    display: inline-block;
+    font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px;
+    border: 1px solid currentColor; opacity: .85;
+  }
+
+  /* ── Funnel ── */
+  .funnel-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 6px;
+  }
+  .funnel-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .funnel-label { font-size: 13px; font-weight: 600; flex: 1; }
+  .funnel-arrow { color: var(--muted); font-size: 12px; }
+
+  /* ── Progress bar ── */
+  .bar-wrap { height: 6px; background: #111; border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .bar-fill { height: 100%; border-radius: 3px; }
+
+  /* ── Nav ── */
+  #nav {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(14,14,14,.95); border: 1px solid var(--border); border-radius: 40px;
+    padding: 8px 20px; backdrop-filter: blur(12px); z-index: 100;
+  }
+  #nav button {
+    background: transparent; border: none; color: var(--muted); font-size: 18px;
+    cursor: pointer; padding: 2px 6px; transition: color .15s;
+    font-weight: 700; line-height: 1;
+  }
+  #nav button:hover { color: var(--g); }
+  #nav .progress-txt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 40px; text-align: center; }
+  .nav-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); cursor: pointer; transition: background .15s; }
+  .nav-dot.on { background: var(--g); }
+
+  /* ── Hero glow ── */
+  .hero-glow {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 600px; height: 600px;
+    background: radial-gradient(ellipse at center, rgba(62,207,220,.07), transparent 70%);
+    pointer-events: none;
+  }
+
+  /* ── Pipeline flow ── */
+  .pipe-flow {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 24px;
+  }
+  .pipe-step {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font-size: 11px; font-weight: 700; color: var(--muted2);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .pipe-step .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .pipe-arr { color: var(--muted); font-size: 13px; display: flex; align-items: center; }
+
+  /* ── Two-col layout ── */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  .two-col-wide { display: grid; grid-template-columns: 1.4fr 1fr; gap: 48px; align-items: start; margin-top: 32px; }
+
+  /* ── Stat row ── */
+  .stat-row { display: flex; gap: 24px; margin-top: 24px; flex-wrap: wrap; }
+  .stat-block { text-align: center; }
+  .stat-block .sv { font-size: 36px; font-weight: 900; }
+  .stat-block .sl { font-size: 10px; color: var(--muted); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<!-- ─────────────────── SLIDE 1: TITLE ─────────────────── -->
+<div class="slide active" id="s1">
+  <div class="hero-glow"></div>
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">01 / 10</div>
+
+  <div style="text-align:center;">
+    <div class="eyebrow">Internal Reference · July 2026</div>
+    <h1>DFQ<span class="accent">LABS</span> OS</h1>
+    <p style="font-size:18px; margin-top:16px; color:var(--muted2);">
+      AI-powered sales operating system for<br>the DFQ Labs agency
+    </p>
+    <div class="stat-row" style="justify-content:center; margin-top:40px;">
+      <div class="stat-block"><div class="sv accent">10</div><div class="sl">Pipeline Stages</div></div>
+      <div class="stat-block" style="color:var(--border)">·</div>
+      <div class="stat-block"><div class="sv" style="color:var(--amber)">7</div><div class="sl">AI Reasoning Steps</div></div>
+      <div class="stat-block" style="color:var(--border)">·</div>
+      <div class="stat-block"><div class="sv" style="color:var(--green)">3</div><div class="sl">QA Gates</div></div>
+      <div class="stat-block" style="color:var(--border)">·</div>
+      <div class="stat-block"><div class="sv" style="color:var(--purple)">∞</div><div class="sl">Pipeline Scale</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 2: WHAT IS IT ─────────────────── -->
+<div class="slide" id="s2">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">02 / 10</div>
+
+  <div class="eyebrow">Overview</div>
+  <h2>What is DFQ Labs OS?</h2>
+
+  <div class="two-col-wide" style="margin-top:28px;">
+    <div>
+      <p style="font-size:16px; margin-bottom:20px;">
+        DFQ Labs OS is the internal CRM and sales orchestration platform
+        that runs every stage of the agency's client acquisition pipeline —
+        from first DM to closed deal.
+      </p>
+      <ul style="display:flex; flex-direction:column; gap:10px;">
+        <li><strong>Outreach tracking</strong> — every DM, reply, and follow-up logged</li>
+        <li><strong>AI at every step</strong> — generates, reviews, and QA-filters messages</li>
+        <li><strong>CEO command layer</strong> — full-agency health visible at a glance</li>
+        <li><strong>Team accountability</strong> — per-specialist daily activity dashboards</li>
+        <li><strong>Revenue forecasting</strong> — guaranteed, likely, and weighted pipeline</li>
+      </ul>
+    </div>
+    <div>
+      <div class="card" style="border-color:rgba(62,207,220,.25);">
+        <div class="label">Primary Users</div>
+        <div style="display:flex; flex-direction:column; gap:10px; margin-top:8px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="width:8px; height:8px; border-radius:50%; background:var(--g);"></div>
+            <div style="font-size:13px; font-weight:700; color:var(--text);">Alex (Founder)</div>
+            <span class="tag" style="color:var(--g);">CEO View</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="width:8px; height:8px; border-radius:50%; background:var(--amber);"></div>
+            <div style="font-size:13px; font-weight:700; color:var(--text);">Sa'adatu Mohammed</div>
+            <span class="tag" style="color:var(--amber);">Outreach</span>
+          </div>
+        </div>
+        <div class="desc" style="margin-top:16px; border-top:1px solid var(--border); padding-top:12px;">
+          Targeting: real estate developers and construction firms in Nigeria.
+          Revenue model: ₦500K–₦2M/month retainer services.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 3: PIPELINE ─────────────────── -->
+<div class="slide" id="s3">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">03 / 10</div>
+
+  <div class="eyebrow">Sales Pipeline</div>
+  <h2>The 10-Stage Conversion Funnel</h2>
+
+  <div class="pipe-flow" style="margin-top:28px;">
+    <div class="pipe-step"><div class="dot" style="background:#555"></div>New</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:var(--g)"></div>DM Sent</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:var(--amber)"></div>Replied</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:var(--purple)"></div>Audit Requested</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:#ec4899"></div>Audit Delivered</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:var(--orange)"></div>Discovery Call Booked</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:#06B6D4"></div>Discovery Call Done</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:#8B5CF6"></div>Proposal Sent</div>
+    <div class="pipe-arr">→</div>
+    <div class="pipe-step"><div class="dot" style="background:var(--green)"></div>Closed</div>
+  </div>
+
+  <div class="card-grid cols-3" style="margin-top:28px;">
+    <div class="card">
+      <div class="label">AI Lead Classification</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+        <span class="tag" style="color:#EF4444;">Hot</span>
+        <span class="tag" style="color:var(--amber);">Warm</span>
+        <span class="tag" style="color:var(--green);">Nurture</span>
+        <span class="tag" style="color:#06B6D4;">Cold</span>
+        <span class="tag" style="color:var(--muted);">Dead</span>
+      </div>
+      <div class="desc">AI classifies every lead into a temperature bucket and sets a follow-up timer.</div>
+    </div>
+    <div class="card">
+      <div class="label">Revenue Tiers</div>
+      <div style="display:flex; flex-direction:column; gap:4px; margin-top:8px;">
+        <div style="font-size:12px; color:var(--muted2);">Growth ········ <strong style="color:var(--text)">₦500K/mo</strong></div>
+        <div style="font-size:12px; color:var(--muted2);">Scale ··········· <strong style="color:var(--text)">₦1M/mo</strong></div>
+        <div style="font-size:12px; color:var(--muted2);">Enterprise ···· <strong style="color:var(--text)">₦2M/mo</strong></div>
+        <div style="font-size:12px; color:var(--muted2);">Beta Partner · <strong style="color:var(--g)">₦100K fee</strong></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Automation Rules</div>
+      <div class="desc">
+        Leads auto-assign to Sa'adatu on creation. Companies stay with one owner. Silent leads auto-move to Nurture after 7 days.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 4: AI ENGINE ─────────────────── -->
+<div class="slide" id="s4">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">04 / 10</div>
+
+  <div class="eyebrow">AI Engine</div>
+  <h2>7-Step Reasoning Pipeline</h2>
+
+  <div class="card-grid cols-4" style="margin-top:28px;">
+    <div class="card" style="border-color:rgba(62,207,220,.2);">
+      <div class="label">Step 1</div>
+      <div style="font-size:14px; font-weight:700; color:var(--g); margin-bottom:6px;">Context Reader</div>
+      <div class="desc">Reads the full DM thread, notes, and CRM history to understand the relationship.</div>
+    </div>
+    <div class="card" style="border-color:rgba(245,158,11,.2);">
+      <div class="label">Step 2</div>
+      <div style="font-size:14px; font-weight:700; color:var(--amber); margin-bottom:6px;">Timeline Builder</div>
+      <div class="desc">Maps every touchpoint chronologically and flags gaps, silences, or stage regressions.</div>
+    </div>
+    <div class="card" style="border-color:rgba(139,92,246,.2);">
+      <div class="label">Step 3</div>
+      <div style="font-size:14px; font-weight:700; color:var(--purple); margin-bottom:6px;">Stage Detector</div>
+      <div class="desc">Determines the exact pipeline stage and rejects stage-skipping or repeat asks.</div>
+    </div>
+    <div class="card" style="border-color:rgba(236,72,153,.2);">
+      <div class="label">Step 4</div>
+      <div style="font-size:14px; font-weight:700; color:#ec4899; margin-bottom:6px;">Objective Planner</div>
+      <div class="desc">Defines the single correct next objective — no multi-tasking a message.</div>
+    </div>
+    <div class="card" style="border-color:rgba(249,115,22,.2);">
+      <div class="label">Step 5</div>
+      <div style="font-size:14px; font-weight:700; color:var(--orange); margin-bottom:6px;">Strategy Generator</div>
+      <div class="desc">Picks the psychological strategy and tone for this prospect's archetype.</div>
+    </div>
+    <div class="card" style="border-color:rgba(6,182,212,.2);">
+      <div class="label">Step 6</div>
+      <div style="font-size:14px; font-weight:700; color:#06B6D4; margin-bottom:6px;">DM Writer</div>
+      <div class="desc">Writes 2–4 sentences. No emojis, no exclamations, no AI buzzwords.</div>
+    </div>
+    <div class="card" style="border-color:rgba(34,197,94,.2);">
+      <div class="label">Step 7</div>
+      <div style="font-size:14px; font-weight:700; color:var(--green); margin-bottom:6px;">Quality Checker</div>
+      <div class="desc">3-stage QA gate: review → adjust → validate. Score 0–100. Auto-adjusts if below 75.</div>
+    </div>
+    <div class="card" style="background:rgba(62,207,220,.04); border-color:rgba(62,207,220,.3);">
+      <div class="label">Model</div>
+      <div style="font-size:14px; font-weight:700; color:var(--g); margin-bottom:6px;">Gemini Flash</div>
+      <div class="desc">All generation routed through Gemini with server-side model fallback chain.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 5: MISSION CONTROL ─────────────────── -->
+<div class="slide" id="s5">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">05 / 10</div>
+
+  <div class="eyebrow">Founder View</div>
+  <h2>Mission Control</h2>
+
+  <div class="card-grid cols-3" style="margin-top:24px;">
+    <div class="card" style="border-top:3px solid var(--orange); border-color:rgba(249,115,22,.3);">
+      <div class="label">Base KPI (Primary)</div>
+      <div style="font-size:14px; font-weight:700; color:var(--orange); margin-bottom:6px;">Audits Delivered Today</div>
+      <div class="desc">Alex's primary daily metric. Target: 3 per day. Every audit is a conversation starter that drives discovery calls. The audit queue shows which leads are waiting.</div>
+    </div>
+    <div class="card" style="border-top:3px solid var(--g); border-color:rgba(62,207,220,.3);">
+      <div class="label">Revenue Target</div>
+      <div style="font-size:14px; font-weight:700; color:var(--g); margin-bottom:6px;">₦10M December Target</div>
+      <div class="desc">Live progress bar. Shows closed revenue, pipeline gap, calls needed per week, and DMs needed to hit target at current conversion rates.</div>
+    </div>
+    <div class="card" style="border-top:3px solid #EF4444; border-color:rgba(239,68,68,.3);">
+      <div class="label">Response Guard</div>
+      <div style="font-size:14px; font-weight:700; color:#EF4444; margin-bottom:6px;">24-Hour Response Alert</div>
+      <div class="desc">Surfaces every lead that has replied but hasn't received a response in 24+ hours. Ranked by deal value and temperature. AI generates a suggested reply.</div>
+    </div>
+    <div class="card" style="border-top:3px solid var(--amber); border-color:rgba(245,158,11,.3);">
+      <div class="label">Meeting Intelligence</div>
+      <div style="font-size:14px; font-weight:700; color:var(--amber); margin-bottom:6px;">Next 24h Prep Packages</div>
+      <div class="desc">For each discovery call within 24 hours, AI builds a full tactical prep brief — prospect psychology, objection map, and recommended close strategy.</div>
+    </div>
+    <div class="card" style="border-top:3px solid var(--purple); border-color:rgba(139,92,246,.3);">
+      <div class="label">Smart Buckets</div>
+      <div style="font-size:14px; font-weight:700; color:var(--purple); margin-bottom:6px;">AI-Classified Temperatures</div>
+      <div class="desc">Every lead is auto-classified into Hot / Warm / Nurture / Cold / Dead by the AI engine based on conversation activity and recency.</div>
+    </div>
+    <div class="card" style="border-top:3px solid var(--green); border-color:rgba(34,197,94,.3);">
+      <div class="label">Daily Non-Negotiables</div>
+      <div style="font-size:14px; font-weight:700; color:var(--green); margin-bottom:6px;">Priority Task Queue</div>
+      <div class="desc">Auto-generated daily tasks pulled from live pipeline data. XP reward system tracks completion streaks and focus consistency.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 6: TEAM FEATURES ─────────────────── -->
+<div class="slide" id="s6">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">06 / 10</div>
+
+  <div class="eyebrow">Team Layer</div>
+  <h2>Team Activity & Accountability</h2>
+
+  <div class="two-col" style="margin-top:32px; gap:40px;">
+    <div>
+      <h3 style="color:var(--amber); margin-bottom:16px;">Sa'adatu's Daily View</h3>
+      <ul style="display:flex; flex-direction:column; gap:8px;">
+        <li>Own lead queue with priority ranking</li>
+        <li>One-click "Mark Contacted" + auto follow-up timer</li>
+        <li>AI Coach access for any lead in queue</li>
+        <li>DM generation with 2-step summary → confirm flow</li>
+        <li>QA badge on every generated message</li>
+      </ul>
+
+      <div style="margin-top:24px;">
+        <div style="font-size:11px; color:var(--muted); margin-bottom:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;">Activity Tracked Per Day</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div class="card" style="padding:10px 12px;">
+            <div class="label">DMs Sent</div>
+            <div style="font-size:20px; font-weight:900; color:var(--g);">→</div>
+          </div>
+          <div class="card" style="padding:10px 12px;">
+            <div class="label">Follow-ups Made</div>
+            <div style="font-size:20px; font-weight:900; color:#3B82F6;">↺</div>
+          </div>
+          <div class="card" style="padding:10px 12px;">
+            <div class="label">Replies Received</div>
+            <div style="font-size:20px; font-weight:900; color:var(--amber);">↩</div>
+          </div>
+          <div class="card" style="padding:10px 12px;">
+            <div class="label">Audits Requested</div>
+            <div style="font-size:20px; font-weight:900; color:var(--purple);">✓</div>
+          </div>
+          <div class="card" style="padding:10px 12px;">
+            <div class="label">Audit Delivered</div>
+            <div style="font-size:20px; font-weight:900; color:#ec4899;">📋</div>
+          </div>
+          <div class="card" style="padding:10px 12px;">
+            <div class="label">Calls Booked/Done</div>
+            <div style="font-size:20px; font-weight:900; color:var(--orange);">📞</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h3 style="color:var(--g); margin-bottom:16px;">Founder's Team View</h3>
+      <ul style="display:flex; flex-direction:column; gap:8px;">
+        <li>Click any specialist card to see their daily breakdown</li>
+        <li>Date-filter to any day — today, yesterday, or custom</li>
+        <li>Chronological event log per specialist per date</li>
+        <li>Full active lead list per team member</li>
+        <li>Auto-balance unassigned leads with one button</li>
+        <li>Offboarding: reassign all leads on team changes</li>
+      </ul>
+
+      <div class="card" style="margin-top:24px; border-color:rgba(62,207,220,.2);">
+        <div class="label">Duplicate Guard</div>
+        <p style="margin-top:6px;">Detects when two specialists are approaching the same company. Flags conflicts before double outreach causes relationship damage.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 7: CEO DASHBOARD ─────────────────── -->
+<div class="slide" id="s7">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">07 / 10</div>
+
+  <div class="eyebrow">CEO Dashboard</div>
+  <h2>Full-Agency Command Centre</h2>
+
+  <div class="card-grid cols-3" style="margin-top:24px;">
+    <div class="card">
+      <div class="label">Agency Health Score</div>
+      <div style="font-size:22px; font-weight:900; color:var(--g); margin-bottom:6px;">0–100</div>
+      <div class="desc">Composite score across pipeline velocity, team output, conversion rates, and revenue trajectory. Colour-coded: green ≥80, amber 60–79, red &lt;60.</div>
+    </div>
+    <div class="card">
+      <div class="label">Funnel Leak Detection</div>
+      <div style="font-size:14px; font-weight:700; color:#EF4444; margin-bottom:6px;">Weak Stage Alerts</div>
+      <div class="desc">Compares actual stage-to-stage conversion rates against benchmarks. Surfaces the exact bottleneck killing pipeline momentum.</div>
+    </div>
+    <div class="card">
+      <div class="label">Team Performance</div>
+      <div style="font-size:14px; font-weight:700; color:var(--amber); margin-bottom:6px;">Per-Specialist Leaderboard</div>
+      <div class="desc">Tracks: DMs Sent, Follow-ups, Replies, Audit Req, Audit Del, Calls Booked/Done, Closed Deals — with a productivity score.</div>
+    </div>
+    <div class="card">
+      <div class="label">Priority Opportunities</div>
+      <div style="font-size:14px; font-weight:700; color:var(--g); margin-bottom:6px;">Top 10 by Score</div>
+      <div class="desc">AI-scored leads ranked by deal value × stage probability × urgency. Each card has a "Draft DM" button that runs the full 2-step AI flow.</div>
+    </div>
+    <div class="card">
+      <div class="label">DM Split-Test Analyzer</div>
+      <div style="font-size:14px; font-weight:700; color:var(--purple); margin-bottom:6px;">Conversion Intelligence</div>
+      <div class="desc">Analyses closed vs. lost leads to surface which DM patterns convert most. Generates 3 A/B/C test variations for immediate deployment.</div>
+    </div>
+    <div class="card">
+      <div class="label">Activity Monitor</div>
+      <div style="font-size:14px; font-weight:700; color:#06B6D4; margin-bottom:6px;">Team Activity Monitor & Audit</div>
+      <div class="desc">Date-filtered activity view for every team member with a full chronological event log and per-category counts.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 8: AI COACH + ASKAI ─────────────────── -->
+<div class="slide" id="s8">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">08 / 10</div>
+
+  <div class="eyebrow">AI Capabilities</div>
+  <h2>AI Coach & AskAI Assistant</h2>
+
+  <div class="two-col" style="margin-top:32px; gap:40px; align-items:start;">
+    <div>
+      <div class="card" style="border-color:rgba(62,207,220,.25); margin-bottom:14px;">
+        <div class="label" style="color:var(--g);">AI Coach — Lead Modes</div>
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span class="tag" style="color:var(--g);">Value DM</span>
+            <span style="font-size:12px; color:var(--muted2);">Full 7-step pipeline output</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span class="tag" style="color:#3B82F6;">Follow-up DM</span>
+            <span style="font-size:12px; color:var(--muted2);">Picks up exactly where thread ended</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span class="tag" style="color:var(--orange);">Closing DM</span>
+            <span style="font-size:12px; color:var(--muted2);">Close or Beta Program pitch</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span class="tag" style="color:var(--purple);">Rebuttals</span>
+            <span style="font-size:12px; color:var(--muted2);">Objection-handling playbook</span>
+          </div>
+        </div>
+        <div class="desc" style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">
+          Every output runs through the 3-stage QA gate before display. Score shown as a badge. Auto-adjusts when &lt;75.
+        </div>
+      </div>
+
+      <div class="card" style="border-color:rgba(62,207,220,.25);">
+        <div class="label" style="color:var(--g);">2-Step DM Flow</div>
+        <div class="desc" style="margin-top:6px;">
+          Step 1: AI reads the thread and summarises where the prospect is — the specialist confirms or rejects the read.<br><br>
+          Step 2: AI drafts the message. QA gate runs automatically. Adjusted version shown if needed.
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card" style="border-color:rgba(139,92,246,.25); margin-bottom:14px;">
+        <div class="label" style="color:var(--purple);">AskAI — Chat Bubble</div>
+        <div class="desc" style="margin-top:6px;">
+          Draggable, always-on chat assistant. @mention any lead by name to give the AI full CRM context for that prospect.
+          Generates DMs inline — all subject to the same QA pipeline.
+          Markdown stripped from all AI output across the entire system.
+        </div>
+      </div>
+
+      <div class="card" style="border-color:rgba(34,197,94,.25);">
+        <div class="label" style="color:var(--green);">Quality Gate (3 Stages)</div>
+        <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+          <div style="font-size:12px; color:var(--muted2);"><strong style="color:var(--text);">Stage 2 — Review:</strong> Scores the draft 0–100 against lead context</div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:78%; background:var(--amber);"></div></div>
+          <div style="font-size:12px; color:var(--muted2);"><strong style="color:var(--text);">Stage 2b — Adjust:</strong> Rewrites if score &lt;75, fixing all identified problems</div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:92%; background:var(--green);"></div></div>
+          <div style="font-size:12px; color:var(--muted2);"><strong style="color:var(--text);">Stage 3 — Validate:</strong> Binary approve/reject with scored evidence</div>
+          <div class="bar-wrap"><div class="bar-fill" style="width:95%; background:var(--g);"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 9: TECH STACK ─────────────────── -->
+<div class="slide" id="s9">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">09 / 10</div>
+
+  <div class="eyebrow">Technical Architecture</div>
+  <h2>How It's Built</h2>
+
+  <div class="card-grid cols-4" style="margin-top:28px;">
+    <div class="card">
+      <div class="label">Frontend</div>
+      <div style="font-size:15px; font-weight:800; color:var(--g); margin-bottom:6px;">React + TypeScript</div>
+      <div class="desc">Vite dev server. Modular component architecture across 10+ specialist files. Dark/light mode.</div>
+    </div>
+    <div class="card">
+      <div class="label">Backend</div>
+      <div style="font-size:15px; font-weight:800; color:var(--amber); margin-bottom:6px;">Express + Node.js</div>
+      <div class="desc">REST API for AI calls, data persistence, and session management. Runs on port 5000.</div>
+    </div>
+    <div class="card">
+      <div class="label">AI Layer</div>
+      <div style="font-size:15px; font-weight:800; color:var(--purple); margin-bottom:6px;">Google Gemini</div>
+      <div class="desc">gemini-3.1-flash-lite. All prompts routed through a shared aiEngine module with server-side fallback chain.</div>
+    </div>
+    <div class="card">
+      <div class="label">Data Storage</div>
+      <div style="font-size:15px; font-weight:800; color:var(--orange); margin-bottom:6px;">JSON + LocalStorage</div>
+      <div class="desc">Leads persisted via server API with JSON export/import. Browser session auth with idle timeout.</div>
+    </div>
+    <div class="card">
+      <div class="label">Deployment</div>
+      <div style="font-size:15px; font-weight:800; color:var(--green); margin-bottom:6px;">Replit</div>
+      <div class="desc">Hosted on Replit with managed workflow. GitHub-synced. Environment secrets managed securely.</div>
+    </div>
+    <div class="card">
+      <div class="label">Key Modules</div>
+      <div class="desc" style="margin-top:6px; line-height:1.8;">
+        aiEngine.ts · aiQA.ts · prompts.ts<br>
+        constants.tsx · types.ts<br>
+        CEOTab · TeamTab · AICoach<br>
+        AskAI · LeadModal · AIQAPanel
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Auth System</div>
+      <div class="desc" style="margin-top:6px;">
+        Role-based access: Founder (full) and Sa'adatu (own leads only). Password-protected portals. Session expires after idle timeout.
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Anti-Patterns</div>
+      <div class="desc" style="margin-top:6px;">
+        No markdown in output. No stage-skipping. No generic AI advice. No double-outreach to same company. QA blocks low-quality DMs.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── SLIDE 10: SUMMARY ─────────────────── -->
+<div class="slide" id="s10">
+  <div class="logo">DFQ<span>LABS</span></div>
+  <div class="slide-num">10 / 10</div>
+
+  <div style="text-align:center;">
+    <div class="eyebrow">Summary</div>
+    <h2>DFQ Labs OS in One Page</h2>
+
+    <div class="card-grid cols-3" style="margin-top:28px; text-align:left;">
+      <div class="card" style="border-color:rgba(62,207,220,.25);">
+        <div class="label" style="color:var(--g);">What it replaces</div>
+        <ul style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+          <li>Manual lead tracking spreadsheets</li>
+          <li>Generic CRM tools with no AI</li>
+          <li>Inconsistent DM quality</li>
+          <li>No accountability on team activity</li>
+          <li>Blind revenue forecasting</li>
+        </ul>
+      </div>
+      <div class="card" style="border-color:rgba(34,197,94,.25);">
+        <div class="label" style="color:var(--green);">What it enables</div>
+        <ul style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+          <li>AI-generated, QA-filtered messages</li>
+          <li>Live audit delivery KPI tracking</li>
+          <li>Specialist activity accountability</li>
+          <li>Revenue gap → action mapping</li>
+          <li>DM split-testing from real data</li>
+        </ul>
+      </div>
+      <div class="card" style="border-color:rgba(249,115,22,.25);">
+        <div class="label" style="color:var(--orange);">Key North Star</div>
+        <div style="margin-top:8px;">
+          <div style="font-size:22px; font-weight:900; color:var(--orange); margin-bottom:8px;">Audits Delivered / Day</div>
+          <p>Every audit creates a conversation. Every conversation is a shot at a discovery call. Every call is a shot at a close. The pipeline flows from here.</p>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:32px; padding: 16px 24px; background:var(--surface); border:1px solid rgba(62,207,220,.2); border-radius:12px; display:inline-block;">
+      <p style="font-size:13px; color:var(--muted2);">
+        Built by DFQ Labs · Powered by Gemini · Hosted on Replit<br>
+        <span style="color:var(--g); font-weight:700;">Last updated: July 2026</span>
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────── NAV ─────────────────── -->
+<nav id="nav">
+  <button onclick="go(-1)">‹</button>
+  <div id="dots" style="display:flex; gap:6px; align-items:center;"></div>
+  <button onclick="go(1)">›</button>
+  <span class="progress-txt" id="ptxt">1 / 10</span>
+</nav>
+
+<script>
+  const total = 10;
+  let cur = 1;
+
+  const dots = document.getElementById('dots');
+  for (let i = 1; i <= total; i++) {
+    const d = document.createElement('div');
+    d.className = 'nav-dot' + (i === 1 ? ' on' : '');
+    d.onclick = () => goTo(i);
+    dots.appendChild(d);
+  }
+
+  function goTo(n) {
+    document.getElementById('s' + cur).classList.remove('active');
+    dots.children[cur - 1].classList.remove('on');
+    cur = Math.max(1, Math.min(total, n));
+    document.getElementById('s' + cur).classList.add('active');
+    dots.children[cur - 1].classList.add('on');
+    document.getElementById('ptxt').textContent = cur + ' / ' + total;
+  }
+
+  function go(dir) { goTo(cur + dir); }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') go(1);
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') go(-1);
+  });
+
+  // Touch swipe
+  let tx = 0;
+  document.addEventListener('touchstart', e => { tx = e.touches[0].clientX; });
+  document.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - tx;
+    if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+  });
+</script>
+</body>
+</html>

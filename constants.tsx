@@ -167,7 +167,9 @@ export const BUCKET_ICON_CMP: Record<string, any> = {
 };
 
 export const SILENT_DAYS_TO_NURTURE = 7;
-export const SPECIALISTS = ["Unassigned", "Alex", "Sa'adatu Mohammed", "Abigail Dick"];
+// Abigail Dick offboarded 2026-07-23 — removed from active specialists.
+// Legacy color key is preserved below so any saved leads still render correctly.
+export const SPECIALISTS = ["Unassigned", "Alex", "Sa'adatu Mohammed"];
 
 export const SPECIALIST_COLOR: Record<string, string> = {
   "Unassigned": "#555",
@@ -645,21 +647,27 @@ export function findDuplicateConflict(leads: Lead[], lead: Lead) {
 export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
   const norm = normalizeCompany(lead.company);
   if (norm) {
-    const existing = leads.find(l => normalizeCompany(l.company) === norm && l.assignedTo && l.assignedTo !== "Unassigned" && l.status !== "Lost");
+    // If a company is already claimed by an active specialist, honour that ownership.
+    // Exclude Abigail Dick since she is no longer active.
+    const existing = leads.find(l =>
+      normalizeCompany(l.company) === norm &&
+      l.assignedTo &&
+      l.assignedTo !== "Unassigned" &&
+      l.assignedTo !== "Abigail Dick" &&
+      l.status !== "Lost"
+    );
     if (existing) return existing.assignedTo;
   }
-  let countA = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
-  let countB = leads.filter(l => l.assignedTo === "Abigail Dick" && !["Closed", "Lost"].includes(l.status)).length;
-  return countA <= countB ? "Sa'adatu Mohammed" : "Abigail Dick";
+  // Only route to Sa'adatu now. Falls back to Alex if Sa'adatu's load is extreme.
+  const saadatuCount = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
+  return saadatuCount < 120 ? "Sa'adatu Mohammed" : "Alex";
 }
 
 export const ROLE_ACCESS = {
   founder:  { password: CEO_PASSWORD,     label: "Founder",           color: G,       Icon: Shield    },
   saadatu:  { password: SAADATU_PASSWORD, label: "Sa'adatu Mohammed", color: "#F59E0B", Icon: UserCheck },
-  abigail:  { password: ABIGAIL_PASSWORD, label: "Abigail Dick",   color: "#8B5CF6", Icon: UserCheck },
-  // Legacy keys — sessions persisted before the rename still resolve correctly
-  internA:  { password: INTERN_A_PASSWORD, label: "Outreach",           color: "#F59E0B", Icon: UserCheck },
-  internB:  { password: INTERN_B_PASSWORD, label: "Client Relationships", color: "#8B5CF6", Icon: UserCheck },
+  // abigail offboarded 2026-07-23 — entry removed so login card no longer appears.
+  // internA / internB legacy keys also removed to avoid confusion.
 };
 
 export async function classifyLead(lead: Lead): Promise<{ bucket: string; reason: string; nextAction: string; followUpInDays?: number }> {

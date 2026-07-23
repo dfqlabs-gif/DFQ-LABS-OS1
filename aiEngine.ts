@@ -629,3 +629,57 @@ STRATEGIC FOCUS FOR TODAY: [the single highest-leverage task to spend 2 hours on
 WHY IT WINS: [1 line explaining the psychology]
 CONVERSION HAZARD: [specific risk that could cost revenue today if ignored]`;
 }
+
+// ── DM Split-Test Analyzer ───────────────────────────────────────────────────
+// Looks at closed leads to identify which DM patterns converted, then generates
+// split-test variations the team can A/B test against future cold prospects.
+
+export async function analyzeDMConversions(leads: Lead[]): Promise<string> {
+  const closedLeads = leads.filter(l => l.status === "Closed" && (l.dmText || l.conversationLog?.length));
+  const lostLeads = leads.filter(l => l.status === "Lost" && (l.dmText || l.conversationLog?.length));
+
+  if (closedLeads.length === 0) {
+    return "Not enough closed leads with DM data to run a conversion analysis. Close more deals first and log the DM threads.";
+  }
+
+  const closedSummary = closedLeads.slice(0, 12).map((l, i) =>
+    `CLOSED #${i + 1}: ${l.name || l.company} (${l.clientType}, ${l.service})\nOpening DM: ${(l.dmText || "").slice(0, 300)}\nFirst reply: ${(l.prospectInitialResponse || "").slice(0, 200)}`
+  ).join("\n\n");
+
+  const lostSummary = lostLeads.slice(0, 6).map((l, i) =>
+    `LOST #${i + 1}: ${l.name || l.company} (${l.clientType})\nOpening DM: ${(l.dmText || "").slice(0, 200)}`
+  ).join("\n\n");
+
+  const prompt = `You are DFQ Labs' Head of Growth analysing real outreach data to identify what makes our opening DMs convert.
+
+CLOSED/WON LEADS (these opened → booked → closed):
+${closedSummary}
+
+${lostLeads.length > 0 ? `LOST/DEAD LEADS (these didn't convert):\n${lostSummary}` : ""}
+
+Your job:
+1. PATTERN ANALYSIS — In 3-5 bullet points, identify the specific language patterns, structures, or approaches that appear in the winning DMs but not the losing ones. Be concrete — cite exact phrases or sentence structures where possible.
+2. WINNING DM FORMULA — Write out the structural formula (not a template, a formula) that these winning DMs share.
+3. WHAT TO KILL — Identify any patterns in lost leads that should be avoided.
+4. SPLIT-TEST VARIATIONS — Generate 3 distinct DM variations (each 2-4 sentences) for a cold real estate developer prospect, based on the winning patterns. Label them Variant A, Variant B, Variant C. Make them genuinely different in angle, not just word-swapped.
+
+Write in plain text only. No markdown. No bullet point symbols. Use numbered lists only.`;
+
+  return runAI(prompt, 1400);
+}
+
+export async function generateDMVariations(angle: string, lead: Lead): Promise<string> {
+  const prompt = `You are DFQ Labs' best copywriter. Generate 3 split-test DM variations for this specific prospect.
+
+${buildLeadContext(lead)}
+
+Angle to test: ${angle}
+
+Rules:
+- Each variation must be 2-4 sentences max
+- Zero emojis. Zero exclamation marks. Zero AI buzzwords
+- Each should feel genuinely different in hook, tone, or psychological angle — not just word-swapped
+- Output ONLY the three messages. Label them Variant A, Variant B, Variant C. No explanation.`;
+
+  return runAI(prompt, 600);
+}

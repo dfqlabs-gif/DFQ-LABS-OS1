@@ -410,6 +410,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
       const myActs = activitiesForSelectedDate.filter(a => a.actor === s);
       report[s] = {
         dmsSent: myActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length,
+        followUps: myActs.filter(a => (a.type === "note" && a.title === "Follow-up Made") || (a.type === "status_change" && a.text === "Follow-up Made")).length,
         replies: myActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length,
         auditsRequested: myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
         auditsDelivered: myActs.filter(a => a.type === "status_change" && (a.text === "Audit Delivered" || a.text === "Value Given")).length,
@@ -1195,7 +1196,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
                       <UserCheck size={12} /> {specialistLabel(s)}
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                      {[["New DM Sent", r.dmsSent, G], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audit Delivered", r.auditsDelivered, "#ec4899"], ["Discovery Call Booked", r.callsBooked, "#F97316"], ["Discovery Call Done", r.callsDone, "#06B6D4"]].map(([label, val, color]) => (
+                      {[["New DM Sent", r.dmsSent, G], ["Follow-ups Made", r.followUps, "#3B82F6"], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audit Delivered", r.auditsDelivered, "#ec4899"], ["Discovery Call Booked", r.callsBooked, "#F97316"], ["Discovery Call Done", r.callsDone, "#06B6D4"]].map(([label, val, color]) => (
                         <div key={label as string} style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                           <span style={{ color: MUTED2 }}>{label}:</span>
                           <span style={{ fontWeight: 700, color: color as string }}>{val as number}</span>

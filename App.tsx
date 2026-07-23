@@ -522,6 +522,97 @@ function MeetingIntelligenceSummary({ leads, onSave }: { leads: Lead[], onSave: 
   );
 }
 
+// ── Audit KPI Summary — Alex's primary daily metric ─────────────────────────
+function AuditKPISummary({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) => void }) {
+  const todayStr = today();
+
+  // Audits delivered today (from conversationLog status_change events)
+  const deliveredToday = leads.filter(l =>
+    l.conversationLog?.some(log =>
+      log.ts?.startsWith(todayStr) &&
+      log.type === "status_change" &&
+      (log.text === "Audit Delivered" || log.text === "Value Given")
+    )
+  ).length;
+
+  // Audits requested — leads currently waiting for audit delivery
+  const awaitingAudit = leads.filter(l =>
+    (l.status === "Audit Requested") && !["Closed", "Lost"].includes(l.status)
+  ).sort((a, b) => daysSince(a.lastContacted) - daysSince(b.lastContacted));
+
+  // Discovery calls booked (upcoming)
+  const callsBooked = leads.filter(l => l.status === "Discovery Call Booked").length;
+
+  // Audit delivered this week
+  const weekStart = addDays(-7);
+  const deliveredWeek = leads.filter(l =>
+    l.conversationLog?.some(log =>
+      log.ts >= weekStart &&
+      log.type === "status_change" &&
+      (log.text === "Audit Delivered" || log.text === "Value Given")
+    )
+  ).length;
+
+  const DAILY_TARGET = 3;
+  const pct = Math.min(100, Math.round((deliveredToday / DAILY_TARGET) * 100));
+  const statusColor = deliveredToday >= DAILY_TARGET ? "#22C55E" : deliveredToday >= 1 ? "#F59E0B" : "#EF4444";
+
+  return (
+    <div className="dfq-card" style={{ background: SURFACE, border: `1px solid ${statusColor}40`, borderTop: `3px solid ${statusColor}`, borderRadius: 12, padding: "16px 18px", marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <SectionLabel icon={Ticket}>Today's Audit Output — Base KPI</SectionLabel>
+        <span style={{ fontSize: 20, fontWeight: 900, color: statusColor }}>{deliveredToday}<span style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>/{DAILY_TARGET} target</span></span>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ height: 8, background: "#111", borderRadius: 4, overflow: "hidden", border: `1px solid ${BORDER}`, marginBottom: 10 }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: `linear-gradient(90deg, ${statusColor}, ${statusColor}99)`, borderRadius: 4, transition: "width 0.5s" }} />
+      </div>
+
+      {/* Stats row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: awaitingAudit.length > 0 ? 14 : 0 }}>
+        {[
+          { label: "Delivered Today", val: deliveredToday, color: statusColor },
+          { label: "Delivered This Week", val: deliveredWeek, color: G },
+          { label: "Audits In Queue", val: awaitingAudit.length, color: awaitingAudit.length > 0 ? "#F97316" : MUTED },
+        ].map(s => (
+          <div key={s.label} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px", textAlign: "center" }}>
+            <div style={{ fontSize: 20, fontWeight: 900, color: s.color }}>{s.val}</div>
+            <div style={{ fontSize: 9, color: MUTED, marginTop: 2 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Audit queue */}
+      {awaitingAudit.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, color: "#F97316", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
+            Audit Queue — Deliver These First
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {awaitingAudit.slice(0, 5).map(l => (
+              <div key={l.id} onClick={() => onEdit(l)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(249,115,22,0.05)", border: "1px solid rgba(249,115,22,0.2)", borderLeft: "3px solid #F97316", borderRadius: 8, cursor: "pointer", flexWrap: "wrap", gap: 6 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{l.name || l.company}</div>
+                  <div style={{ fontSize: 10, color: MUTED2 }}>{l.company}{l.name ? ` · ${l.company}` : ""}</div>
+                </div>
+                <span style={{ fontSize: 9, color: "#F97316", fontWeight: 700 }}>{daysSince(l.lastContacted)}d waiting</span>
+              </div>
+            ))}
+            {awaitingAudit.length > 5 && <div style={{ fontSize: 10, color: MUTED, textAlign: "center", marginTop: 4 }}>+{awaitingAudit.length - 5} more in queue</div>}
+          </div>
+        </div>
+      )}
+
+      {awaitingAudit.length === 0 && deliveredToday >= DAILY_TARGET && (
+        <div style={{ fontSize: 12, color: "#22C55E", fontWeight: 700, textAlign: "center", padding: "8px 0" }}>
+          Base KPI hit. Audit queue clear. 
+        </div>
+      )}
+    </div>
+  );
+}
+
 function NonNegotiablesSummary({ leads, stats, onPersist, onQuickContact }: { leads: Lead[], stats: Stats, onPersist: (s: Stats) => void, onQuickContact: (l: Lead) => void }) {
   const hotLead = leads.find(l => l.status === "Proposal Sent" && daysSince(l.lastContacted) >= 1);
   const callBooked = leads.find(l => l.status === "Discovery Call Booked" && l.lastContacted !== today());
@@ -1242,13 +1333,15 @@ export default function App() {
   if (!authed) return <AccessGate roleKey={role} onSuccess={() => { setAuthed(true); writeSession(role); }} onBack={() => setRole(null)} />;
 
   // Staff dashboards — each person sees their own leads only
+  // "abigail" / "internB" roles are kept here ONLY so any lingering cached sessions
+  // don't crash — they resolve to "Abigail Dick" which the dashboard renders correctly
+  // even though the portal login card has been removed.
   if (role === "saadatu" || role === "abigail" || role === "internA" || role === "internB") {
-    // Legacy internA/B sessions map to the correct person
     const staffName =
       role === "saadatu" ? "Sa'adatu Mohammed" :
       role === "abigail" ? "Abigail Dick" :
-      role === "internA" ? "Sa'adatu Mohammed" :   // internA was Client Relationships → Sa'adatu
-      "Abigail Dick";                           // internB was Outreach → Abigail
+      role === "internA" ? "Sa'adatu Mohammed" :
+      "Abigail Dick";
     return (
       <>
         <InternDashboardWrapper
@@ -1343,6 +1436,7 @@ export default function App() {
               <div style={{ fontSize: 20, fontWeight: 800, color: TEXT, marginTop: 4 }}>DFQLABS Mission Control</div>
             </div>
             
+            <AuditKPISummary leads={activeLeads} onEdit={setModal} />
             <RevenueGapSummary leads={activeLeads} />
             <ResponseGuardSummary leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} />
             <MeetingIntelligenceSummary leads={activeLeads} onSave={saveLead} />
@@ -1434,9 +1528,8 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
         </div>
         <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: "0.1em", marginBottom: 4 }}>DFQ<span style={{color: G}}>LABS</span> <span style={{ color: MUTED, fontSize: 12, letterSpacing: "0.05em" }}>OS</span></div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 28 }}>Who's working today?</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, maxWidth: 480, margin: "0 auto" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, maxWidth: 380, margin: "0 auto" }}>
           <RoleCard onClick={() => onSelect("saadatu")} color={SPECIALIST_COLOR["Sa'adatu Mohammed"]} Icon={UserCheck} label="Sa'adatu" sub="Outreach & client relationships" />
-          <RoleCard onClick={() => onSelect("abigail")} color={SPECIALIST_COLOR["Abigail Dick"]} Icon={UserCheck} label="Abigail" sub="Outreach & client relationships" />
           <RoleCard onClick={() => onSelect("founder")} color={G} Icon={Shield} label="Founder" sub="Full command view" />
         </div>
       </div>

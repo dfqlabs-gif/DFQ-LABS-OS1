@@ -65,32 +65,44 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
     const claimedByCompany: Record<string, string> = {};
     leads.forEach(l => {
       const norm = normalizeCompany(l.company);
-      if (norm && l.assignedTo && l.assignedTo !== "Unassigned" && l.status !== "Lost") {
+      if (norm && l.assignedTo && l.assignedTo !== "Unassigned" && l.assignedTo !== "Abigail Dick" && l.status !== "Lost") {
         claimedByCompany[norm] = l.assignedTo;
       }
     });
 
     const sorted = [...unassigned].sort((a, b) => scoreLead(b) - scoreLead(a));
     let countA = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
-    let countB = leads.filter(l => l.assignedTo === "Abigail Dick" && !["Closed", "Lost"].includes(l.status)).length;
 
     const updates = sorted.map(l => {
       const norm = normalizeCompany(l.company);
-      let assignTo;
+      let assignTo: string;
       if (norm && claimedByCompany[norm]) {
         assignTo = claimedByCompany[norm];
       } else {
-        assignTo = countA <= countB ? "Sa'adatu Mohammed" : "Abigail Dick";
-        if (assignTo === "Sa'adatu Mohammed") countA++;
-        else countB++;
+        assignTo = "Sa'adatu Mohammed";
+        countA++;
         if (norm) claimedByCompany[norm] = assignTo;
       }
       return { ...l, assignedTo: assignTo };
     });
 
     await onBulkSave(updates);
-    setResult(`Assigned ${updates.length} lead(s) — ${updates.filter(u => u.assignedTo === "Sa'adatu Mohammed").length} to Sa'adatu, ${updates.filter(u => u.assignedTo === "Abigail Dick").length} to Abigail.`);
+    setResult(`Assigned ${updates.length} lead(s) to Sa'adatu Mohammed.`);
     setRunning(false);
+  };
+
+  const [reassigning, setReassigning] = useState(false);
+  const [reassignResult, setReassignResult] = useState<string | null>(null);
+  const abigailLeads = leads.filter(l => l.assignedTo === "Abigail Dick" && !["Closed", "Lost"].includes(l.status));
+
+  const reassignAbigailToAlex = async () => {
+    if (abigailLeads.length === 0) return;
+    setReassigning(true);
+    setReassignResult(null);
+    const updates = abigailLeads.map(l => ({ ...l, assignedTo: "Alex" }));
+    await onBulkSave(updates);
+    setReassignResult(`${updates.length} lead(s) reassigned from Abigail Dick → Alex.`);
+    setReassigning(false);
   };
 
   const bySpecialist = SPECIALISTS.filter(s => s !== "Unassigned").map(s => {
@@ -114,6 +126,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
       const myActs = acts.filter(a => a.actor === s);
       report[s] = {
         dmsSent: myActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length,
+        followUps: myActs.filter(a => (a.type === "note" && a.title === "Follow-up Made") || (a.type === "status_change" && a.text === "Follow-up Made")).length,
         replies: myActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length,
         auditsRequested: myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
         auditsDelivered: myActs.filter(a => a.type === "status_change" && (a.text === "Audit Delivered" || a.text === "Value Given")).length,
@@ -205,6 +218,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
                 {[
                   { label: "Leads Added", val: stats.leadsAdded || 0, color: "#22C55E" },
                   { label: "New DMs Sent", val: stats.dmsSent || 0, color: G },
+                  { label: "Follow-ups Made", val: stats.followUps || 0, color: "#3B82F6" },
                   { label: "Replies Received", val: stats.replies || 0, color: "#F59E0B" },
                   { label: "Audits Requested", val: stats.auditsRequested || 0, color: "#a855f7" },
                   { label: "Audits Delivered", val: stats.auditsDelivered || 0, color: "#ec4899" },
@@ -271,6 +285,26 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
           );
         })()}
 
+        {/* Abigail offboarding — reassign her active leads */}
+        {abigailLeads.length > 0 && (
+          <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, padding: "12px 14px", marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#EF4444", marginBottom: 6 }}>
+              Abigail Dick — Offboarding Action Required
+            </div>
+            <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>
+              {abigailLeads.length} active lead{abigailLeads.length !== 1 ? "s" : ""} still assigned to Abigail. Reassign them to Alex to maintain continuity.
+            </div>
+            <button
+              onClick={reassignAbigailToAlex}
+              disabled={reassigning}
+              style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.4)", color: "#EF4444", borderRadius: 6, padding: "8px 16px", fontSize: 11, fontWeight: 700, cursor: reassigning ? "not-allowed" : "pointer" }}
+            >
+              {reassigning ? "Reassigning…" : `Reassign All ${abigailLeads.length} Leads → Alex`}
+            </button>
+            {reassignResult && <div style={{ marginTop: 8, fontSize: 11, color: "#22C55E", fontWeight: 700 }}>{reassignResult}</div>}
+          </div>
+        )}
+
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
           <div style={{ fontSize: 11, color: MUTED }}>{unassigned.length} lead{unassigned.length !== 1 ? "s" : ""} unassigned right now.</div>
           <button
@@ -294,7 +328,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
           </button>
         </div>
         {result && <div style={{ marginTop: 10, fontSize: 11, color: "#22C55E", fontWeight: 700 }}>{result}</div>}
-        <div style={{ fontSize: 10, color: MUTED, marginTop: 8 }}>New leads are now auto-assigned the instant they're created — this button is just a backstop for anything that slips through unassigned. Assignment always keeps a company with whichever intern already claimed it, so nobody ends up DMing a brand the other person already owns.</div>
+        <div style={{ fontSize: 10, color: MUTED, marginTop: 8 }}>New leads are auto-assigned the moment they're created — this is a backstop for anything unassigned. All new leads now go to Sa'adatu Mohammed by default.</div>
       </div>
 
       {conflicts.length > 0 && (
