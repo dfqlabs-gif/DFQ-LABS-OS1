@@ -590,8 +590,11 @@ export function findPotentialDuplicates(existingLeads: Lead[], candidate: Lead, 
     let score = 0;
     const matched: string[] = [];
 
-    if (candPhone && normalizePhoneDigits(l.phone) === candPhone) { score += 45; matched.push("Phone"); }
-    if (candWhatsapp && normalizePhoneDigits(l.whatsapp) === candWhatsapp) { score += 45; matched.push("WhatsApp"); }
+    if (candPhone && normalizePhoneDigits(l.phone) === candPhone)    { score += 45; matched.push("Phone");             }
+    if (candWhatsapp && normalizePhoneDigits(l.whatsapp) === candWhatsapp) { score += 45; matched.push("WhatsApp");          }
+    // Cross-field: same number entered in different fields (phone ↔ whatsapp)
+    if (candPhone && !matched.includes("Phone") && normalizePhoneDigits(l.whatsapp) === candPhone)    { score += 45; matched.push("Phone"); }
+    if (candWhatsapp && !matched.includes("WhatsApp") && normalizePhoneDigits(l.phone) === candWhatsapp) { score += 45; matched.push("WhatsApp"); }
     if (candIg && normalizeInstagramHandle(l.instagram) === candIg) { score += 45; matched.push("Instagram"); }
     if (candEmail && normalizeEmailAddress(l.email) === candEmail) { score += 45; matched.push("Email"); }
 

@@ -449,49 +449,73 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
         </div>
       </div>
 
-      {showDupWarning && pendingDuplicates.length > 0 && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 12 }}>
-          <div style={{ background: "#0d0d0d", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 12, width: "100%", maxWidth: 460, padding: 20, boxShadow: "0 20px 60px rgba(0,0,0,0.6)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 12 }}>
-              <AlertTriangle size={16} color="#EF4444" />
-              <span style={{ fontWeight: 800, fontSize: 12, color: "#EF4444", letterSpacing: "0.06em" }}>POSSIBLE DUPLICATE LEAD</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 260, overflowY: "auto", marginBottom: 14 }}>
-              {pendingDuplicates.map(m => (
-                <div key={m.lead.id} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 12px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: TEXT }}>{m.lead.name || "—"} <span style={{ color: MUTED, fontWeight: 400 }}>{m.lead.company}</span></span>
-                    <span style={{ fontSize: 10, color: "#EF4444", fontWeight: 700, flexShrink: 0 }}>{m.confidence}% match</span>
-                  </div>
-                  <div style={{ fontSize: 10, color: MUTED, marginTop: 4 }}>Matched on: {m.matchedFields.join(", ")} · Assigned to {m.lead.assignedTo || "Unassigned"} · {m.lead.status}</div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                    <button onClick={() => { onOpenExisting?.(m.lead); onClose(); }} style={{ background: G_DIM, color: G, border: `1px solid ${G_BORDER}`, borderRadius: 5, padding: "5px 10px", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><ExternalLink size={11} /> View Existing</button>
-                    {role === "founder" && onMerge && (
-                      <button onClick={() => { onMerge(m.lead, { ...lead, name: cleanText(lead.name), company: cleanText(lead.company) }); onClose(); }} style={{ background: "rgba(139,92,246,0.1)", color: "#8B5CF6", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 5, padding: "5px 10px", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><GitMerge size={11} /> Merge</button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {role === "founder" ? (
-              <div style={{ fontSize: 10, color: MUTED, marginBottom: 12 }}>As Founder you can force-create this lead anyway if you're confident it's genuinely separate.</div>
-            ) : (
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 10.5, color: "#F59E0B", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 6, padding: "8px 10px", marginBottom: 12 }}>
-                <ShieldAlert size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                <span>Only the Founder can create a lead that looks like a duplicate. Please contact her to proceed, or view/edit the existing lead above.</span>
+      {showDupWarning && pendingDuplicates.length > 0 && (() => {
+        // Hard block: any duplicate matched on a phone/WhatsApp number — no one can override
+        const phoneFields = new Set(["Phone", "WhatsApp"]);
+        const isPhoneBlock = pendingDuplicates.some(m => m.matchedFields.some(f => phoneFields.has(f)));
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 12 }}>
+            <div style={{ background: "#0d0d0d", border: `1px solid ${isPhoneBlock ? "rgba(239,68,68,0.7)" : "rgba(239,68,68,0.4)"}`, borderRadius: 12, width: "100%", maxWidth: 460, padding: 20, boxShadow: "0 20px 60px rgba(0,0,0,0.6)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+                <AlertTriangle size={16} color="#EF4444" />
+                <span style={{ fontWeight: 800, fontSize: 12, color: "#EF4444", letterSpacing: "0.06em" }}>
+                  {isPhoneBlock ? "DUPLICATE PHONE NUMBER — CANNOT SAVE" : "POSSIBLE DUPLICATE LEAD"}
+                </span>
               </div>
-            )}
 
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowDupWarning(false)} style={{ background: "none", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 16px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
-              {role === "founder" && (
-                <button onClick={() => { setDupOverridden(true); setShowDupWarning(false); onSave({ ...lead, name: cleanText(lead.name), company: cleanText(lead.company), phone: cleanText(lead.phone), instagram: cleanText(lead.instagram), whatsapp: cleanText(lead.whatsapp), email: cleanText(lead.email) }); onClose(); }} style={{ background: "#EF4444", color: "#fff", border: "none", borderRadius: 6, padding: "7px 16px", fontWeight: 800, fontSize: 11, cursor: "pointer" }}>Create Anyway</button>
+              {isPhoneBlock && (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 10.5, color: "#EF4444", background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "8px 10px", marginBottom: 12 }}>
+                  <ShieldAlert size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>This phone number is already in the system. The same number cannot be saved twice — open the existing lead below to update it instead.</span>
+                </div>
               )}
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 260, overflowY: "auto", marginBottom: 14 }}>
+                {pendingDuplicates.map(m => {
+                  const hasPhone = m.matchedFields.some(f => phoneFields.has(f));
+                  return (
+                    <div key={m.lead.id} style={{ background: SURFACE2, border: `1px solid ${hasPhone ? "rgba(239,68,68,0.35)" : BORDER}`, borderRadius: 8, padding: "10px 12px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: TEXT }}>{m.lead.name || "—"} <span style={{ color: MUTED, fontWeight: 400 }}>{m.lead.company}</span></span>
+                        <span style={{ fontSize: 10, color: hasPhone ? "#EF4444" : "#F59E0B", fontWeight: 700, flexShrink: 0 }}>
+                          {hasPhone ? "⚠ Same number" : `${m.confidence}% match`}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 10, color: MUTED, marginTop: 4 }}>Matched on: {m.matchedFields.join(", ")} · Assigned to {m.lead.assignedTo || "Unassigned"} · {m.lead.status}</div>
+                      {m.lead.phone && <div style={{ fontSize: 10, color: MUTED2, marginTop: 2 }}>📞 {m.lead.phone}{m.lead.whatsapp && m.lead.whatsapp !== m.lead.phone ? ` · WhatsApp: ${m.lead.whatsapp}` : ""}</div>}
+                      <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                        <button onClick={() => { onOpenExisting?.(m.lead); onClose(); }} style={{ background: G_DIM, color: G, border: `1px solid ${G_BORDER}`, borderRadius: 5, padding: "5px 10px", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><ExternalLink size={11} /> Open Existing Lead</button>
+                        {!isPhoneBlock && role === "founder" && onMerge && (
+                          <button onClick={() => { onMerge(m.lead, { ...lead, name: cleanText(lead.name), company: cleanText(lead.company) }); onClose(); }} style={{ background: "rgba(139,92,246,0.1)", color: "#8B5CF6", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 5, padding: "5px 10px", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}><GitMerge size={11} /> Merge</button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {!isPhoneBlock && (
+                role === "founder" ? (
+                  <div style={{ fontSize: 10, color: MUTED, marginBottom: 12 }}>As Founder you can force-create this lead if you're confident it's genuinely separate (no shared phone number).</div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 7, fontSize: 10.5, color: "#F59E0B", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 6, padding: "8px 10px", marginBottom: 12 }}>
+                    <ShieldAlert size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span>Only the Founder can create a lead that looks like a duplicate. Please contact her to proceed, or open the existing lead above.</span>
+                  </div>
+                )
+              )}
+
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => setShowDupWarning(false)} style={{ background: "none", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 16px", fontSize: 11, cursor: "pointer" }}>Go Back</button>
+                {/* "Create Anyway" is never shown for phone-matched duplicates */}
+                {!isPhoneBlock && role === "founder" && (
+                  <button onClick={() => { setDupOverridden(true); setShowDupWarning(false); onSave({ ...lead, name: cleanText(lead.name), company: cleanText(lead.company), phone: cleanText(lead.phone), instagram: cleanText(lead.instagram), whatsapp: cleanText(lead.whatsapp), email: cleanText(lead.email) }); onClose(); }} style={{ background: "#EF4444", color: "#fff", border: "none", borderRadius: 6, padding: "7px 16px", fontWeight: 800, fontSize: 11, cursor: "pointer" }}>Create Anyway</button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
