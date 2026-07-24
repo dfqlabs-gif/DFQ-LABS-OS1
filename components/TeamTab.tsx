@@ -79,16 +79,35 @@ function DrilldownPanel({
   drillKey,
   events,
   sColor,
+  leads,
+  onOpenLead,
   onClose,
 }: {
   drillKey: DrillKey;
   events: any[];
   sColor: string;
+  leads: Lead[];
+  onOpenLead: (lead: Lead) => void;
   onClose: () => void;
 }) {
   const meta = DRILL_META[drillKey];
   const Icon = meta.icon;
   const items = filterForDrill(events, drillKey);
+
+  // Look up the full Lead record from an activity event so the row can open the profile
+  const findLead = (act: any): Lead | null => {
+    // Prefer exact id match if present, then name+company
+    if (act.leadId) {
+      const byId = leads.find(l => l.id === act.leadId);
+      if (byId) return byId;
+    }
+    const byName = act.leadName && act.leadName !== "Unnamed"
+      ? leads.find(l => l.name === act.leadName && (!act.company || l.company === act.company))
+      : null;
+    if (byName) return byName;
+    // Fallback: match on company alone
+    return act.company ? (leads.find(l => l.company === act.company) ?? null) : null;
+  };
 
   return (
     <div style={{
@@ -117,6 +136,7 @@ function DrilldownPanel({
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" }}>
           {items.map((act, i) => {
+            const matchedLead = findLead(act);
             const dateStr = (() => {
               const d = new Date(act.ts);
               return isNaN(d.getTime()) ? "" : d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -124,21 +144,29 @@ function DrilldownPanel({
             return (
               <div
                 key={i}
+                onClick={e => { e.stopPropagation(); if (matchedLead) onOpenLead(matchedLead); }}
                 style={{
                   background: SURFACE2,
-                  border: `1px solid ${BORDER}`,
+                  border: `1px solid ${matchedLead ? meta.color + "40" : BORDER}`,
                   borderLeft: `3px solid ${meta.color}`,
                   borderRadius: 7,
                   padding: "9px 12px",
+                  cursor: matchedLead ? "pointer" : "default",
+                  transition: "border-color 0.15s",
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: matchedLead ? "#fff" : MUTED2, display: "flex", alignItems: "center", gap: 5 }}>
                       {act.leadName !== "Unnamed" ? act.leadName : act.company}
                       {act.leadName !== "Unnamed" && act.company ? (
                         <span style={{ color: MUTED, fontWeight: 400 }}> · {act.company}</span>
                       ) : null}
+                      {matchedLead && (
+                        <span style={{ fontSize: 9, color: meta.color, fontWeight: 700, border: `1px solid ${meta.color}40`, borderRadius: 4, padding: "1px 5px", flexShrink: 0 }}>
+                          TAP TO OPEN
+                        </span>
+                      )}
                     </div>
                     {act.text && (
                       <div style={{ fontSize: 11, color: MUTED2, marginTop: 4, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
@@ -440,6 +468,8 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
                   drillKey={drillDown}
                   events={stats.events || []}
                   sColor={sColor}
+                  leads={leads}
+                  onOpenLead={l => { onSave(l); }}
                   onClose={() => setDrillDown(null)}
                 />
               )}
