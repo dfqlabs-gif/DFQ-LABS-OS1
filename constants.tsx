@@ -403,6 +403,29 @@ export function ruleBasedBucket(lead: Lead) {
   return null;
 }
 
+export function getWeekStart(): string {
+  const d = new Date();
+  const tz = d.getTimezoneOffset() * 60000;
+  const local = new Date(d.getTime() - tz);
+  const day = local.getDay(); // 0=Sun … 6=Sat
+  const diff = day === 0 ? 6 : day - 1; // shift to Monday
+  local.setDate(local.getDate() - diff);
+  return local.toISOString().split("T")[0];
+}
+
+export function getInternActivitiesRange(leads: Lead[], startDate: string, endDate: string) {
+  const activities: any[] = [];
+  const start = new Date(startDate + "T00:00:00");
+  const end   = new Date(endDate   + "T23:59:59");
+  const cur   = new Date(start);
+  while (cur <= end) {
+    const ds = cur.toISOString().split("T")[0];
+    activities.push(...getInternActivities(leads, ds));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return activities.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+}
+
 export function getInternActivities(leads: Lead[], selectedDate: string) {
   const activities: any[] = [];
   leads.forEach(lead => {
