@@ -415,13 +415,15 @@ export function getWeekStart(): string {
 
 export function getInternActivitiesRange(leads: Lead[], startDate: string, endDate: string) {
   const activities: any[] = [];
-  const start = new Date(startDate + "T00:00:00");
-  const end   = new Date(endDate   + "T23:59:59");
-  const cur   = new Date(start);
-  while (cur <= end) {
-    const ds = cur.toISOString().split("T")[0];
-    activities.push(...getInternActivities(leads, ds));
-    cur.setDate(cur.getDate() + 1);
+  // Iterate as plain date strings to avoid UTC-offset shifts in non-UTC timezones.
+  // YYYY-MM-DD strings sort/compare correctly as plain strings.
+  let cur = startDate;
+  while (cur <= endDate) {
+    activities.push(...getInternActivities(leads, cur));
+    // Advance by one calendar day using local Date constructor (not UTC)
+    const [y, m, d] = cur.split("-").map(Number);
+    const next = new Date(y, m - 1, d + 1); // local calendar arithmetic
+    cur = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
   }
   return activities.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
 }
