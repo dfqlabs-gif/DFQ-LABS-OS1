@@ -147,13 +147,9 @@ export function WeeklyReport({ leads }: WeeklyReportProps) {
             <div style={{ fontSize: 13, fontWeight: 800, color: TEXT, marginTop: 2 }}>{weekStartEnd.start} to {weekStartEnd.end}</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 11, color: MUTED }}>Choose Week:</span>
-            <input 
-              type="week" 
-              value={selectedWeek} 
-              onChange={e => setSelectedWeek(e.target.value)} 
-              style={{ background: SURFACE2, border: `1px solid ${BORDER}`, color: TEXT, borderRadius: 6, padding: "4px 8px", fontSize: 11, outline: "none" }}
-            />
+            <button onClick={() => { const d = new Date(weekStartEnd.start + "T12:00:00"); d.setDate(d.getDate() - 7); setSelectedWeek(getWeekKey(d)); }} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, color: TEXT, borderRadius: 5, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>← Prev</button>
+            <span style={{ fontSize: 10, color: MUTED, whiteSpace: "nowrap", minWidth: 40, textAlign: "center" }}>Wk {selectedWeek.split("-W")[1] || "—"}</span>
+            <button onClick={() => { const d = new Date(weekStartEnd.start + "T12:00:00"); d.setDate(d.getDate() + 7); setSelectedWeek(getWeekKey(d)); }} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, color: TEXT, borderRadius: 5, padding: "4px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Next →</button>
           </div>
         </div>
 

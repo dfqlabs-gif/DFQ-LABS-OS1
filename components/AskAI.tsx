@@ -1,23 +1,169 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { MessageCircle, X, Send, AtSign, ShieldCheck } from "lucide-react";
+import { MessageCircle, X, Send, AtSign, CheckCircle2, PhoneCall } from "lucide-react";
 import { Lead } from "../types";
 import {
-  G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, TEXT, MUTED, MUTED2, iStyle, STATUS_COLOR,
+  G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, TEXT, MUTED, MUTED2, iStyle,
+  STATUS_COLOR, STATUS_COLOR as SC, SPECIALISTS, specialistLabel,
+  daysSince, hoursSince, SERVICE_VALUE, today, getWeekStart,
+  getInternActivities, getInternActivitiesRange, nowISO,
 } from "../constants";
 import { runQAReview, runQAAdjust } from "../aiQA";
 import { stripMarkdown } from "../aiEngine";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface AiMessage {
   role: "user" | "ai";
   text: string;
   dm?: string;
   strategy?: string;
-  qaFiltered?: boolean;  // true when the DM passed through the QA pipeline
+  qaFiltered?: boolean;
+  mentionedLeads?: Lead[];   // leads detected in this AI response
 }
 
 interface AskAIProps {
   leads: Lead[];
+  onFollowUp: (lead: Lead) => void;  // globally save a followed-up lead
+  onOpenLead?: (lead: Lead) => void; // open lead profile modal (optional)
 }
+
+// ─── Pipeline + Activity context builder ─────────────────────────────────────
+
+function buildFullPipelineContext(leads: Lead[]): string {
+  const todayStr = today();
+  const weekStart = getWeekStart();
+  const active = leads.filter(l => !["Closed", "Lost"].includes(l.status));
+
+  // Stage breakdown
+  const byStage: Record<string, number> = {};
+  active.forEach(l => { byStage[l.status] = (byStage[l.status] || 0) + 1; });
+  const stageBreakdown = Object.entries(byStage).map(([s, c]) => `${s}: ${c}`).join(", ");
+
+  // By specialist
+  const bySpec: Record<string, number> = {};
+  active.forEach(l => { const k = specialistLabel(l.assignedTo) || "Unassigned"; bySpec[k] = (bySpec[k] || 0) + 1; });
+
+  // Priority groups
+  const overdue = active
+    .filter(l => { const d = l.nextActionDate || l.autoFollowUpDate; return d && d < todayStr; })
+    .sort((a, b) => {
+      const da = a.nextActionDate || a.autoFollowUpDate || "";
+      const db = b.nextActionDate || b.autoFollowUpDate || "";
+      return da < db ? -1 : 1;
+    });
+
+  const stale = active
+    .filter(l => l.lastContacted && daysSince(l.lastContacted) >= 5)
+    .sort((a, b) => daysSince(b.lastContacted) - daysSince(a.lastContacted));
+
+  const highValueInactive = active
+    .filter(l => (SERVICE_VALUE[l.service] || 0) >= 500000 && l.lastContacted && daysSince(l.lastContacted) >= 3);
+
+  const awaitingReply = active
+    .filter(l => l.awaitingReplySince && hoursSince(l.awaitingReplySince) >= 24);
+
+  const neverContacted = active.filter(l => !l.lastContacted && l.status === "New");
+
+  // Activity stats
+  const todayActs = getInternActivities(leads, todayStr);
+  const weekActs  = getInternActivitiesRange(leads, weekStart, todayStr);
+
+  const actSpecs = SPECIALISTS.filter(s => s !== "Unassigned");
+  const activityLines = actSpecs.map(s => {
+    const ta = todayActs.filter(a => a.actor === s);
+    const wa = weekActs.filter(a => a.actor === s);
+    const count = (arr: any[], fn: (a: any) => boolean) => arr.filter(fn).length;
+    const isDM  = (a: any) => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent");
+    const isFU  = (a: any) => (a.type === "note" && a.title === "Follow-up Made") || (a.type === "status_change" && a.text === "Follow-up Made");
+    const isRep = (a: any) => a.type === "reply" || (a.type === "status_change" && a.text === "Replied");
+    const isAdd = (a: any) => a.type === "add";
+    return (
+      `${specialistLabel(s)} — ` +
+      `Today: ${count(ta, isAdd)} leads added, ${count(ta, isDM)} DMs sent, ${count(ta, isFU)} follow-ups, ${count(ta, isRep)} replies | ` +
+      `This Week: ${count(wa, isAdd)} leads added, ${count(wa, isDM)} DMs sent, ${count(wa, isFU)} follow-ups`
+    );
+  });
+
+  // All active leads — condensed 1-liner each
+  const leadLines = active.slice(0, 250).map(l => {
+    const lastC = l.lastContacted ? `${daysSince(l.lastContacted)}d ago` : "never";
+    const due   = l.nextActionDate || l.autoFollowUpDate;
+    const dueStr = due ? (due < todayStr ? `OVERDUE(${due})` : `due:${due}`) : "";
+    return `${l.name || "—"}|${l.company || "—"}|${l.status}|${specialistLabel(l.assignedTo)}|last:${lastC}|${l.aiBucket || "?"}${dueStr ? "|" + dueStr : ""}`;
+  });
+
+  return `=== LIVE PIPELINE — ${todayStr} ===
+TOTALS: ${active.length} active, ${leads.filter(l => l.status === "Closed").length} closed, ${leads.filter(l => l.status === "Lost").length} lost
+STAGES: ${stageBreakdown}
+LOAD: ${Object.entries(bySpec).map(([s, c]) => `${s}: ${c}`).join(", ")}
+
+OVERDUE FOLLOW-UPS (${overdue.length}):
+${overdue.slice(0, 20).map(l => `• ${l.name || "—"} / ${l.company} (${l.status}, ${specialistLabel(l.assignedTo)}) — due ${l.nextActionDate || l.autoFollowUpDate}`).join("\n") || "None"}
+
+STALE — 5+ DAYS NO CONTACT (${stale.length}):
+${stale.slice(0, 20).map(l => `• ${l.name || "—"} / ${l.company} (${l.status}, ${specialistLabel(l.assignedTo)}) — ${daysSince(l.lastContacted)}d silent`).join("\n") || "None"}
+
+HIGH-VALUE GONE QUIET ₦500K+, 3+ DAYS (${highValueInactive.length}):
+${highValueInactive.slice(0, 10).map(l => `• ${l.name || "—"} / ${l.company} (${l.service}, ${l.status})`).join("\n") || "None"}
+
+AWAITING OUR REPLY 24h+ (${awaitingReply.length}):
+${awaitingReply.slice(0, 10).map(l => `• ${l.name || "—"} / ${l.company}`).join("\n") || "None"}
+
+NEW — NEVER CONTACTED (${neverContacted.length}):
+${neverContacted.slice(0, 10).map(l => `• ${l.name || "—"} / ${l.company} (added ${l.dateAdded})`).join("\n") || "None"}
+
+=== TEAM ACTIVITY ===
+${activityLines.join("\n")}
+
+=== ALL ACTIVE LEADS (Name|Company|Status|Assigned|LastContact|Bucket|Due) ===
+${leadLines.join("\n")}
+=== END PIPELINE ===`;
+}
+
+// ─── Detect leads mentioned in an AI response ────────────────────────────────
+
+function extractMentionedLeads(text: string, leads: Lead[]): Lead[] {
+  const found: Lead[] = [];
+  const seen = new Set<string>();
+  const lowerText = text.toLowerCase();
+  leads
+    .filter(l => !["Closed", "Lost"].includes(l.status))
+    .forEach(lead => {
+      if (seen.has(lead.id)) return;
+      const name = (lead.name || "").trim();
+      const company = (lead.company || "").trim();
+      if (name.length > 3 && lowerText.includes(name.toLowerCase())) {
+        found.push(lead); seen.add(lead.id); return;
+      }
+      if (company.length > 3 && lowerText.includes(company.toLowerCase())) {
+        found.push(lead); seen.add(lead.id);
+      }
+    });
+  return found.slice(0, 12);
+}
+
+// ─── Apply a follow-up to a lead ─────────────────────────────────────────────
+
+function applyFollowUp(lead: Lead): Lead {
+  const now = nowISO();
+  return {
+    ...lead,
+    lastContacted: today(),
+    completedFollowUps: [...(lead.completedFollowUps || []), now],
+    conversationLog: [
+      ...(lead.conversationLog || []),
+      {
+        ts: now,
+        type: "note" as const,
+        label: "Follow-up Made",
+        text: "Marked as followed up via Ask AI",
+        by: lead.assignedTo || "Unknown",
+      },
+    ],
+  };
+}
+
+// ─── Build the single-lead context block for @ mentions ──────────────────────
 
 function buildLeadContext(lead: Lead): string {
   const entries: string[] = [];
@@ -25,45 +171,49 @@ function buildLeadContext(lead: Lead): string {
   if (lead.prospectInitialResponse) entries.push(`THEIR FIRST REPLY:\n${lead.prospectInitialResponse}`);
   if (lead.prospectLatestResponse) entries.push(`LATEST REPLY:\n${lead.prospectLatestResponse}`);
   (lead.conversationLog || []).forEach((e: any) => {
-    entries.push(`[${e.date || ""}] ${e.sender || ""}: ${e.message || ""}`);
+    if (e.type === "dm" || e.type === "reply") {
+      entries.push(`[${e.ts?.split("T")[0] || ""}] ${e.type === "dm" ? "US" : "LEAD"}: ${e.text || ""}`);
+    }
   });
   const convo = entries.join("\n\n") || "No conversation history recorded.";
+  return `=== SPECIFICALLY REFERENCED LEAD ===
+Name: ${lead.name || "Unknown"}  |  Company: ${lead.company || "Unknown"}
+Stage: ${lead.status}  |  Assigned: ${specialistLabel(lead.assignedTo)}  |  Bucket: ${lead.aiBucket || "?"}
+Service: ${lead.service}  |  Notes: ${lead.notes || "none"}
+Next Action: ${lead.nextAction || "none"}  |  Due: ${lead.nextActionDate || "none"}
 
-  return `LEAD PROFILE:
-Name: ${lead.name || "Unknown"}
-Company: ${lead.company || "Unknown"}
-Pipeline Stage: ${lead.status || "Unknown"}
-Industry/Type: ${lead.clientType || "Unknown"}
-Service Interest: ${lead.service || "Unknown"}
-Assigned To: ${lead.assignedTo || "Unassigned"}
-AI Bucket: ${lead.aiBucket || "Unknown"}
-Notes: ${lead.notes || "None"}
-Next Action: ${lead.nextAction || "None"}
-Next Action Date: ${lead.nextActionDate || "None"}
-
-CONVERSATION HISTORY:
-${convo}`;
+CONVERSATION:
+${convo}
+=== END REFERENCED LEAD ===`;
 }
 
-const SYSTEM_PROMPT = `You are the AI assistant inside DFQ Labs OS — a sales outreach CRM for Abuja real estate brands.
+// ─── System prompt ────────────────────────────────────────────────────────────
 
-Your job is to help the sales team generate perfect outreach DMs and follow-up messages for their prospects.
+const SYSTEM_PROMPT = `You are the AI intelligence layer inside DFQ Labs OS — a live sales outreach CRM for Abuja real estate brands.
 
-RESPONSE FORMAT — always follow this exactly:
-1. Write the section header "📨 SUGGESTED MESSAGE" on its own line.
-2. Write the DM. It must be short, powerful, and consultant-grade. Rules:
-   - NEVER open with hollow phrases like "Hope you're doing well", "I came across your profile", or "Great page!"
-   - ZERO exclamation marks. ZERO emojis inside the message.
-   - ZERO AI buzzwords: no "synergy", "leverage" (as verb), "revolutionize", "supercharge", "delve", "holistic", "elevate", "disrupt".
-   - ONE clear ask per message. Low-friction.
-   - If there is conversation history, pick it up naturally — never restart the relationship.
-   - WhatsApp/DM: 2-4 sentences max. Email: 80-120 words with a sharp subject line.
-3. Write "📊 STRATEGY" on its own line.
-4. Write 2-4 bullet points explaining: what stage objective this targets, why the message is framed this way, and what the prospect should do next.
+You have FULL ACCESS to the live pipeline data injected at the end of this prompt. Use it to answer any question about leads, team activity, follow-ups, or pipeline health. Always cite specific lead names and real numbers from the data — never invent leads.
 
-If no lead was referenced, answer the user's question helpfully and briefly.`;
+CORE CAPABILITIES:
+1. Pipeline Q&A — "who needs follow-up right now?", "which leads are stale?", "show me the pipeline status" → answer directly from the live data
+2. Team activity queries — "how many DMs did Sa'adatu send today?", "how many leads did Alex add this week?" → pull exact numbers from the TEAM ACTIVITY section
+3. Opportunity spotting — proactively surface overlooked leads, high-value leads gone quiet, overdue follow-ups, new leads never contacted
+4. DM generation — when asked to write a message, use this format exactly:
+   📨 SUGGESTED MESSAGE
+   [the message — 2-4 sentences, no emojis, no buzzwords]
+   📊 STRATEGY
+   [2-4 bullet points: what stage objective, why this framing, what the prospect does next]
+5. General platform questions — answer helpfully
 
-// ─── Draggable bubble position ───────────────────────────────────────────────
+When suggesting leads for follow-up, for each one give:
+• Lead name / company
+• Current pipeline stage
+• Assigned specialist
+• Why they need follow-up RIGHT NOW — one specific sentence
+
+Keep answers concise and direct. Never fabricate data.`;
+
+// ─── Drag helpers ─────────────────────────────────────────────────────────────
+
 function loadBubblePos() {
   try {
     const saved = localStorage.getItem("dfq-bubble-pos");
@@ -76,44 +226,106 @@ function saveBubblePos(pos: { bottom: number; right: number }) {
   try { localStorage.setItem("dfq-bubble-pos", JSON.stringify(pos)); } catch {}
 }
 
-export function AskAI({ leads }: AskAIProps) {
-  const [open, setOpen] = useState(false);
-  const [input, setInput] = useState("");
+// ─── Follow-up chip rendered per mentioned lead ──────────────────────────────
+
+function FollowUpChip({
+  lead,
+  alreadyDone,
+  onFollowUp,
+  onOpenLead,
+}: {
+  lead: Lead;
+  alreadyDone: boolean;
+  onFollowUp: (lead: Lead) => void;
+  onOpenLead?: (lead: Lead) => void;
+}) {
+  const stageColor = STATUS_COLOR[lead.status] || G;
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 8,
+      background: SURFACE2,
+      border: `1px solid ${BORDER}`,
+      borderLeft: `3px solid ${stageColor}`,
+      borderRadius: 7,
+      padding: "7px 10px",
+      flexWrap: "wrap",
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{ fontSize: 11, fontWeight: 700, color: "#fff", cursor: onOpenLead ? "pointer" : "default" }}
+          onClick={() => onOpenLead?.(lead)}
+        >
+          {lead.name || "—"}
+          {lead.company ? <span style={{ color: MUTED, fontWeight: 400 }}> · {lead.company}</span> : null}
+        </div>
+        <div style={{ fontSize: 9, color: stageColor, fontWeight: 700, marginTop: 2 }}>
+          {lead.status} · {specialistLabel(lead.assignedTo)}
+        </div>
+      </div>
+      <button
+        disabled={alreadyDone}
+        onClick={() => !alreadyDone && onFollowUp(lead)}
+        style={{
+          background: alreadyDone ? "rgba(34,197,94,0.12)" : "rgba(62,207,220,0.1)",
+          color: alreadyDone ? "#22C55E" : G,
+          border: `1px solid ${alreadyDone ? "rgba(34,197,94,0.35)" : G_BORDER}`,
+          borderRadius: 5,
+          padding: "4px 10px",
+          fontSize: 10,
+          fontWeight: 700,
+          cursor: alreadyDone ? "default" : "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          flexShrink: 0,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {alreadyDone
+          ? <><CheckCircle2 size={11} /> Logged</>
+          : <><PhoneCall size={10} /> Mark Followed Up</>
+        }
+      </button>
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
+  const [open, setOpen]       = useState(false);
+  const [input, setInput]     = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
   const [loading, setLoading] = useState(false);
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+
+  // @ mention
+  const [mentionQuery, setMentionQuery]   = useState<string | null>(null);
   const [mentionResults, setMentionResults] = useState<Lead[]>([]);
   const [referencedLead, setReferencedLead] = useState<Lead | null>(null);
 
-  // Draggable bubble position
+  // Tracks which leads have been followed up in this session (by lead id)
+  const [followedUpIds, setFollowedUpIds] = useState<Set<string>>(new Set());
+
+  // Draggable bubble
   const [bubblePos, setBubblePos] = useState(loadBubblePos);
-  const posRef = useRef(bubblePos);
-  const dragRef = useRef<{ startX: number; startY: number; startBottom: number; startRight: number } | null>(null);
+  const posRef    = useRef(bubblePos);
+  const dragRef   = useRef<{ startX: number; startY: number; startBottom: number; startRight: number } | null>(null);
   const isDragging = useRef(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const inputRef  = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    posRef.current = bubblePos;
-  }, [bubblePos]);
+  useEffect(() => { posRef.current = bubblePos; }, [bubblePos]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
+  useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 80); }, [open]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  useEffect(() => {
-    if (open) setTimeout(() => inputRef.current?.focus(), 80);
-  }, [open]);
-
-  // ─── Shared drag logic (used by both mouse and touch) ────────────────────
+  // ── Drag (mouse + touch) ────────────────────────────────────────────────────
   const startDrag = useCallback((startX: number, startY: number) => {
     const pos = posRef.current;
-    dragRef.current = {
-      startX,
-      startY,
-      startBottom: pos.bottom,
-      startRight: pos.right,
-    };
+    dragRef.current = { startX, startY, startBottom: pos.bottom, startRight: pos.right };
     isDragging.current = false;
   }, []);
 
@@ -121,13 +333,11 @@ export function AskAI({ leads }: AskAIProps) {
     if (!dragRef.current) return;
     const dx = clientX - dragRef.current.startX;
     const dy = clientY - dragRef.current.startY;
-    if (!isDragging.current && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-      isDragging.current = true;
-    }
+    if (!isDragging.current && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) isDragging.current = true;
     if (!isDragging.current) return;
-    const BUBBLE_SIZE = 54;
-    const newRight = Math.max(8, Math.min(window.innerWidth - BUBBLE_SIZE - 8, dragRef.current.startRight - dx));
-    const newBottom = Math.max(8, Math.min(window.innerHeight - BUBBLE_SIZE - 8, dragRef.current.startBottom - dy));
+    const SZ = 54;
+    const newRight  = Math.max(8, Math.min(window.innerWidth - SZ - 8, dragRef.current.startRight - dx));
+    const newBottom = Math.max(8, Math.min(window.innerHeight - SZ - 8, dragRef.current.startBottom - dy));
     const newPos = { bottom: newBottom, right: newRight };
     posRef.current = newPos;
     setBubblePos(newPos);
@@ -139,52 +349,34 @@ export function AskAI({ leads }: AskAIProps) {
     dragRef.current = null;
   }, []);
 
-  // ─── Mouse drag handlers ──────────────────────────────────────────────────
   const onBubbleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
     startDrag(e.clientX, e.clientY);
-
     const onMove = (ev: MouseEvent) => moveDrag(ev.clientX, ev.clientY);
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      endDrag();
-    };
+    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); endDrag(); };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }, [startDrag, moveDrag, endDrag]);
 
-  // ─── Touch drag handlers ──────────────────────────────────────────────────
   const onBubbleTouchStart = useCallback((e: React.TouchEvent) => {
     const touch = e.touches[0];
     startDrag(touch.clientX, touch.clientY);
-
-    const onMove = (ev: TouchEvent) => {
-      ev.preventDefault(); // prevent page scroll while dragging bubble
-      moveDrag(ev.touches[0].clientX, ev.touches[0].clientY);
-    };
-    const onUp = () => {
-      document.removeEventListener("touchmove", onMove);
-      document.removeEventListener("touchend", onUp);
-      endDrag();
-    };
+    const onMove = (ev: TouchEvent) => { ev.preventDefault(); moveDrag(ev.touches[0].clientX, ev.touches[0].clientY); };
+    const onUp = () => { document.removeEventListener("touchmove", onMove); document.removeEventListener("touchend", onUp); endDrag(); };
     document.addEventListener("touchmove", onMove, { passive: false });
     document.addEventListener("touchend", onUp);
   }, [startDrag, moveDrag, endDrag]);
 
   const onBubbleClick = useCallback(() => {
-    if (isDragging.current) return; // was a drag, not a click
+    if (isDragging.current) return;
     setOpen(o => !o);
   }, []);
 
-  // ─── Chat panel position (just above the bubble) ─────────────────────────
-  const panelWidth = typeof window !== "undefined" ? Math.min(440, window.innerWidth - 32) : 420;
-
+  // ── @ mention ───────────────────────────────────────────────────────────────
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setInput(val);
-
     const atIdx = val.lastIndexOf("@");
     if (atIdx !== -1) {
       const query = val.slice(atIdx + 1);
@@ -213,6 +405,14 @@ export function AskAI({ leads }: AskAIProps) {
     inputRef.current?.focus();
   };
 
+  // ── Follow-up handler ───────────────────────────────────────────────────────
+  const handleFollowUp = useCallback((lead: Lead) => {
+    const updated = applyFollowUp(lead);
+    onFollowUp(updated);
+    setFollowedUpIds(prev => new Set([...prev, lead.id]));
+  }, [onFollowUp]);
+
+  // ── Send ────────────────────────────────────────────────────────────────────
   const send = async () => {
     const q = input.trim();
     if (!q || loading) return;
@@ -224,14 +424,15 @@ export function AskAI({ leads }: AskAIProps) {
     setReferencedLead(null);
 
     try {
-      const fullSystem = lead
-        ? `${SYSTEM_PROMPT}\n\nYou have full CRM context for this lead:\n${buildLeadContext(lead)}`
-        : SYSTEM_PROMPT;
+      // Build system prompt with full pipeline context every request
+      const pipelineCtx = buildFullPipelineContext(leads);
+      const leadCtx = lead ? `\n\n${buildLeadContext(lead)}` : "";
+      const fullSystem = `${SYSTEM_PROMPT}\n\n${pipelineCtx}${leadCtx}`;
 
       const res = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systemPrompt: fullSystem, userPrompt: q, maxTokens: 1000 }),
+        body: JSON.stringify({ systemPrompt: fullSystem, userPrompt: q, maxTokens: 1200 }),
       });
 
       const data = await res.json();
@@ -239,26 +440,24 @@ export function AskAI({ leads }: AskAIProps) {
 
       const raw: string = stripMarkdown(data.text || "");
 
-      const dmMarker = "📨 SUGGESTED MESSAGE";
+      // Parse DM / strategy sections
+      const dmMarker   = "📨 SUGGESTED MESSAGE";
       const stratMarker = "📊 STRATEGY";
       const hasDm = raw.includes(dmMarker);
       const hasSt = raw.includes(stratMarker);
 
       let dm = "";
       let strategy = "";
-
       if (hasDm) {
         const start = raw.indexOf(dmMarker) + dmMarker.length;
-        const end = hasSt ? raw.indexOf(stratMarker) : raw.length;
+        const end   = hasSt ? raw.indexOf(stratMarker) : raw.length;
         dm = raw.slice(start, end).trim();
       }
       if (hasSt) {
         strategy = raw.slice(raw.indexOf(stratMarker) + stratMarker.length).trim();
       }
 
-      // ── QA filtering — only when we have a lead context and a generated DM ──
-      // Route the DM text through the same quality gate used in the main intern
-      // dashboard so chat-bubble DMs meet the same standard.
+      // QA filtering for DMs with a referenced lead
       let finalDm = dm;
       let qaFiltered = false;
       if (dm && lead) {
@@ -266,30 +465,32 @@ export function AskAI({ leads }: AskAIProps) {
           const review = await runQAReview(dm, lead);
           if (review.needsAdjustment) {
             const adjusted = await runQAAdjust(review, dm, lead);
-            if (adjusted && adjusted.trim()) {
-              finalDm = adjusted.trim();
-              qaFiltered = true;
-            }
+            if (adjusted?.trim()) { finalDm = adjusted.trim(); qaFiltered = true; }
           }
-        } catch {
-          // QA is best-effort; if it fails, keep the original draft
-        }
+        } catch { /* QA is best-effort */ }
       }
 
-      setMessages(prev => [...prev, { role: "ai", text: raw, dm: finalDm || undefined, strategy: strategy || undefined, qaFiltered }]);
+      // Detect leads mentioned in the response
+      const mentioned = extractMentionedLeads(raw, leads);
+
+      setMessages(prev => [
+        ...prev,
+        { role: "ai", text: raw, dm: finalDm || undefined, strategy: strategy || undefined, qaFiltered, mentionedLeads: mentioned },
+      ]);
     } catch (err: any) {
       setMessages(prev => [...prev, { role: "ai", text: "Error: " + err.message }]);
     }
     setLoading(false);
   };
 
-  // Chat panel opens above the bubble
-  const BUBBLE_SIZE = 54;
-  const panelBottom = bubblePos.bottom + BUBBLE_SIZE + 10;
+  // ── Layout ───────────────────────────────────────────────────────────────────
+  const BUBBLE_SIZE  = 54;
+  const panelWidth   = typeof window !== "undefined" ? Math.min(460, window.innerWidth - 32) : 440;
+  const panelBottom  = bubblePos.bottom + BUBBLE_SIZE + 10;
 
   return (
     <>
-      {/* Draggable floating bubble */}
+      {/* ── Floating bubble ─────────────────────────────────────────────────── */}
       <div
         onMouseDown={onBubbleMouseDown}
         onTouchStart={onBubbleTouchStart}
@@ -312,13 +513,10 @@ export function AskAI({ leads }: AskAIProps) {
           userSelect: "none",
         }}
       >
-        {open
-          ? <X size={20} color={G} />
-          : <MessageCircle size={20} color="#000" strokeWidth={2.5} />
-        }
+        {open ? <X size={20} color={G} /> : <MessageCircle size={20} color="#000" strokeWidth={2.5} />}
       </div>
 
-      {/* Chat panel — positioned relative to bubble */}
+      {/* ── Chat panel ──────────────────────────────────────────────────────── */}
       {open && (
         <div style={{
           position: "fixed",
@@ -326,7 +524,7 @@ export function AskAI({ leads }: AskAIProps) {
           right: bubblePos.right,
           zIndex: 1050,
           width: panelWidth,
-          maxHeight: "72vh",
+          maxHeight: "76vh",
           background: "#111",
           border: `1px solid ${G_BORDER}`,
           borderRadius: 16,
@@ -336,22 +534,21 @@ export function AskAI({ leads }: AskAIProps) {
           fontFamily: "'Inter',system-ui,sans-serif",
           color: TEXT,
         }}>
+
           {/* Header */}
           <div style={{
             padding: "12px 16px",
             borderBottom: `1px solid ${BORDER}`,
             background: `linear-gradient(180deg, rgba(62,207,220,0.07), transparent)`,
             flexShrink: 0,
-            display: "flex", alignItems: "center", justifyContent: "space-between",
           }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.08em" }}>
-                DFQ<span style={{ color: G }}>LABS</span>{" "}
-                <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}>Ask AI</span>
-              </div>
-              <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>
-                Type <span style={{ color: G, fontWeight: 700 }}>@name</span> to pull a prospect's CRM context and get a DM + strategy.
-              </div>
+            <div style={{ fontWeight: 800, fontSize: 13, letterSpacing: "0.08em" }}>
+              DFQ<span style={{ color: G }}>LABS</span>{" "}
+              <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}>Ask AI</span>
+            </div>
+            <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>
+              Ask about the pipeline · team activity · who needs follow-up · or type{" "}
+              <span style={{ color: G, fontWeight: 700 }}>@name</span> to draft a DM
             </div>
           </div>
 
@@ -360,20 +557,24 @@ export function AskAI({ leads }: AskAIProps) {
             {messages.length === 0 && !loading && (
               <div style={{ textAlign: "center", padding: "32px 0", color: MUTED }}>
                 <AtSign size={30} color={G} style={{ marginBottom: 10, display: "inline-block", opacity: 0.55 }} />
-                <div style={{ fontSize: 13, color: TEXT, fontWeight: 600, marginBottom: 4 }}>Ready to draft a message</div>
-                <div style={{ fontSize: 11, lineHeight: 1.6 }}>
-                  Try:{" "}
-                  <span style={{ color: G, fontStyle: "italic" }}>"Write a follow-up for @Kamalu Properties"</span>
+                <div style={{ fontSize: 13, color: TEXT, fontWeight: 600, marginBottom: 6 }}>Your pipeline AI</div>
+                <div style={{ fontSize: 11, lineHeight: 1.7, color: MUTED2 }}>
+                  Try asking:<br />
+                  <span style={{ color: G, fontStyle: "italic" }}>"Who needs follow-up right now?"</span><br />
+                  <span style={{ color: G, fontStyle: "italic" }}>"How many DMs did Sa'adatu send today?"</span><br />
+                  <span style={{ color: G, fontStyle: "italic" }}>"Which high-value leads have gone quiet?"</span>
                 </div>
               </div>
             )}
 
             {messages.map((msg, i) => (
-              <div key={i} style={{ display: "flex", flexDirection: "column" }}>
+              <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+
+                {/* User bubble */}
                 {msg.role === "user" ? (
                   <div style={{
                     alignSelf: "flex-end",
-                    maxWidth: "85%",
+                    maxWidth: "86%",
                     background: G_DIM,
                     border: `1px solid ${G_BORDER}`,
                     borderRadius: "12px 12px 2px 12px",
@@ -385,53 +586,54 @@ export function AskAI({ leads }: AskAIProps) {
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+
+                    {/* DM output (if present) */}
                     {msg.dm ? (
                       <>
-                        <div style={{
-                          background: SURFACE2,
-                          border: `1px solid ${BORDER}`,
-                          borderRadius: 10, padding: "10px 12px",
-                        }}>
+                        <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px" }}>
                           <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>
-                            📨 SUGGESTED MESSAGE
+                            📨 SUGGESTED MESSAGE{msg.qaFiltered ? " (QA-Improved)" : ""}
                           </div>
                           <div style={{ fontSize: 12, color: "#ddd", lineHeight: 1.78, whiteSpace: "pre-wrap" }}>
                             {msg.dm}
                           </div>
                           <button
                             onClick={() => navigator.clipboard.writeText(msg.dm || "")}
-                            style={{
-                              marginTop: 8, background: "transparent",
-                              border: `1px solid ${G_BORDER}`, color: G,
-                              borderRadius: 5, padding: "4px 10px",
-                              fontSize: 10, fontWeight: 700, cursor: "pointer",
-                            }}
+                            style={{ marginTop: 8, background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "4px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}
                           >
                             Copy message
                           </button>
                         </div>
                         {msg.strategy && (
-                          <div style={{
-                            background: "rgba(139,92,246,0.07)",
-                            border: "1px solid rgba(139,92,246,0.22)",
-                            borderRadius: 10, padding: "10px 12px",
-                          }}>
-                            <div style={{ fontSize: 9, color: "#8B5CF6", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>
-                              📊 STRATEGY
-                            </div>
-                            <div style={{ fontSize: 11, color: MUTED2, lineHeight: 1.72, whiteSpace: "pre-wrap" }}>
-                              {msg.strategy}
-                            </div>
+                          <div style={{ background: "rgba(139,92,246,0.07)", border: "1px solid rgba(139,92,246,0.22)", borderRadius: 10, padding: "10px 12px" }}>
+                            <div style={{ fontSize: 9, color: "#8B5CF6", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>📊 STRATEGY</div>
+                            <div style={{ fontSize: 11, color: MUTED2, lineHeight: 1.72, whiteSpace: "pre-wrap" }}>{msg.strategy}</div>
                           </div>
                         )}
                       </>
                     ) : (
-                      <div style={{
-                        background: SURFACE2, border: `1px solid ${BORDER}`,
-                        borderRadius: 10, padding: "10px 12px",
-                        fontSize: 12, color: MUTED2, lineHeight: 1.65, whiteSpace: "pre-wrap",
-                      }}>
+                      /* Plain text response */
+                      <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px", fontSize: 12, color: MUTED2, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
                         {msg.text}
+                      </div>
+                    )}
+
+                    {/* Follow-up chips — one per detected lead */}
+                    {msg.mentionedLeads && msg.mentionedLeads.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                        <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                          Leads mentioned — tap to log follow-up:
+                        </div>
+                        {msg.mentionedLeads.map(lead => (
+                          <React.Fragment key={lead.id}>
+                            <FollowUpChip
+                              lead={lead}
+                              alreadyDone={followedUpIds.has(lead.id)}
+                              onFollowUp={handleFollowUp}
+                              onOpenLead={onOpenLead}
+                            />
+                          </React.Fragment>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -440,12 +642,8 @@ export function AskAI({ leads }: AskAIProps) {
             ))}
 
             {loading && (
-              <div style={{
-                background: SURFACE2, border: `1px solid ${BORDER}`,
-                borderRadius: 10, padding: "10px 14px",
-                fontSize: 11, color: MUTED, fontStyle: "italic",
-              }}>
-                Writing…
+              <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 14px", fontSize: 11, color: MUTED, fontStyle: "italic" }}>
+                Checking pipeline…
               </div>
             )}
             <div ref={bottomRef} />
@@ -453,40 +651,20 @@ export function AskAI({ leads }: AskAIProps) {
 
           {/* @ mention dropdown */}
           {mentionQuery !== null && mentionResults.length > 0 && (
-            <div style={{
-              borderTop: `1px solid ${BORDER}`,
-              background: SURFACE2,
-              maxHeight: 180, overflowY: "auto",
-              flexShrink: 0,
-            }}>
-              <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.1em", padding: "6px 14px 2px" }}>
-                SELECT PROSPECT
-              </div>
+            <div style={{ borderTop: `1px solid ${BORDER}`, background: SURFACE2, maxHeight: 180, overflowY: "auto", flexShrink: 0 }}>
+              <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.1em", padding: "6px 14px 2px" }}>SELECT PROSPECT</div>
               {mentionResults.map(lead => (
                 <button
                   key={lead.id}
                   onClick={() => selectMention(lead)}
-                  style={{
-                    width: "100%", textAlign: "left",
-                    background: "transparent", border: "none",
-                    borderBottom: `1px solid ${BORDER}`,
-                    padding: "8px 14px", cursor: "pointer",
-                    display: "flex", alignItems: "center", gap: 10,
-                    color: TEXT,
-                  }}
+                  style={{ width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: `1px solid ${BORDER}`, padding: "8px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, color: TEXT }}
                   onMouseEnter={e => (e.currentTarget.style.background = G_DIM)}
                   onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                 >
-                  <div style={{
-                    width: 7, height: 7, borderRadius: "50%",
-                    background: STATUS_COLOR[lead.status] || G,
-                    flexShrink: 0,
-                  }} />
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: STATUS_COLOR[lead.status] || G, flexShrink: 0 }} />
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 600 }}>{lead.name || "—"}</div>
-                    <div style={{ fontSize: 10, color: MUTED }}>
-                      {lead.company} · {lead.status}
-                    </div>
+                    <div style={{ fontSize: 10, color: MUTED }}>{lead.company} · {lead.status}</div>
                   </div>
                 </button>
               ))}
@@ -495,42 +673,23 @@ export function AskAI({ leads }: AskAIProps) {
 
           {/* Referenced lead chip */}
           {referencedLead && (
-            <div style={{
-              padding: "6px 14px",
-              borderTop: `1px solid ${BORDER}`,
-              flexShrink: 0,
-              display: "flex", alignItems: "center", gap: 6,
-            }}>
+            <div style={{ padding: "6px 14px", borderTop: `1px solid ${BORDER}`, flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.08em" }}>CONTEXT:</span>
-              <span style={{
-                fontSize: 10, background: G_DIM,
-                border: `1px solid ${G_BORDER}`,
-                color: G, borderRadius: 20, padding: "2px 8px",
-              }}>
+              <span style={{ fontSize: 10, background: G_DIM, border: `1px solid ${G_BORDER}`, color: G, borderRadius: 20, padding: "2px 8px" }}>
                 {referencedLead.name || referencedLead.company} · {referencedLead.status}
               </span>
-              <button
-                onClick={() => setReferencedLead(null)}
-                style={{ background: "transparent", border: "none", color: MUTED, cursor: "pointer", fontSize: 12, padding: "0 2px" }}
-              >×</button>
+              <button onClick={() => setReferencedLead(null)} style={{ background: "transparent", border: "none", color: MUTED, cursor: "pointer", fontSize: 12, padding: "0 2px" }}>×</button>
             </div>
           )}
 
           {/* Input row */}
-          <div style={{
-            padding: "10px 12px",
-            borderTop: `1px solid ${BORDER}`,
-            display: "flex", gap: 8, alignItems: "flex-end",
-            flexShrink: 0,
-          }}>
+          <div style={{ padding: "10px 12px", borderTop: `1px solid ${BORDER}`, display: "flex", gap: 8, alignItems: "flex-end", flexShrink: 0 }}>
             <textarea
               ref={inputRef}
               value={input}
               onChange={handleChange}
-              onKeyDown={e => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-              }}
-              placeholder="Ask AI… use @ to tag a prospect"
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder="Ask about your pipeline, team activity, who to follow up with…"
               rows={2}
               style={{ ...iStyle, flex: 1, resize: "none", fontSize: 12, lineHeight: 1.5 }}
             />
@@ -540,11 +699,9 @@ export function AskAI({ leads }: AskAIProps) {
               style={{
                 background: loading || !input.trim() ? SURFACE2 : G,
                 color: loading || !input.trim() ? MUTED : "#000",
-                border: "none", borderRadius: 8,
-                padding: "9px 12px",
+                border: "none", borderRadius: 8, padding: "9px 12px",
                 cursor: loading || !input.trim() ? "not-allowed" : "pointer",
-                flexShrink: 0,
-                display: "flex", alignItems: "center", justifyContent: "center",
+                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
               }}
             >
               <Send size={15} />

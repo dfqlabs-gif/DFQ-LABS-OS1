@@ -307,8 +307,9 @@ export function calcWeeklyTargets(leads: Lead[]) {
   const avgDealSize = totalClosed > 0 ? closedRevenue / totalClosed : 500000;
   const dealsNeeded = Math.ceil(gap / Math.max(avgDealSize, 200000));
   const dealsNeededPerWeek = Math.max(1, Math.ceil(dealsNeeded / weeksLeft));
-  const callsNeededPerWeek = Math.max(1, Math.ceil(dealsNeededPerWeek / convRate));
-  const dmsNeededPerWeek = Math.max(callsNeededPerWeek, Math.ceil(callsNeededPerWeek / BOOKING_RATE));
+  // Cap at realistic small-team capacity (12 discovery calls/wk, 40 DMs/wk)
+  const callsNeededPerWeek = Math.min(12, Math.max(1, Math.ceil(dealsNeededPerWeek / convRate)));
+  const dmsNeededPerWeek = Math.min(40, Math.max(callsNeededPerWeek, Math.ceil(callsNeededPerWeek / BOOKING_RATE)));
   return {
     closedRevenue,
     gap,

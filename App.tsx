@@ -403,14 +403,22 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
     setSummaries(p => ({ ...p, [lead.id]: '' }));
   };
 
+  const [collapsed, setCollapsed] = useState(false);
+
   if (ranked.length === 0) return null;
   return (
     <div className="dfq-card" style={{ background: SURFACE, border: "1px solid rgba(239,68,68,0.4)", borderRadius: 12, padding: "16px 18px", marginBottom: 14 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <span className="pulse" style={{ width: 8, height: 8, borderRadius: "50%", background: "#EF4444" }} />
-        <SectionLabel icon={Clock3}>24-Hour Response Guard ({ranked.length})</SectionLabel>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: collapsed ? 0 : 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className="pulse" style={{ width: 8, height: 8, borderRadius: "50%", background: "#EF4444" }} />
+          <SectionLabel icon={Clock3}>24-Hour Response Guard ({ranked.length})</SectionLabel>
+        </div>
+        <button onClick={() => setCollapsed(c => !c)} style={{ background: "transparent", border: "1px solid rgba(239,68,68,0.3)", color: "#EF4444", borderRadius: 5, padding: "3px 9px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+          {collapsed ? "▼ Expand" : "▲ Collapse"}
+        </button>
       </div>
-      <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>Active leads awaiting replies from our end. Ground responses in human dialogue.</div>
+      {!collapsed && <>
+      <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>Prospects that replied to us — we need to respond. Generate a reply below.</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {ranked.map(l => {
           const wait = Math.floor(hoursSince(l.awaitingReplySince));
@@ -459,6 +467,7 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
           );
         })}
       </div>
+      </>}
     </div>
   );
 }
@@ -523,7 +532,7 @@ function MeetingIntelligenceSummary({ leads, onSave }: { leads: Lead[], onSave: 
 }
 
 // ── Audit KPI Summary — Alex's primary daily metric ─────────────────────────
-function AuditKPISummary({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) => void }) {
+function AuditKPISummary({ leads, onEdit, onSave }: { leads: Lead[], onEdit: (l: Lead) => void, onSave: (l: Lead) => void }) {
   const todayStr = today();
 
   // Audits delivered today (from conversationLog status_change events)
@@ -591,12 +600,15 @@ function AuditKPISummary({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) =
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             {awaitingAudit.slice(0, 5).map(l => (
-              <div key={l.id} onClick={() => onEdit(l)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(249,115,22,0.05)", border: "1px solid rgba(249,115,22,0.2)", borderLeft: "3px solid #F97316", borderRadius: 8, cursor: "pointer", flexWrap: "wrap", gap: 6 }}>
-                <div>
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(249,115,22,0.05)", border: "1px solid rgba(249,115,22,0.2)", borderLeft: "3px solid #F97316", borderRadius: 8, flexWrap: "wrap", gap: 6 }}>
+                <div onClick={() => onEdit(l)} style={{ flex: 1, cursor: "pointer" }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{l.name || l.company}</div>
                   <div style={{ fontSize: 10, color: MUTED2 }}>{l.company}{l.name ? ` · ${l.company}` : ""}</div>
                 </div>
-                <span style={{ fontSize: 9, color: "#F97316", fontWeight: 700 }}>{daysSince(l.lastContacted)}d waiting</span>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                  <span style={{ fontSize: 9, color: "#F97316", fontWeight: 700 }}>{daysSince(l.lastContacted)}d waiting</span>
+                  <button onClick={e => { e.stopPropagation(); onSave({ ...l, status: "Audit Delivered", conversationLog: [...(l.conversationLog || []), { ts: nowISO(), type: "status_change" as const, label: "Audit Delivered", text: "Audit Delivered", by: l.assignedTo || "Unassigned" }] }); }} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 5, padding: "4px 9px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>✓ Mark Delivered</button>
+                </div>
               </div>
             ))}
             {awaitingAudit.length > 5 && <div style={{ fontSize: 10, color: MUTED, textAlign: "center", marginTop: 4 }}>+{awaitingAudit.length - 5} more in queue</div>}
@@ -615,8 +627,12 @@ function AuditKPISummary({ leads, onEdit }: { leads: Lead[], onEdit: (l: Lead) =
 
 function NonNegotiablesSummary({ leads, stats, onPersist, onQuickContact }: { leads: Lead[], stats: Stats, onPersist: (s: Stats) => void, onQuickContact: (l: Lead) => void }) {
   const hotLead = leads.find(l => l.status === "Proposal Sent" && daysSince(l.lastContacted) >= 1);
-  const callBooked = leads.find(l => l.status === "Discovery Call Booked" && l.lastContacted !== today());
-  const topLead = leads.filter(l => !["Closed", "Lost"].includes(l.status) && l.lastContacted !== today()).sort((a, b) => scoreLead(b) - scoreLead(a))[0];
+  const callBooked = leads.find(l => l.status === "Discovery Call Booked" && !l.meetingPrepNote);
+  // Exclude: closed/lost, leads with proposal sent (tracked separately), discovery calls booked (tracked separately), and leads contacted within 3 days
+  const topLead = leads.filter(l =>
+    !["Closed", "Lost", "Proposal Sent", "Discovery Call Booked"].includes(l.status) &&
+    (!l.lastContacted || daysSince(l.lastContacted) >= 3)
+  ).sort((a, b) => scoreLead(b) - scoreLead(a))[0];
   const replyPending = leads.find(l => l.status === "Replied" && daysSince(l.lastContacted) >= 2);
 
   const rawTasks = [
@@ -1095,6 +1111,8 @@ export default function App() {
     const threadFields = ["dmText", "prospectInitialResponse", "prospectLatestResponse", "notes"];
     const threadChanged = exists && threadFields.some(f => (exists[f as keyof Lead] || "").toString().trim() !== (lead[f as keyof Lead] || "").toString().trim());
     const replyFieldsChanged = exists && ["prospectInitialResponse", "prospectLatestResponse"].some(f => (exists[f as keyof Lead] || "").toString().trim() !== (lead[f as keyof Lead] || "").toString().trim() && (lead[f as keyof Lead] || "").toString().trim());
+    // Detect when WE updated our DM (we sent something) vs prospect replied
+    const dmTextChanged = exists && (exists.dmText || "").toString().trim() !== (lead.dmText || "").toString().trim() && !!(lead.dmText || "").toString().trim();
 
     // Append-only chronological conversation log compilation
     let conversationLog = exists?.conversationLog || lead.conversationLog || [];
@@ -1160,6 +1178,15 @@ export default function App() {
         final.autoFollowUpReason = "Recently updated check-in.";
       }
       if (replyFieldsChanged) final.awaitingReplySince = nowISO();
+      // When WE send/update a DM: clear awaitingReplySince (we've responded) + auto-log follow-up
+      if (dmTextChanged) {
+        final.awaitingReplySince = "";
+        const fuNow = nowISO();
+        final.followUpCount = (final.followUpCount || 0) + 1;
+        final.completedFollowUps = [...(final.completedFollowUps || []), fuNow];
+        conversationLog = [...conversationLog, { ts: fuNow, type: "note" as const, label: "Follow-up Made", text: "DM updated — follow-up auto-logged.", by: lead.assignedTo || "Unassigned" }];
+        final.conversationLog = conversationLog;
+      }
     }
 
     const next = exists ? leads.map(l => l.id === lead.id ? final : l) : [...leads, final];
@@ -1353,7 +1380,7 @@ export default function App() {
           classifying={classifying}
           onLogout={logout}
         />
-        <AskAI leads={activeLeads} />
+        <AskAI leads={activeLeads} onFollowUp={saveLead} onOpenLead={setModal} />
       </>
     );
   }
@@ -1436,7 +1463,7 @@ export default function App() {
               <div style={{ fontSize: 20, fontWeight: 800, color: TEXT, marginTop: 4 }}>DFQLABS Mission Control</div>
             </div>
             
-            <AuditKPISummary leads={activeLeads} onEdit={setModal} />
+            <AuditKPISummary leads={activeLeads} onEdit={setModal} onSave={saveLead} />
             <RevenueGapSummary leads={activeLeads} />
             <ResponseGuardSummary leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} />
             <MeetingIntelligenceSummary leads={activeLeads} onSave={saveLead} />
@@ -1471,7 +1498,7 @@ export default function App() {
           onConfirm={handleMergeConfirm}
         />
       )}
-      <AskAI leads={activeLeads} />
+      <AskAI leads={activeLeads} onFollowUp={saveLead} onOpenLead={setModal} />
     </div>
   );
 }
