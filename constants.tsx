@@ -454,8 +454,9 @@ export function getInternActivities(leads: Lead[], selectedDate: string) {
           let typeLabel = "Action Logged";
           if (log.type === "dm") typeLabel = "Sent Outbound DM";
           else if (log.type === "reply") typeLabel = "Logged Prospect Reply";
-          else if (log.type === "status_change") typeLabel = "Status Updated";
-          else if (log.type === "note") typeLabel = "Added Note";
+          else if (log.type === "status_change") typeLabel = log.label || "Status Updated";
+          // Preserve meaningful labels (e.g. "Follow-up Made") so counters match
+          else if (log.type === "note") typeLabel = log.label || "Added Note";
 
           // Normalise legacy actor names (Intern A/B, role keys) to current staff names
           const rawActor = log.by || actor;

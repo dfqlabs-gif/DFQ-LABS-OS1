@@ -434,7 +434,7 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
                   <div style={{ fontSize: 10, color: "#EF4444", marginTop: 2 }}>Waiting {wait}h · {fmt(SERVICE_VALUE[l.service] || 0)} value · {l.status}</div>
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
-                  <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Replied</button>
+                  <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Replied — Follow-up Logged</button>
                   <button onClick={() => startGen(l)} disabled={busy || step === 'awaiting-confirm'} style={{ background: busy ? SURFACE : "rgba(239,68,68,0.1)", color: busy ? MUTED : "#EF4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer" }}>
                     {step === 'summarizing' ? "Reading thread…" : step === 'generating' ? "Drafting…" : "Suggest Reply →"}
                   </button>

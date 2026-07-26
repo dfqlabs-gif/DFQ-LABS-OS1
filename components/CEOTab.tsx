@@ -17,7 +17,7 @@ import {
   RESPONSE_GUARD_HOURS, MEETING_WINDOW_HOURS, scoreLead
 } from "../constants";
 import { buildCEOAdvisorPrompt, runAI, runProspectSummary, runFollowUpReply } from "../aiEngine";
-import { runQAReview, runQAAdjust } from "../aiQA";
+import { AIQAPanel } from "./AIQAPanel";
 
 interface CEOTabProps {
   leads: Lead[];
@@ -135,14 +135,6 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
       // Strip strategy block for display
       const stratIdx = text.indexOf('---STRATEGY---');
       if (stratIdx !== -1) text = text.slice(0, stratIdx).trim();
-      // QA pass
-      try {
-        const review = await runQAReview(text, draftDMLead);
-        if (review.needsAdjustment) {
-          const adjusted = await runQAAdjust(review, text, draftDMLead!);
-          if (adjusted && adjusted.trim()) text = adjusted.trim();
-        }
-      } catch { /* QA best-effort */ }
       setDraftDMOutput(text);
       setDraftDMStep('done');
     } catch (e: any) {
@@ -855,12 +847,19 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
             {draftDMStep === 'done' && draftDMOutput && (
               <>
                 <div style={{ fontSize: 12, lineHeight: 1.8, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10, background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px" }}>{draftDMOutput}</div>
-                <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                   <button onClick={copyDraftDM} style={{ background: draftDMCopied ? "rgba(34,197,94,0.1)" : "transparent", border: `1px solid ${draftDMCopied ? "rgba(34,197,94,0.4)" : BORDER}`, color: draftDMCopied ? "#22C55E" : TEXT, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
                     {draftDMCopied ? "Copied!" : "Copy DM"}
                   </button>
                   <button onClick={cancelDraftDM} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 5, padding: "5px 12px", fontSize: 10, cursor: "pointer" }}>Close</button>
                 </div>
+                {draftDMLead && (
+                  <AIQAPanel
+                    draft={draftDMOutput}
+                    lead={draftDMLead}
+                    onRegenerate={confirmDraftDM}
+                  />
+                )}
               </>
             )}
           </div>
