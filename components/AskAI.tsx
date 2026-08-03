@@ -149,6 +149,7 @@ function applyFollowUp(lead: Lead): Lead {
   return {
     ...lead,
     lastContacted: today(),
+    followUpCount: (lead.followUpCount || 0) + 1,
     completedFollowUps: [...(lead.completedFollowUps || []), now],
     conversationLog: [
       ...(lead.conversationLog || []),

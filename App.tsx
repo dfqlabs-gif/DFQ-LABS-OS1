@@ -1194,6 +1194,52 @@ export default function App() {
     persist(next, stats);
     saveLeadToDB(final);
 
+    // AI auto-status inference — runs when prospect conversation fields change
+    if (exists && replyFieldsChanged && !["Closed", "Lost"].includes(final.status)) {
+      (async () => {
+        try {
+          const inferRes = await fetch("/api/infer-status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              currentStatus: final.status,
+              dmText: final.dmText,
+              prospectInitialResponse: final.prospectInitialResponse,
+              prospectLatestResponse: final.prospectLatestResponse,
+              notes: final.notes,
+              name: final.name,
+              company: final.company,
+            }),
+          });
+          if (inferRes.ok) {
+            const { status: inferredStatus, changed } = await inferRes.json();
+            if (changed && inferredStatus && inferredStatus !== final.status) {
+              const updated: Lead = {
+                ...final,
+                status: inferredStatus,
+                conversationLog: [
+                  ...(final.conversationLog || []),
+                  {
+                    ts: nowISO(),
+                    type: "status_change" as const,
+                    label: "Status Auto-Updated by AI",
+                    text: inferredStatus,
+                    by: final.assignedTo || "AI",
+                  },
+                ],
+              };
+              setLeads(curr => {
+                const u = curr.map(l => l.id === updated.id ? updated : l);
+                persist(u, stats);
+                return u;
+              });
+              saveLeadToDB(updated);
+            }
+          }
+        } catch (_) {}
+      })();
+    }
+
     // AI classification sweep
     if (!["Closed", "Lost"].includes(final.status)) {
       setClassifying(p => new Set([...p, final.id]));
@@ -1224,6 +1270,23 @@ export default function App() {
         return n;
       });
     }
+  };
+
+  // Follow-up triggered from Ask AI chatbot — updates global stats in addition to the lead
+  const chatbotFollowUp = (lead: Lead) => {
+    // lead has already been processed by applyFollowUp (followUpCount++, completedFollowUps appended)
+    const now = lead.completedFollowUps?.[lead.completedFollowUps.length - 1] || nowISO();
+    const newDates = [...(stats.completedDates || []), now];
+    const newStats = { ...stats, completedDates: newDates, totalFollowUps: (stats.totalFollowUps || 0) + 1 };
+    const next = leads.map(l => l.id === lead.id ? lead : l);
+    setLeads(next);
+    setStats(newStats);
+    persist(next, newStats);
+    saveLeadToDB(lead);
+    const todayCount = newDates.filter(d => d.startsWith(today())).length;
+    const streak = calcStreak(newDates);
+    if (todayCount === 5) setCelebration({ msg: "Daily Goal Hit!", sub: "5 follow-ups complete" });
+    else if (streak >= 3 && todayCount === 1) setCelebration({ msg: `${streak}-Day Streak!`, sub: "Momentum locked" });
   };
 
   const bulkSaveLeads = async (updatedLeads: Lead[]) => {
@@ -1343,6 +1406,7 @@ export default function App() {
 
   const TABS = [
     { key: "mission", label: "Mission Control" },
+    { key: "weekly", label: "📅 Weekly Focus" },
     { key: "recent", label: "Recent Leads" },
     { key: "pipeline", label: "Pipeline" },
     { key: "clients", label: "Client Delivery" },
@@ -1380,7 +1444,7 @@ export default function App() {
           classifying={classifying}
           onLogout={logout}
         />
-        <AskAI leads={activeLeads} onFollowUp={saveLead} onOpenLead={setModal} />
+        <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} />
       </>
     );
   }
@@ -1477,6 +1541,7 @@ export default function App() {
           </div>
         )}
         
+        {tab === "weekly" && <WeeklyFocusTab leads={activeLeads} onEdit={setModal} onQuickContact={quickContact} />}
         {tab === "recent" && <RecentLeadsPanel leads={activeLeads} onEdit={setModal} />}
         {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onQuickContact={quickContact} classifying={classifying} />}
         {tab === "clients" && <ClientDelivery clients={clientsValue} onEdit={setModal} />}
@@ -1498,7 +1563,73 @@ export default function App() {
           onConfirm={handleMergeConfirm}
         />
       )}
-      <AskAI leads={activeLeads} onFollowUp={saveLead} onOpenLead={setModal} />
+      <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} />
+    </div>
+  );
+}
+
+// ----------------------------------------------------
+// WEEKLY FOCUS TAB — shows every lead needing follow-up this week
+// ----------------------------------------------------
+
+function WeeklyFocusTab({ leads, onEdit, onQuickContact }: { leads: Lead[]; onEdit: (l: Lead) => void; onQuickContact: (l: Lead) => void }) {
+  const weekEnd = addDays(7);
+  const active = leads.filter(l => !["Closed", "Lost"].includes(l.status));
+
+  const overdue   = active.filter(l => { const d = effectiveDue(l); return d && d < today(); }).sort((a, b) => scoreLead(b) - scoreLead(a));
+  const dueToday  = active.filter(l => { const d = effectiveDue(l); return d === today(); }).sort((a, b) => scoreLead(b) - scoreLead(a));
+  const dueWeek   = active.filter(l => { const d = effectiveDue(l); return d && d > today() && d <= weekEnd; }).sort((a, b) => (effectiveDue(a) < effectiveDue(b) ? -1 : 1));
+  const noDate    = active.filter(l => !effectiveDue(l)).sort((a, b) => scoreLead(b) - scoreLead(a));
+
+  const total = overdue.length + dueToday.length + dueWeek.length + noDate.length;
+
+  const Section = ({ title, color, items, emptyMsg }: { title: string; color: string; items: Lead[]; emptyMsg?: string }) => (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <div style={{ width: 8, height: 8, borderRadius: "50%", background: color }} />
+        <span style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: "0.08em", textTransform: "uppercase" }}>{title}</span>
+        <span style={{ fontSize: 11, color: MUTED }}>({items.length})</span>
+      </div>
+      {items.length === 0 ? (
+        emptyMsg ? <div style={{ fontSize: 11, color: MUTED, paddingLeft: 16 }}>{emptyMsg}</div> : null
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {items.map(l => {
+            const due = effectiveDue(l);
+            const daysOverdue = due && due < today() ? Math.round((new Date(today()).getTime() - new Date(due).getTime()) / 86400000) : 0;
+            return (
+              <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, background: SURFACE, border: `1px solid ${BORDER}`, borderLeft: `3px solid ${STATUS_COLOR[l.status] || G}`, borderRadius: 8, padding: "9px 12px", flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 160px", minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: "#fff" }}>{l.name || "—"} <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}>{l.company}</span></div>
+                  <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
+                    <span style={{ fontSize: 10, color: STATUS_COLOR[l.status], fontWeight: 700 }}>{l.status}</span>
+                    {l.assignedTo && <span style={{ fontSize: 10, color: MUTED }}>{l.assignedTo.split(" ")[0]}</span>}
+                    {due && <span style={{ fontSize: 10, color: daysOverdue > 0 ? "#EF4444" : "#F59E0B", fontWeight: 700 }}>{daysOverdue > 0 ? `${daysOverdue}d overdue` : `Due ${due}`}</span>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>✓ Done</button>
+                  <button onClick={() => onEdit(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED2, borderRadius: 6, padding: "5px 9px", fontSize: 10, cursor: "pointer" }}>Edit</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 11, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</div>
+        <div style={{ fontSize: 20, fontWeight: 800 }}>Weekly Focus — {total} leads to action</div>
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>Every lead that needs attention between now and {new Date(weekEnd).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}. Sorted by urgency.</div>
+      </div>
+      <Section title="🔴 Overdue" color="#EF4444" items={overdue} emptyMsg="No overdue leads. Great work." />
+      <Section title="🟡 Due Today" color="#F59E0B" items={dueToday} />
+      <Section title="🟢 This Week" color="#22C55E" items={dueWeek} />
+      <Section title="⚪ No Date Set" color={MUTED} items={noDate} emptyMsg="All active leads have a follow-up date set." />
     </div>
   );
 }
@@ -1752,7 +1883,22 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
         ) : (
           <div>
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</div>
-            <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 14 }}>Your Follow-Up Queue</div>
+            <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 10 }}>Your Follow-Up Queue</div>
+            
+            {/* Stats row */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+              {[
+                { label: "My Total Leads", value: mine.length, color: G },
+                { label: "Overdue", value: mine.filter((l: Lead) => { const d = effectiveDue(l); return d && d < today(); }).length, color: "#EF4444" },
+                { label: "Due Today", value: mine.filter((l: Lead) => { const d = effectiveDue(l); return d && d <= today(); }).length, color: "#F59E0B" },
+                { label: "Followed Up Today", value: mine.reduce((sum: number, l: Lead) => sum + (l.completedFollowUps || []).filter((ts: string) => ts.startsWith(today())).length, 0), color: "#22C55E" },
+              ].map(stat => (
+                <div key={stat.label} style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 14px", flex: "1 1 100px", minWidth: 100 }}>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: stat.color }}>{stat.value}</div>
+                  <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>{stat.label}</div>
+                </div>
+              ))}
+            </div>
             
             <div style={{ position: "relative", marginBottom: 12 }}>
               <Search size={13} style={{ position: "absolute", left: 10, top: 10, color: MUTED }} />

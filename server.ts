@@ -210,6 +210,68 @@ app.post("/api/call-gemini", async (req, res) => {
   }
 });
 
+// ── /api/infer-status — AI auto-status update from latest message ────────────
+app.post("/api/infer-status", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  const { currentStatus, dmText, prospectInitialResponse, prospectLatestResponse, notes, name, company } = req.body || {};
+
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
+    return;
+  }
+
+  const VALID_STATUSES = ["New", "DM Sent", "Replied", "Audit Requested", "Audit Delivered", "Discovery Call Booked", "Discovery Call Done", "Proposal Sent", "Closed", "Lost"];
+  const STAGE_ORDER: Record<string, number> = { "New": 0, "DM Sent": 1, "Replied": 2, "Audit Requested": 3, "Audit Delivered": 4, "Discovery Call Booked": 5, "Discovery Call Done": 6, "Proposal Sent": 7, "Closed": 8, "Lost": 9 };
+
+  const systemPrompt = `You are a CRM intelligence engine. Your job is to read a DM conversation thread and determine the current correct pipeline stage for this lead. Respond with ONLY one of these exact stage names, nothing else:
+New | DM Sent | Replied | Audit Requested | Audit Delivered | Discovery Call Booked | Discovery Call Done | Proposal Sent | Closed | Lost
+
+Rules:
+- "DM Sent" = we sent an outreach DM, no reply yet
+- "Replied" = prospect replied (any positive/curious/neutral reply to our outreach)
+- "Audit Requested" = they asked for the audit or agreed to receive it
+- "Audit Delivered" = we sent them the audit
+- "Discovery Call Booked" = a specific call date/time is agreed or they said "let's talk" and a call is being booked
+- "Discovery Call Done" = the call already happened (transcript/summary pasted, or they mention after-call next steps)
+- "Proposal Sent" = we sent them a proposal or pricing
+- "Closed" = they agreed to pay / signed up
+- "Lost" = they explicitly declined or went permanently cold
+
+If uncertain, keep the current stage. Only advance if the evidence clearly supports it. Never move backward.`;
+
+  const convo: string[] = [];
+  if (dmText) convo.push(`[OUR DM]: ${dmText.slice(0, 600)}`);
+  if (prospectInitialResponse) convo.push(`[THEIR REPLY]: ${prospectInitialResponse.slice(0, 600)}`);
+  if (prospectLatestResponse && prospectLatestResponse !== prospectInitialResponse) convo.push(`[LATEST MESSAGE/THREAD]: ${prospectLatestResponse.slice(0, 800)}`);
+  if (notes) convo.push(`[INTERNAL NOTES]: ${notes.slice(0, 300)}`);
+
+  const userPrompt = `Lead: ${name || "Unknown"} at ${company || "Unknown company"}
+Current stage: ${currentStatus}
+
+Conversation:
+${convo.join("\n\n")}
+
+Based on the conversation above, what is the correct pipeline stage for this lead right now? Reply with ONLY the stage name.`;
+
+  const activeModel = GEMINI_MODEL;
+  const start = Date.now();
+  try {
+    const raw = await callGemini(systemPrompt, userPrompt, activeModel, 30, 0);
+    recordSuccess(activeModel, Date.now() - start);
+    // Clean up the response to extract just the status
+    const inferred = VALID_STATUSES.find(s => raw.trim().toLowerCase().includes(s.toLowerCase())) || currentStatus;
+    // Only return a new status if it's a forward progression or "Lost"
+    const currentOrder = STAGE_ORDER[currentStatus] ?? 0;
+    const inferredOrder = STAGE_ORDER[inferred] ?? 0;
+    const changed = inferred !== currentStatus && (inferredOrder > currentOrder || inferred === "Lost");
+    res.json({ status: changed ? inferred : currentStatus, changed });
+  } catch (error: any) {
+    console.error("Gemini /api/infer-status error:", error);
+    recordFailure(activeModel, error?.message || String(error));
+    res.status(500).json({ error: friendlyError(error) });
+  }
+});
+
 // ── /api/generate-dm — DM generator ─────────────────────────────────────────
 app.post("/api/generate-dm", async (req, res) => {
   res.setHeader("Content-Type", "application/json");

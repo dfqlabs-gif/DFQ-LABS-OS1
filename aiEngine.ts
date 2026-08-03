@@ -323,7 +323,9 @@ function buildDMWriterPrompt(lead: Lead, strategy: Strategy, styleInstructions: 
     }
   }
 
-  return `You are Alex, writing directly to this prospect. You do NOT have access to the raw CRM — you only have this structured briefing from your sales strategist. Write ONLY the outward-facing message. Do not restate, quote, or reference the briefing itself.
+  const conversationThread = formatConversationLog(lead);
+
+  return `You are Alex, writing directly to this prospect. You have the strategy briefing from your sales strategist AND the actual conversation thread below. Write ONLY the outward-facing message. Do not restate, quote, or reference the briefing itself.
 
 === STRATEGY BRIEFING ===
 Lead name: ${lead.name || lead.company || "the prospect"}
@@ -336,6 +338,10 @@ Prospect's likely emotion: ${strategy.emotion || "n/a"}
 Key facts to ground the message in: ${strategy.keyFacts || "none available — do not invent any"}
 ${strategy.neverMention ? `Never mention again: ${strategy.neverMention}` : ""}
 === END BRIEFING ===${priorBlock}
+
+=== ACTUAL CONVERSATION THREAD (ground your message in this — never invent facts not present here) ===
+${conversationThread}
+=== END CONVERSATION ===
 
 ${styleInstructions}`;
 }
