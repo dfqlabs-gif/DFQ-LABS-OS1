@@ -1275,6 +1275,9 @@ export default function App() {
   // Follow-up triggered from Ask AI chatbot — updates global stats in addition to the lead
   const chatbotFollowUp = (lead: Lead) => {
     // lead has already been processed by applyFollowUp (followUpCount++, completedFollowUps appended)
+    // Check the original lead from state (before applyFollowUp ran) to detect a duplicate tap
+    const original = leads.find(l => l.id === lead.id);
+    if (original && followedUpRecently(original)) return; // already logged within 24h — ignore duplicate tap
     const now = lead.completedFollowUps?.[lead.completedFollowUps.length - 1] || nowISO();
     const newDates = [...(stats.completedDates || []), now];
     const newStats = { ...stats, completedDates: newDates, totalFollowUps: (stats.totalFollowUps || 0) + 1 };
@@ -1334,7 +1337,14 @@ export default function App() {
     setModal(null);
   };
 
+  // Returns true if this lead already had a follow-up logged in the last 24 hours
+  const followedUpRecently = (lead: Lead): boolean => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return (lead.completedFollowUps || []).some(ts => new Date(ts).getTime() > cutoff);
+  };
+
   const quickContact = async (lead: Lead) => {
+    if (followedUpRecently(lead)) return; // already logged within 24h — ignore duplicate tap
     const now = nowISO();
     const touched: Lead = {
       ...lead,
