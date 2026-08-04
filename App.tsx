@@ -1416,7 +1416,7 @@ export default function App() {
 
   const TABS = [
     { key: "mission", label: "Mission Control" },
-    { key: "weekly", label: "📅 Weekly Focus" },
+    { key: "weekly", label: "Weekly Focus" },
     { key: "recent", label: "Recent Leads" },
     { key: "pipeline", label: "Pipeline" },
     { key: "clients", label: "Client Delivery" },
@@ -1583,8 +1583,22 @@ export default function App() {
 // ----------------------------------------------------
 
 function WeeklyFocusTab({ leads, onEdit, onQuickContact }: { leads: Lead[]; onEdit: (l: Lead) => void; onQuickContact: (l: Lead) => void }) {
+  const [personFilter, setPersonFilter] = useState<"All" | "Alex" | "Saadatu">("All");
   const weekEnd = addDays(7);
-  const active = leads.filter(l => !["Closed", "Lost"].includes(l.status));
+
+  // Hide leads already followed up within the last 24 hours
+  const followedUpRecently = (l: Lead) => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return (l.completedFollowUps || []).some(ts => new Date(ts).getTime() > cutoff);
+  };
+
+  const active = leads.filter(l => {
+    if (["Closed", "Lost"].includes(l.status)) return false;
+    if (followedUpRecently(l)) return false;
+    if (personFilter === "Alex") return (l.assignedTo || "") === "Alex";
+    if (personFilter === "Saadatu") return (l.assignedTo || "") === "Sa'adatu Mohammed";
+    return true;
+  });
 
   const overdue   = active.filter(l => { const d = effectiveDue(l); return d && d < today(); }).sort((a, b) => scoreLead(b) - scoreLead(a));
   const dueToday  = active.filter(l => { const d = effectiveDue(l); return d === today(); }).sort((a, b) => scoreLead(b) - scoreLead(a));
@@ -1635,6 +1649,11 @@ function WeeklyFocusTab({ leads, onEdit, onQuickContact }: { leads: Lead[]; onEd
         <div style={{ fontSize: 11, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</div>
         <div style={{ fontSize: 20, fontWeight: 800 }}>Weekly Focus — {total} leads to action</div>
         <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>Every lead that needs attention between now and {new Date(weekEnd).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}. Sorted by urgency.</div>
+        <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+          {(["All", "Alex", "Saadatu"] as const).map(opt => (
+            <button key={opt} onClick={() => setPersonFilter(opt)} style={{ background: personFilter === opt ? "rgba(34,197,94,0.15)" : "transparent", color: personFilter === opt ? "#22C55E" : MUTED, border: `1px solid ${personFilter === opt ? "rgba(34,197,94,0.4)" : BORDER}`, borderRadius: 20, padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{opt}</button>
+          ))}
+        </div>
       </div>
       <Section title="🔴 Overdue" color="#EF4444" items={overdue} emptyMsg="No overdue leads. Great work." />
       <Section title="🟡 Due Today" color="#F59E0B" items={dueToday} />
