@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
+import { runSalesPipeline } from "./aiEngine";
 
 dotenv.config();
 
@@ -332,6 +333,47 @@ Output ONLY the final message text. No meta-commentary.`;
     console.error("Gemini /api/generate-dm error:", error);
     recordFailure(activeModel, error?.message || String(error));
     res.status(500).json({ error: friendlyError(error) });
+  }
+});
+
+// ── /api/value-dm — full multi-step pipeline value DM via runSalesPipeline ─────
+app.post("/api/value-dm", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  const { lead, task } = req.body || {};
+  if (!lead) { res.status(400).json({ error: "lead is required" }); return; }
+
+  const styleInstructions = `VALUE DM STYLE RULES — read every word before writing:
+
+You are Alex from DFQ Labs writing directly to ${lead.name || "this prospect"} at ${lead.company || "their company"} (${lead.clientType || "Real Estate"}).
+
+This is a VALUE DM. It must deliver something the prospect genuinely finds useful:
+- Include ONE specific, concrete observation about their brand, content, or positioning that shows you actually studied their business — not a generic compliment. Ground it in their industry (${lead.clientType || "real estate"}), what they are likely struggling with at their current stage, and what a real expert would notice.
+- The insight must be valuable enough that the prospect thinks "this person actually understands my situation" — even if they never become a client.
+- The message must move them ONE concrete step closer to their goal (e.g., attracting better-quality buyer inquiries, strengthening their positioning, building a more predictable deal pipeline).
+
+FORMAT RULES:
+- 3-4 sentences maximum. No more.
+- Zero emojis. Zero exclamation marks. Zero buzzwords.
+- Plain WhatsApp-friendly text — no markdown, no formatting, no bullet points.
+- End with a single, low-friction next step (implied naturally — never pushy).
+- FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holistic", "elevate", "game-changer", "value-add", "reach out", "touch base", "circle back".
+
+Output ONLY the message. No labels. No quotes around it. No explanation.`;
+
+  try {
+    const result = await runSalesPipeline(
+      lead,
+      task || "Send a high-value DM that delivers one specific, genuine insight about this prospect's business situation and moves them one concrete step forward toward their goal.",
+      styleInstructions,
+      600
+    );
+    const sepIdx = result.indexOf("---STRATEGY---");
+    const message  = sepIdx !== -1 ? result.slice(0, sepIdx).trim() : result.trim();
+    const strategy = sepIdx !== -1 ? result.slice(sepIdx + "---STRATEGY---".length).trim() : "";
+    res.json({ text: message, strategy });
+  } catch (err: any) {
+    console.error("POST /api/value-dm error:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 

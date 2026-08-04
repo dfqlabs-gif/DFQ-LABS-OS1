@@ -198,11 +198,13 @@ CORE CAPABILITIES:
 1. Pipeline Q&A — "who needs follow-up right now?", "which leads are stale?", "show me the pipeline status" → answer directly from the live data
 2. Team activity queries — "how many DMs did Sa'adatu send today?", "how many leads did Alex add this week?" → pull exact numbers from the TEAM ACTIVITY section
 3. Opportunity spotting — proactively surface overlooked leads, high-value leads gone quiet, overdue follow-ups, new leads never contacted
-4. DM generation — when asked to write a message, use this format exactly:
+4. VALUE DM — when asked to "send a value DM", "draft a DM", "write a message to [name]", or similar:
+   - If a specific lead is referenced (via @mention or name), the system will automatically run the full AI sales pipeline for that lead and generate a high-quality, genuinely valuable message. You do NOT need to draft the message yourself in this case — just acknowledge the request.
+   - If no lead is specified, ask which lead they want to message.
    📨 SUGGESTED MESSAGE
-   [the message — 2-4 sentences, no emojis, no buzzwords]
+   [the message — 3-4 sentences, no emojis, no buzzwords, genuinely valuable insight]
    📊 STRATEGY
-   [2-4 bullet points: what stage objective, why this framing, what the prospect does next]
+   [2-4 bullet points: stage objective, why this framing, what the prospect does next]
 5. General platform questions — answer helpfully
 
 When suggesting leads for follow-up, for each one give:
@@ -212,6 +214,32 @@ When suggesting leads for follow-up, for each one give:
 • Why they need follow-up RIGHT NOW — one specific sentence
 
 Keep answers concise and direct. Never fabricate data.`;
+
+// ─── Detect "value DM / draft DM / send a message" intent ─────────────────────
+function isValueDmIntent(text: string): boolean {
+  return /\b(value\s*dm|send\s*(a\s*)?(dm|message|text|msg)|draft\s*(a\s*)?(dm|message|msg)|write\s*(a\s*)?(dm|message|msg|text)|craft\s*(a\s*)?(dm|message)|let'?s\s*(dm|message|text|send)|shoot\s*(a\s*)(dm|message))\b/i.test(text);
+}
+
+// ─── Try to find a lead named/mentioned in the raw message text ─────────────
+function detectLeadFromText(text: string, leads: Lead[]): Lead | null {
+  // Strip @mentions already handled — look for any lead name or company in the text
+  const lower = text.toLowerCase();
+  const active = leads.filter(l => !["Closed", "Lost"].includes(l.status));
+  // Prefer longer matches to avoid false positives on short names
+  const candidates = active.filter(l => {
+    const name = (l.name || "").trim();
+    const company = (l.company || "").trim();
+    return (name.length > 3 && lower.includes(name.toLowerCase())) ||
+           (company.length > 3 && lower.includes(company.toLowerCase()));
+  });
+  if (candidates.length === 0) return null;
+  // Pick the one with the longest matching name/company (most specific match)
+  return candidates.sort((a, b) => {
+    const aLen = Math.max((a.name || "").length, (a.company || "").length);
+    const bLen = Math.max((b.name || "").length, (b.company || "").length);
+    return bLen - aLen;
+  })[0];
+}
 
 // ─── Drag helpers ─────────────────────────────────────────────────────────────
 
@@ -421,11 +449,53 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
     setMessages(prev => [...prev, { role: "user", text: q }]);
     setInput("");
     setLoading(true);
-    const lead = referencedLead;
+
+    // Determine the lead context: @mention takes priority, then name-detection
+    let lead = referencedLead;
+    if (!lead) lead = detectLeadFromText(q, leads);
     setReferencedLead(null);
 
+    // ── Value DM path: full multi-step AI pipeline ───────────────────────────
+    if (isValueDmIntent(q) && lead) {
+      try {
+        const res = await fetch("/api/value-dm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lead, task: q }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        setMessages(prev => [
+          ...prev,
+          {
+            role: "ai",
+            text: data.text || "",
+            dm: data.text || undefined,
+            strategy: data.strategy || undefined,
+            qaFiltered: false,
+            mentionedLeads: [lead!],
+          },
+        ]);
+      } catch (err: any) {
+        setMessages(prev => [...prev, { role: "ai", text: "Error generating value DM: " + err.message }]);
+      }
+      setLoading(false);
+      return;
+    }
+
+    // ── Value DM intent but no lead resolved — ask them to specify ───────────
+    if (isValueDmIntent(q) && !lead) {
+      setMessages(prev => [
+        ...prev,
+        { role: "ai", text: "Which lead do you want to send a value DM to? Type @ followed by their name to pull them up and try again." },
+      ]);
+      setLoading(false);
+      return;
+    }
+
+    // ── Standard pipeline Q&A path ────────────────────────────────────────────
     try {
-      // Build system prompt with full pipeline context every request
       const pipelineCtx = buildFullPipelineContext(leads);
       const leadCtx = lead ? `\n\n${buildLeadContext(lead)}` : "";
       const fullSystem = `${SYSTEM_PROMPT}\n\n${pipelineCtx}${leadCtx}`;
@@ -442,7 +512,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
       const raw: string = stripMarkdown(data.text || "");
 
       // Parse DM / strategy sections
-      const dmMarker   = "📨 SUGGESTED MESSAGE";
+      const dmMarker    = "📨 SUGGESTED MESSAGE";
       const stratMarker = "📊 STRATEGY";
       const hasDm = raw.includes(dmMarker);
       const hasSt = raw.includes(stratMarker);
@@ -471,7 +541,6 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
         } catch { /* QA is best-effort */ }
       }
 
-      // Detect leads mentioned in the response
       const mentioned = extractMentionedLeads(raw, leads);
 
       setMessages(prev => [
@@ -548,8 +617,8 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
               <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}>Ask AI</span>
             </div>
             <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>
-              Ask about the pipeline · team activity · who needs follow-up · or type{" "}
-              <span style={{ color: G, fontWeight: 700 }}>@name</span> to draft a DM
+              Ask about pipeline · activity · or say{" "}
+              <span style={{ color: G, fontWeight: 700 }}>"send value DM to [name]"</span>
             </div>
           </div>
 
@@ -561,8 +630,8 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
                 <div style={{ fontSize: 13, color: TEXT, fontWeight: 600, marginBottom: 6 }}>Your pipeline AI</div>
                 <div style={{ fontSize: 11, lineHeight: 1.7, color: MUTED2 }}>
                   Try asking:<br />
+                  <span style={{ color: G, fontStyle: "italic" }}>"Send a value DM to Fatima"</span><br />
                   <span style={{ color: G, fontStyle: "italic" }}>"Who needs follow-up right now?"</span><br />
-                  <span style={{ color: G, fontStyle: "italic" }}>"How many DMs did Sa'adatu send today?"</span><br />
                   <span style={{ color: G, fontStyle: "italic" }}>"Which high-value leads have gone quiet?"</span>
                 </div>
               </div>
@@ -644,7 +713,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
 
             {loading && (
               <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 14px", fontSize: 11, color: MUTED, fontStyle: "italic" }}>
-                Checking pipeline…
+                Running sales pipeline — strategy → message → quality check…
               </div>
             )}
             <div ref={bottomRef} />
