@@ -220,25 +220,29 @@ function isValueDmIntent(text: string): boolean {
   return /\b(value\s*dm|send\s*(a\s*)?(dm|message|text|msg)|draft\s*(a\s*)?(dm|message|msg)|write\s*(a\s*)?(dm|message|msg|text)|craft\s*(a\s*)?(dm|message)|let'?s\s*(dm|message|text|send)|shoot\s*(a\s*)(dm|message))\b/i.test(text);
 }
 
-// ─── Try to find a lead named/mentioned in the raw message text ─────────────
-function detectLeadFromText(text: string, leads: Lead[]): Lead | null {
-  // Strip @mentions already handled — look for any lead name or company in the text
+// ─── Find ALL leads whose name/company appears in the raw message text ───────
+// Returns every match so the caller can disambiguate when there are duplicates.
+function detectLeadsFromText(text: string, leads: Lead[]): Lead[] {
   const lower = text.toLowerCase();
   const active = leads.filter(l => !["Closed", "Lost"].includes(l.status));
-  // Prefer longer matches to avoid false positives on short names
-  const candidates = active.filter(l => {
-    const name = (l.name || "").trim();
+  const seen = new Set<string>();
+  const candidates: Lead[] = [];
+  for (const l of active) {
+    if (seen.has(l.id)) continue;
+    const name    = (l.name    || "").trim();
     const company = (l.company || "").trim();
-    return (name.length > 3 && lower.includes(name.toLowerCase())) ||
-           (company.length > 3 && lower.includes(company.toLowerCase()));
-  });
-  if (candidates.length === 0) return null;
-  // Pick the one with the longest matching name/company (most specific match)
+    if ((name.length > 3    && lower.includes(name.toLowerCase())) ||
+        (company.length > 3 && lower.includes(company.toLowerCase()))) {
+      candidates.push(l);
+      seen.add(l.id);
+    }
+  }
+  // Sort by specificity (longest match first) — still used when there's exactly one
   return candidates.sort((a, b) => {
     const aLen = Math.max((a.name || "").length, (a.company || "").length);
     const bLen = Math.max((b.name || "").length, (b.company || "").length);
     return bLen - aLen;
-  })[0];
+  });
 }
 
 // ─── Drag helpers ─────────────────────────────────────────────────────────────
@@ -337,6 +341,9 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
 
   // Tracks which leads have been followed up in this session (by lead id)
   const [followedUpIds, setFollowedUpIds] = useState<Set<string>>(new Set());
+
+  // Disambiguation: held when multiple leads share the name the user typed
+  const [pendingValueDm, setPendingValueDm] = useState<{ query: string; candidates: Lead[] } | null>(null);
 
   // Draggable bubble
   const [bubblePos, setBubblePos] = useState(loadBubblePos);
@@ -441,6 +448,35 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
     setFollowedUpIds(prev => new Set([...prev, lead.id]));
   }, [onFollowUp]);
 
+  // ── Value DM executor — shared by send() and disambiguation picker ──────────
+  const runValueDm = useCallback(async (lead: Lead, query: string) => {
+    setLoading(true);
+    setPendingValueDm(null);
+    try {
+      const res = await fetch("/api/value-dm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lead, task: query }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: "ai" as const,
+          text: data.text || "",
+          dm: data.text || undefined,
+          strategy: data.strategy || undefined,
+          qaFiltered: false,
+          mentionedLeads: [lead],
+        },
+      ]);
+    } catch (err: any) {
+      setMessages(prev => [...prev, { role: "ai" as const, text: "Error generating value DM: " + err.message }]);
+    }
+    setLoading(false);
+  }, []);
+
   // ── Send ────────────────────────────────────────────────────────────────────
   const send = async () => {
     const q = input.trim();
@@ -451,53 +487,49 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
     setLoading(true);
 
     // Determine the lead context: @mention takes priority, then name-detection
-    let lead = referencedLead;
-    if (!lead) lead = detectLeadFromText(q, leads);
+    const mentionedLead = referencedLead;
     setReferencedLead(null);
 
-    // ── Value DM path: full multi-step AI pipeline ───────────────────────────
-    if (isValueDmIntent(q) && lead) {
-      try {
-        const res = await fetch("/api/value-dm", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lead, task: q }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
+    // ── Value DM routing ─────────────────────────────────────────────────────
+    if (isValueDmIntent(q)) {
+      setLoading(false); // loading managed by runValueDm / branch
 
-        setMessages(prev => [
-          ...prev,
-          {
-            role: "ai",
-            text: data.text || "",
-            dm: data.text || undefined,
-            strategy: data.strategy || undefined,
-            qaFiltered: false,
-            mentionedLeads: [lead!],
-          },
-        ]);
-      } catch (err: any) {
-        setMessages(prev => [...prev, { role: "ai", text: "Error generating value DM: " + err.message }]);
+      if (mentionedLead) {
+        // Explicit @mention — always unambiguous
+        await runValueDm(mentionedLead, q);
+        return;
       }
-      setLoading(false);
-      return;
-    }
 
-    // ── Value DM intent but no lead resolved — ask them to specify ───────────
-    if (isValueDmIntent(q) && !lead) {
+      const textMatches = detectLeadsFromText(q, leads);
+
+      if (textMatches.length === 1) {
+        // Exactly one match — proceed immediately
+        await runValueDm(textMatches[0], q);
+        return;
+      }
+
+      if (textMatches.length > 1) {
+        // Multiple leads share the same name — ask the user to pick
+        setPendingValueDm({ query: q, candidates: textMatches });
+        return;
+      }
+
+      // No lead found at all
       setMessages(prev => [
         ...prev,
-        { role: "ai", text: "Which lead do you want to send a value DM to? Type @ followed by their name to pull them up and try again." },
+        { role: "ai", text: "Which lead do you want to send a value DM to? Type @ and their name to select them, then try again." },
       ]);
-      setLoading(false);
       return;
     }
 
     // ── Standard pipeline Q&A path ────────────────────────────────────────────
+    // For general Q&A, use @mention lead or best single text-match for context
+    const textMatches = detectLeadsFromText(q, leads);
+    const ctxLead = mentionedLead ?? (textMatches.length === 1 ? textMatches[0] : null);
+
     try {
       const pipelineCtx = buildFullPipelineContext(leads);
-      const leadCtx = lead ? `\n\n${buildLeadContext(lead)}` : "";
+      const leadCtx = ctxLead ? `\n\n${buildLeadContext(ctxLead)}` : "";
       const fullSystem = `${SYSTEM_PROMPT}\n\n${pipelineCtx}${leadCtx}`;
 
       const res = await fetch("/api/ai", {
@@ -531,11 +563,11 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
       // QA filtering for DMs with a referenced lead
       let finalDm = dm;
       let qaFiltered = false;
-      if (dm && lead) {
+      if (dm && ctxLead) {
         try {
-          const review = await runQAReview(dm, lead);
+          const review = await runQAReview(dm, ctxLead);
           if (review.needsAdjustment) {
-            const adjusted = await runQAAdjust(review, dm, lead);
+            const adjusted = await runQAAdjust(review, dm, ctxLead);
             if (adjusted?.trim()) { finalDm = adjusted.trim(); qaFiltered = true; }
           }
         } catch { /* QA is best-effort */ }
@@ -710,6 +742,58 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
                 )}
               </div>
             ))}
+
+            {/* ── Disambiguation picker — shown when multiple leads share the name ── */}
+            {pendingValueDm && !loading && (
+              <div style={{ background: SURFACE2, border: `1px solid ${G_BORDER}`, borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 10, color: G, fontWeight: 700, letterSpacing: "0.08em", marginBottom: 8 }}>
+                  MULTIPLE LEADS MATCH — pick one to send the value DM to:
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {pendingValueDm.candidates.map(lead => (
+                    <button
+                      key={lead.id}
+                      onClick={() => runValueDm(lead, pendingValueDm.query)}
+                      style={{
+                        background: "transparent",
+                        border: `1px solid ${BORDER}`,
+                        borderLeft: `3px solid ${STATUS_COLOR[lead.status] || G}`,
+                        borderRadius: 7,
+                        padding: "8px 12px",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        color: TEXT,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        transition: "background 0.15s",
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = G_DIM)}
+                      onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 700 }}>
+                          {lead.name || "—"}
+                          {lead.company ? <span style={{ color: MUTED, fontWeight: 400 }}> · {lead.company}</span> : null}
+                        </div>
+                        <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>
+                          {lead.status} · {lead.assignedTo?.split(" ")[0] || "Unassigned"}
+                          {lead.nextActionDate ? ` · due ${lead.nextActionDate}` : ""}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 10, color: G, fontWeight: 700, flexShrink: 0 }}>Use this →</span>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setPendingValueDm(null)}
+                  style={{ marginTop: 8, background: "transparent", border: "none", color: MUTED, fontSize: 10, cursor: "pointer", padding: 0 }}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
 
             {loading && (
               <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 14px", fontSize: 11, color: MUTED, fontStyle: "italic" }}>
