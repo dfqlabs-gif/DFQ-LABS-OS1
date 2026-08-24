@@ -1,18 +1,5 @@
-export interface OutboundMessage {
-  id: string;
-  leadId: string;
-  userId: string;
-  messageType: string;
-  messageText: string;
-  status: string;
-  generatedAt: string;
-  whatsappOpenedAt?: string;
-  sentAt?: string;
-  source: string;
-  followUpId?: string;
-  strategy?: string;
-  knowledgeUsed?: string[];
-}
+export type { OutboundMessage } from "./lib/outbound";
+import type { OutboundMessage } from "./lib/outbound";
 
 export interface LeadAttachment {
   id: string;

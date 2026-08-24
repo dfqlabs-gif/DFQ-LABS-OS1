@@ -106,7 +106,8 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+    const fileList = e.target.files;
+    const files: File[] = fileList ? Array.from(fileList) : [];
     setUploadError(null);
     files.forEach(file => {
       if (file.size > 50 * 1024 * 1024) {

@@ -1426,7 +1426,8 @@ export default function App() {
     { key: "coach", label: "AI Coach" },
     { key: "ceo", label: "CEO Dashboard" },
     { key: "duplicates", label: "Duplicates" },
-    { key: "gateway", label: "AI Gateway" }
+    { key: "gateway", label: "AI Gateway" },
+    { key: "knowledge", label: "Knowledge Base" }
   ];
 
   if (loading) return <div style={{ background: BG, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: G, fontFamily: "monospace", letterSpacing: 4, fontSize: 13 }}>LOADING OS…</span></div>;

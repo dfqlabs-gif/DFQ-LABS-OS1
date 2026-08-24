@@ -96,7 +96,8 @@ export function KnowledgeBase() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+    const fileList = e.target.files;
+    const files: File[] = fileList ? Array.from(fileList) : [];
     if (!files.length) return;
     setUploading(true);
     setError(null);
