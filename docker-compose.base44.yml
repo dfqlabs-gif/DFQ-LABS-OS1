@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dfq
+      POSTGRES_PASSWORD: dfqpass
+      POSTGRES_DB: dfqlabs
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dfq -d dfqlabs"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    image: node:22
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATABASE_URL=postgresql://dfq:dfqpass@db:5432/dfqlabs
+      - GEMINI_MODEL=gemini-3.1-flash-lite
+    env_file:
+      - ./.env.base44-defaults
+      - /run/base44/app.env
+    volumes:
+      - ./:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sh -c "npm install && npx tsx server.ts"
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  node_modules:
