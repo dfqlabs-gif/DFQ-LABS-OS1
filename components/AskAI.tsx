@@ -25,6 +25,7 @@ interface AskAIProps {
   leads: Lead[];
   onFollowUp: (lead: Lead) => void;  // globally save a followed-up lead
   onOpenLead?: (lead: Lead) => void; // open lead profile modal (optional)
+  onMessageSent?: (lead: Lead, message: string, messageType: string) => void; // confirm message sent → update CRM
 }
 
 // ─── Pipeline + Activity context builder ─────────────────────────────────────
@@ -328,7 +329,7 @@ function FollowUpChip({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
+export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIProps) {
   const [open, setOpen]       = useState(false);
   const [input, setInput]     = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
@@ -456,7 +457,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
       const res = await fetch("/api/value-dm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lead, task: query }),
+        body: JSON.stringify({ lead, task: query, messageType: "VALUE_DM" }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -469,6 +470,8 @@ export function AskAI({ leads, onFollowUp, onOpenLead }: AskAIProps) {
           strategy: data.strategy || undefined,
           qaFiltered: false,
           mentionedLeads: [lead],
+          messageType: data.messageType || "VALUE_DM",
+          knowledgeUsed: data.knowledgeUsed || [],
         },
       ]);
     } catch (err: any) {

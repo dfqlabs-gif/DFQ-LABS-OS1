@@ -1,3 +1,19 @@
+export interface OutboundMessage {
+  id: string;
+  leadId: string;
+  userId: string;
+  messageType: string;
+  messageText: string;
+  status: string;
+  generatedAt: string;
+  whatsappOpenedAt?: string;
+  sentAt?: string;
+  source: string;
+  followUpId?: string;
+  strategy?: string;
+  knowledgeUsed?: string[];
+}
+
 export interface LeadAttachment {
   id: string;
   name: string;
@@ -64,6 +80,7 @@ export interface Lead {
     newValue?: string;
   }>;
   attachments?: LeadAttachment[];
+  outboundMessages?: OutboundMessage[];
 }
 
 export interface Stats {

@@ -21,6 +21,15 @@ db.query(`
     updated_at TIMESTAMP DEFAULT NOW()
   )
 `).catch(err => console.error("DB table init error:", err));
+
+// Ensure the knowledge_sources table exists on startup
+db.query(`
+  CREATE TABLE IF NOT EXISTS knowledge_sources (
+    id TEXT PRIMARY KEY,
+    data JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+  )
+`).catch(err => console.error("DB knowledge_sources init error:", err));
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 
 // ── AI Provider configuration — change GEMINI_MODEL env var to swap models ──
@@ -336,44 +345,242 @@ Output ONLY the final message text. No meta-commentary.`;
   }
 });
 
-// ── /api/value-dm — full multi-step pipeline value DM via runSalesPipeline ─────
+// ── Knowledge retrieval (Part 2, 23) ─────────────────────────────────────────
+// Keyword-based retrieval: derive keywords from the lead's context and match
+// against enabled knowledge sources. Returns the most relevant snippets so
+// the AI reasons with targeted knowledge instead of the entire knowledge base.
+async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise<{ title: string; snippet: string }[]> {
+  try {
+    const result = await db.query("SELECT data FROM knowledge_sources");
+    const sources = (result.rows as any[])
+      .map(r => r.data)
+      .filter(s => s.enabled !== false && s.status === "ready" && s.content);
+
+    if (sources.length === 0) return [];
+
+    // Build a keyword set from the lead's context
+    const contextText = [
+      lead.clientType, lead.service, lead.company, lead.notes,
+      lead.dmText, lead.prospectInitialResponse, lead.prospectLatestResponse,
+      lead.aiBucket, lead.status, lead.nextAction,
+    ].filter(Boolean).join(" ").toLowerCase();
+
+    // Domain keywords relevant to DFQ Labs real estate outreach
+    const domainKeywords = [
+      "buyer", "psychology", "content", "strategy", "trust", "developer", "marketing",
+      "lead generation", "real estate", "positioning", "conversion", "audit", "outbound",
+      "whatsapp", "nurture", "reactivation", "objection", "pricing", "closing",
+      "off-plan", "realtor", "agency", "construction", "architecture", "funnel",
+      "follow-up", "value", "insight", "buyer inquiry", "brand", "positioning gap",
+    ];
+
+    // Score each source by keyword overlap with the lead context + message type
+    const typeKeywords: Record<string, string[]> = {
+      VALUE_DM: ["value", "insight", "buyer psychology", "content strategy", "trust", "education"],
+      SALES_DM: ["outreach", "positioning", "hook", "audit", "conversion"],
+      FOLLOW_UP: ["follow-up", "nurture", "trust", "objection"],
+      REACTIVATION_DM: ["reactivation", "re-engagement", "nurture"],
+      NURTURE_DM: ["nurture", "value", "trust", "education"],
+      INTRODUCTION_DM: ["outreach", "positioning", "hook", "first touch"],
+      RESPONSE_DM: ["objection", "trust", "response", "conversion"],
+    };
+    const typeKw = typeKeywords[messageType] || [];
+
+    const scored = sources.map(s => {
+      const contentLower = (s.content || "").toLowerCase();
+      const titleLower = (s.title || "").toLowerCase();
+      let score = 0;
+      const matched: string[] = [];
+      for (const kw of domainKeywords) {
+        if (contextText.includes(kw) && (contentLower.includes(kw) || titleLower.includes(kw))) {
+          score += 2;
+          matched.push(kw);
+        }
+      }
+      for (const kw of typeKw) {
+        if (contentLower.includes(kw) || titleLower.includes(kw)) {
+          score += 1;
+          matched.push(kw);
+        }
+      }
+      // Boost sources whose title keywords appear in the lead context
+      const titleWords = (s.title || "").toLowerCase().split(/\s+/).filter(w => w.length > 4);
+      for (const w of titleWords) {
+        if (contextText.includes(w)) score += 1;
+      }
+      return { source: s, score, matched };
+    }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 3);
+
+    return scored.map(x => {
+      const content = x.source.content;
+      // Return a focused snippet (first 1200 chars) — never the whole document
+      const snippet = content.length > 1200 ? content.slice(0, 1200) + "\n[...]" : content;
+      return { title: x.source.title, snippet };
+    });
+  } catch (err) {
+    console.error("retrieveKnowledgeForLead error:", err);
+    return [];
+  }
+}
+
+// ── /api/value-dm — structured message generation with knowledge retrieval ─────
+// Supports all message types (Part 18). VALUE_DM enforces strict no-CTA rules.
 app.post("/api/value-dm", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  const { lead, task } = req.body || {};
+  const { lead, task, messageType } = req.body || {};
   if (!lead) { res.status(400).json({ error: "lead is required" }); return; }
 
-  const styleInstructions = `VALUE DM STYLE RULES — read every word before writing:
+  const type: string = messageType || "VALUE_DM";
 
-You are Alex from DFQ Labs writing directly to ${lead.name || "this prospect"} at ${lead.company || "their company"} (${lead.clientType || "Real Estate"}).
+  // Retrieve relevant knowledge for this lead + message type (Part 2)
+  const knowledge = await retrieveKnowledgeForLead(lead, type);
+  const knowledgeBlock = knowledge.length > 0
+    ? `\n\n=== RELEVANT DFQ LABS KNOWLEDGE (use only what is genuinely relevant — do not force unrelated material) ===\n${knowledge.map(k => `--- ${k.title} ---\n${k.snippet}`).join("\n\n")}\n=== END KNOWLEDGE ===`
+    : "";
 
-This is a VALUE DM. It must deliver something the prospect genuinely finds useful:
-- Include ONE specific, concrete observation about their brand, content, or positioning that shows you actually studied their business — not a generic compliment. Ground it in their industry (${lead.clientType || "real estate"}), what they are likely struggling with at their current stage, and what a real expert would notice.
-- The insight must be valuable enough that the prospect thinks "this person actually understands my situation" — even if they never become a client.
-- The message must move them ONE concrete step closer to their goal (e.g., attracting better-quality buyer inquiries, strengthening their positioning, building a more predictable deal pipeline).
+  let styleInstructions: string;
+  let pipelineTask: string;
 
-FORMAT RULES:
-- 3-4 sentences maximum. No more.
-- Zero emojis. Zero exclamation marks. Zero buzzwords.
-- Plain WhatsApp-friendly text — no markdown, no formatting, no bullet points.
-- End with a single, low-friction next step (implied naturally — never pushy).
-- FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holistic", "elevate", "game-changer", "value-add", "reach out", "touch base", "circle back".
+  if (type === "VALUE_DM") {
+    // STRICT VALUE DM — no CTA, no selling (Parts 3, 4, 5)
+    styleInstructions = `You are Alex from DFQ Labs writing directly to ${lead.name || "this prospect"} at ${lead.company || "their company"} (${lead.clientType || "Real Estate"}).
 
-Output ONLY the message. No labels. No quotes around it. No explanation.`;
+This is a VALUE_DM. ${`A VALUE_DM is a short message whose sole objective is to provide genuinely useful, immediately applicable insight WITHOUT asking for a sale, call, meeting, reply, registration, consultation, beta participation, purchase, or any other conversion action.`}
+
+ABSOLUTE PROHIBITIONS — the message must NOT:
+- Sell, pitch, or ask for a call, meeting, reply, booking, registration, beta join, purchase, follow, or website visit.
+- Mention DFQ Labs services unless genuinely necessary for the insight itself.
+- Manufacture urgency or manufacture a problem.
+- Continue a sales sequence disguised as value.
+- End with "let me know if...", "would you like me to...", "I can help you...", or ANY call-to-action.
+- Attempt to continue the interaction in any way.
+
+The objective is simply: leave the prospect better off than they were before receiving the message.
+
+STRUCTURE: Problem → Insight → Specific action. Include ONE specific, concrete observation grounded in their industry and what they are likely struggling with. Avoid generic advice ("post consistently", "know your audience", "use better hooks", "build trust") unless you explain a specific implementation that makes it actionable.
+
+QUALITY CHECK (run silently before finalizing — regenerate internally if any answer is NO):
+1. Is this genuinely useful? 2. Specific to this prospect? 3. Could they implement something today? 4. Supported by context/knowledge? 5. Avoids selling? 6. Avoids asking for anything? 7. Concrete insight not generic? 8. Valuable even if they never become a client? 9. Short enough for WhatsApp? 10. Sounds like a knowledgeable human?
+
+FORMAT: 3-4 sentences maximum. Zero emojis. Zero exclamation marks. Zero buzzwords. Plain WhatsApp-friendly text — no markdown, no bullet points. NO call-to-action. NO next step. The message simply ends after delivering the insight.
+
+FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holistic", "elevate", "game-changer", "value-add", "reach out", "touch base", "circle back", "let me know", "would you like", "I can help".
+
+Output ONLY the actual message. No labels. No quotes. No explanation. No strategy in the message.`;
+
+    pipelineTask = "Generate a VALUE_DM: one specific, genuinely useful, immediately actionable insight for this prospect. No selling. No CTA. No ask. Just value.";
+  } else {
+    // Other message types — use per-type rules (Part 18)
+    const typeRules: Record<string, string> = {
+      SALES_DM: "A sales outreach DM. Pursue exactly one pipeline-stage objective. One low-friction ask. Reference something specific. 2-4 sentences.",
+      FOLLOW_UP: "A follow-up in an active conversation. Pick up where the last exchange left off. One objective. 2-4 sentences.",
+      REACTIVATION_DM: "A re-engagement for a cold lead. New angle, no guilt-trip, no re-pitch. 2-3 sentences.",
+      NURTURE_DM: "A nurture message. Provide value without asking for anything (VALUE_DM-style, no CTA) unless a sales step is clearly warranted. 3-4 sentences.",
+      INTRODUCTION_DM: "A first-touch cold outreach DM. Hook on a positioning gap. Ask only for permission to send a breakdown. No pitching. 2-3 sentences.",
+      RESPONSE_DM: "A reply to a prospect who just messaged. Continue the dialog. One objective. 2-3 sentences.",
+    };
+    styleInstructions = `You are Alex from DFQ Labs writing directly to ${lead.name || "this prospect"} at ${lead.company || "their company"} (${lead.clientType || "Real Estate"}).
+
+Message type: ${type}. ${typeRules[type] || typeRules.SALES_DM}
+
+FORMAT: Zero emojis. Zero exclamation marks. Zero buzzwords. Plain WhatsApp-friendly text. Output ONLY the actual message. No labels. No explanation.
+
+FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holistic", "elevate", "game-changer", "value-add", "reach out", "touch base", "circle back".`;
+    pipelineTask = task || `Generate a ${type} for this prospect following the message-type rules above.`;
+  }
+
+  // Conversation-aware: detect repetition (Part 7) — if recent messages repeat the same topic,
+  // instruct the AI to introduce a new angle or recommend changing strategy.
+  const recentLogs = (lead.conversationLog || []).slice(-5).filter((l: any) => l.type === "dm" || l.type === "reply");
+  const repetitionNote = recentLogs.length >= 3
+    ? `\n\nREPETITION CHECK: The last ${recentLogs.length} messages are provided in the conversation thread. If they already discuss the same topic, introduce a genuinely NEW angle or recommend changing the follow-up strategy. Do not generate a variation of the same message.`
+    : "";
 
   try {
-    const result = await runSalesPipeline(
-      lead,
-      task || "Send a high-value DM that delivers one specific, genuine insight about this prospect's business situation and moves them one concrete step forward toward their goal.",
-      styleInstructions,
-      600
-    );
+    const fullTask = pipelineTask + knowledgeBlock + repetitionNote;
+    const result = await runSalesPipeline(lead, fullTask, styleInstructions, 600);
     const sepIdx = result.indexOf("---STRATEGY---");
     const message  = sepIdx !== -1 ? result.slice(0, sepIdx).trim() : result.trim();
     const strategy = sepIdx !== -1 ? result.slice(sepIdx + "---STRATEGY---".length).trim() : "";
-    res.json({ text: message, strategy });
+    res.json({
+      text: message,
+      strategy,
+      messageType: type,
+      knowledgeUsed: knowledge.map(k => k.title),
+    });
   } catch (err: any) {
     console.error("POST /api/value-dm error:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Knowledge Base API (Parts 1, 2, 23) ──────────────────────────────────────
+
+app.get("/api/knowledge", async (_req, res) => {
+  try {
+    const result = await db.query("SELECT data FROM knowledge_sources ORDER BY created_at DESC");
+    res.json({ sources: result.rows.map((r: any) => r.data) });
+  } catch (err: any) {
+    console.error("GET /api/knowledge:", err);
+    res.status(500).json({ error: "Failed to load knowledge sources." });
+  }
+});
+
+app.post("/api/knowledge", async (req, res) => {
+  const source = req.body?.source;
+  if (!source?.id) return res.status(400).json({ error: "source.id is required." });
+  try {
+    await db.query(
+      `INSERT INTO knowledge_sources (id, data, created_at) VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = $2::jsonb`,
+      [source.id, JSON.stringify(source)]
+    );
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("POST /api/knowledge:", err);
+    res.status(500).json({ error: "Failed to save knowledge source." });
+  }
+});
+
+app.delete("/api/knowledge", async (req, res) => {
+  const id = req.body?.id;
+  if (!id) return res.status(400).json({ error: "id is required." });
+  try {
+    await db.query("DELETE FROM knowledge_sources WHERE id = $1", [id]);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("DELETE /api/knowledge:", err);
+    res.status(500).json({ error: "Failed to delete knowledge source." });
+  }
+});
+
+// Fetch a website URL and extract readable text (Part 1 — Website URL source)
+app.post("/api/knowledge/fetch-url", async (req, res) => {
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ error: "url is required." });
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (DFQLabs-Knowledge-Bot)" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return res.status(502).json({ error: `Fetch failed: HTTP ${response.status}` });
+    const html = await response.text();
+    // Strip scripts/styles/tags, collapse whitespace
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 50000);
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    res.json({ text, title: titleMatch ? titleMatch[1].trim() : url });
+  } catch (err: any) {
+    res.status(500).json({ error: "Could not fetch URL: " + (err.message || "unknown error") });
   }
 });
 
