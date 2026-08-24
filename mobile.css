@@ -108,6 +108,12 @@ html, body, #root {
     flex-wrap: wrap !important;
     gap: 6px !important;
   }
+  /* Each spot needs a real flex-basis so wrap actually triggers
+     (inline `flex: 1` sets basis 0% which never overflows the row). */
+  .beta-spots-row > div {
+    flex: 0 1 calc(20% - 6px) !important;
+    min-width: calc(20% - 6px) !important;
+  }
 
   /* ── Smart buckets stats grid → stack ── */
   .buckets-stats-grid {
