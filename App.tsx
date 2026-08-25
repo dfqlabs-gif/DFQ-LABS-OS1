@@ -1072,24 +1072,34 @@ export default function App() {
         try {
           const parsed = JSON.parse(event.target?.result as string);
           if (parsed && Array.isArray(parsed.leads)) {
-            // Upload all leads to shared DB
-            const res = await fetch("/api/leads", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ leads: parsed.leads })
-            });
-            if (res.ok) {
-              setLeads(parsed.leads);
-              if (parsed.stats) {
-                setStats(parsed.stats);
-                localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
+            // Upload leads in batches so large backups don't hit the
+            // server's body-size limit — each batch is a small request.
+            const BATCH = 50;
+            const allLeads = parsed.leads.filter((l: any) => l?.id);
+            let uploaded = 0;
+            for (let i = 0; i < allLeads.length; i += BATCH) {
+              const batch = allLeads.slice(i, i + BATCH);
+              const res = await fetch("/api/leads", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ leads: batch })
+              });
+              if (!res.ok) {
+                let detail = "";
+                try { const e2 = await res.json(); detail = e2.error ? ` — ${e2.error}` : ""; } catch {}
+                setImportMsg(`✗ Upload failed at lead ${i + 1} (HTTP ${res.status})${detail}`);
+                setTimeout(() => setImportMsg(null), 5000);
+                return;
               }
-              setImportMsg("✓ Leads uploaded to shared database — your team will see them instantly.");
-            } else {
-              let detail = "";
-              try { const e = await res.json(); detail = e.error ? ` — ${e.error}` : ""; } catch {}
-              setImportMsg(`✗ Upload failed (HTTP ${res.status})${detail}`);
+              uploaded += batch.length;
+              setImportMsg(`Uploading… ${uploaded}/${allLeads.length} leads`);
             }
+            setLeads(allLeads);
+            if (parsed.stats) {
+              setStats(parsed.stats);
+              localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
+            }
+            setImportMsg(`✓ ${uploaded} leads uploaded to shared database — your team will see them instantly.`);
           } else {
             setImportMsg("✗ Invalid backup file structure.");
           }

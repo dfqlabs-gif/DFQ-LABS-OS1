@@ -60,7 +60,7 @@ function recordFailure(model: string, message: string) {
 }
 
 // 25mb limit — bulk lead imports/exports can be large JSON payloads
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 // ── Centralized Gemini client ─────────────────────────────────────────────────
 async function callGeminiRaw(
