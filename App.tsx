@@ -1068,36 +1068,66 @@ export default function App() {
   const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileReader = new FileReader();
     if (e.target.files && e.target.files[0]) {
+      const fileName = e.target.files[0].name;
       fileReader.readAsText(e.target.files[0], "UTF-8");
       fileReader.onload = async (event) => {
         try {
-          const parsed = JSON.parse(event.target?.result as string);
-          if (parsed && Array.isArray(parsed.leads)) {
-            // Import only structured lead fields — never serialize attachment
-            // content (strip any embedded blobs from the backup file).
-            const leadsToImport = parsed.leads.map(stripAttachmentContent);
-            const res = await fetch("/api/leads", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ leads: leadsToImport })
-            });
-            if (res.ok) {
-              setLeads(leadsToImport);
-              if (parsed.stats) {
-                setStats(parsed.stats);
-                localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
-              }
-              setImportMsg("✓ Leads uploaded to shared database — your team will see them instantly.");
-            } else {
-              setImportMsg("✗ Upload failed. Check your connection and try again.");
+const raw = event.target?.result as string;
+const parsed = JSON.parse(raw);
+// Accept multiple formats: array, { leads: [...] }, or single object
+let leadsArr: any[] = [];
+if (Array.isArray(parsed)) {
+  leadsArr = parsed;
+} else if (parsed && Array.isArray(parsed.leads)) {
+  leadsArr = parsed.leads;
+} else if (parsed && typeof parsed === "object") {
+  leadsArr = [parsed];
+} else {
+  setImportMsg("✗ Invalid file format.");
+  setTimeout(() => setImportMsg(""), 3000);
+  return;
+}
+// Ensure every lead has an id
+leadsArr = leadsArr.map((l, i) => ({
+  ...l,
+  id: l.id || `imp-${Date.now()}-${i}`,
+}));
+// Strip attachment content — never send embedded blobs to the backend
+leadsArr = leadsArr.map(stripAttachmentContent);
+// Upload all leads to shared DB
+const res = await fetch("/api/leads", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ leads: leadsArr })
+});
+if (res.ok) {
+  setLeads(prev => {
+    // Merge imported leads, replacing any with the same id
+    const map = new Map(prev.map(l => [l.id, l]));
+    leadsArr.forEach(l => map.set(l.id, l));
+    return Array.from(map.values());
+  });
+  if (parsed && parsed.stats) {
+    setStats(parsed.stats);
+    localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
+  }
+  setImportMsg("✓ Leads uploaded to shared database — your team will see them instantly.");
+} else {
+  setImportMsg("✗ Upload failed. Check your connection and try again.");
+}
             }
+            setImportMsg(`✓ Imported ${leadsArr.length} lead${leadsArr.length !== 1 ? "s" : ""} from ${fileName}.`);
           } else {
-            setImportMsg("✗ Invalid backup file structure.");
+            setImportMsg("✗ Upload failed. Check your connection and try again.");
           }
-        } catch (_) {
-          setImportMsg("✗ Failed to parse JSON file.");
+        } catch (err: any) {
+          setImportMsg(`✗ Failed to parse JSON: ${err?.message || "invalid JSON format"}.`);
         }
-        setTimeout(() => setImportMsg(null), 5000);
+        setTimeout(() => setImportMsg(null), 8000);
+      };
+      fileReader.onerror = () => {
+        setImportMsg("✗ Could not read the file. Try again.");
+        setTimeout(() => setImportMsg(null), 8000);
       };
     }
   };
@@ -1510,7 +1540,7 @@ export default function App() {
             <input ref={importRef} type="file" accept=".json" onChange={importData} style={{ display: "none" }} />
             <button onClick={() => importRef.current?.click()} style={{ background: "transparent", color: MUTED, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Upload size={12} /></button>
             <button onClick={exportData} style={{ background: "transparent", color: G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Download size={12} /></button>
-            {importMsg && <span style={{ fontSize: 11, color: importMsg.startsWith("✓") ? "#22C55E" : "#EF4444" }}>{importMsg}</span>}
+            {importMsg && <div style={{ fontSize: 12, fontWeight: 700, color: importMsg.startsWith("✓") ? "#22C55E" : "#EF4444", background: importMsg.startsWith("✓") ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", border: `1px solid ${importMsg.startsWith("✓") ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`, borderRadius: 6, padding: "8px 12px", marginTop: 4, width: "100%", textAlign: "center" }}>{importMsg}</div>}
             <span style={{ color: MUTED, fontSize: 10 }}>{saving ? <span style={{ color: G }}>SAVING…</span> : `${leads.length} leads`}</span>
             <button onClick={() => setModal({
               id: Date.now().toString(), name: "", company: "", phone: "", source: "WhatsApp", clientType: "Real Estate Developer", service: "Growth — ₦500K/mo", status: "New", priority: "Medium", assignedTo: "Unassigned", notes: "", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: today(), lastContacted: "", lastMeaningfulTouchpoint: today(), awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: getWeekKey(new Date()), completedFollowUps: [], deliveryStage: "Discovery", deliveryNote: "", betaCandidate: false, autoFollowUpDate: today(), autoFollowUpReason: "New lead."
