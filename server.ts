@@ -604,13 +604,19 @@ app.post("/api/leads", async (req, res) => {
     const leads = body.leads.filter((l: any) => l?.id);
     if (leads.length === 0) return res.json({ ok: true, count: 0 });
     try {
-      const values = leads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
-      const params = leads.flatMap((l: any) => [l.id, JSON.stringify(l)]);
-      await db.query(
-        `INSERT INTO leads (id, data, updated_at) VALUES ${values}
-         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-        params
-      );
+      // Batch the upsert to stay under Postgres' 65535-parameter limit
+      // (each lead uses 2 params: id + jsonb data).
+      const BATCH = 500;
+      for (let i = 0; i < leads.length; i += BATCH) {
+        const batch = leads.slice(i, i + BATCH);
+        const values = batch.map((_: any, j: number) => `($${j * 2 + 1}, $${j * 2 + 2}::jsonb, NOW())`).join(", ");
+        const params = batch.flatMap((l: any) => [l.id, JSON.stringify(l)]);
+        await db.query(
+          `INSERT INTO leads (id, data, updated_at) VALUES ${values}
+           ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+          params
+        );
+      }
       return res.json({ ok: true, count: leads.length });
     } catch (err: any) {
       console.error("POST /api/leads bulk:", err);

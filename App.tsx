@@ -1086,7 +1086,9 @@ export default function App() {
               }
               setImportMsg("✓ Leads uploaded to shared database — your team will see them instantly.");
             } else {
-              setImportMsg("✗ Upload failed. Check your connection and try again.");
+              let detail = "";
+              try { const e = await res.json(); detail = e.error ? ` — ${e.error}` : ""; } catch {}
+              setImportMsg(`✗ Upload failed (HTTP ${res.status})${detail}`);
             }
           } else {
             setImportMsg("✗ Invalid backup file structure.");
