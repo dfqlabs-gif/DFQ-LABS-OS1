@@ -1070,43 +1070,75 @@ export default function App() {
       fileReader.readAsText(e.target.files[0], "UTF-8");
       fileReader.onload = async (event) => {
         try {
-          const parsed = JSON.parse(event.target?.result as string);
-          if (parsed && Array.isArray(parsed.leads)) {
-            // Upload leads in batches so large backups don't hit the
-            // server's body-size limit — each batch is a small request.
-            const BATCH = 50;
-            const allLeads = parsed.leads.filter((l: any) => l?.id);
-            let uploaded = 0;
-            for (let i = 0; i < allLeads.length; i += BATCH) {
-              const batch = allLeads.slice(i, i + BATCH);
-              const res = await fetch("/api/leads", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ leads: batch })
-              });
-              if (!res.ok) {
-                let detail = "";
-                try { const e2 = await res.json(); detail = e2.error ? ` — ${e2.error}` : ""; } catch {}
-                setImportMsg(`✗ Upload failed at lead ${i + 1} (HTTP ${res.status})${detail}`);
-                setTimeout(() => setImportMsg(null), 5000);
-                return;
-              }
-              uploaded += batch.length;
-              setImportMsg(`Uploading… ${uploaded}/${allLeads.length} leads`);
-            }
-            setLeads(allLeads);
-            if (parsed.stats) {
-              setStats(parsed.stats);
-              localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
-            }
-            setImportMsg(`✓ ${uploaded} leads uploaded to shared database — your team will see them instantly.`);
+          let raw = event.target?.result as string;
+          // Strip BOM if present (common with Windows-saved files)
+          if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+          const parsed = JSON.parse(raw);
+
+          // Accept multiple formats: { leads: [...] }, bare [...], or single lead object
+          let leadsArr: any[] = [];
+          let statsObj: any = null;
+          if (Array.isArray(parsed)) {
+            leadsArr = parsed;
+          } else if (parsed && Array.isArray(parsed.leads)) {
+            leadsArr = parsed.leads;
+            statsObj = parsed.stats;
+          } else if (parsed && parsed.id) {
+            leadsArr = [parsed];
           } else {
-            setImportMsg("✗ Invalid backup file structure.");
+            setImportMsg("✗ Invalid file structure. Expected a JSON with a leads array.");
+            setTimeout(() => setImportMsg(null), 5000);
+            return;
           }
-        } catch (_) {
-          setImportMsg("✗ Failed to parse JSON file.");
+
+          if (leadsArr.length === 0) {
+            setImportMsg("✗ No leads found in file.");
+            setTimeout(() => setImportMsg(null), 5000);
+            return;
+          }
+
+          // Upload leads in batches so large backups don't hit the
+          // server's body-size limit — each batch is a small request.
+          const BATCH = 50;
+          const allLeads = leadsArr.filter((l: any) => l?.id);
+          if (allLeads.length === 0) {
+            setImportMsg("✗ No leads with valid IDs found in file.");
+            setTimeout(() => setImportMsg(null), 5000);
+            return;
+          }
+          let uploaded = 0;
+          for (let i = 0; i < allLeads.length; i += BATCH) {
+            const batch = allLeads.slice(i, i + BATCH);
+            const res = await fetch("/api/leads", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ leads: batch })
+            });
+            if (!res.ok) {
+              let detail = "";
+              try { const e2 = await res.json(); detail = e2.error ? ` — ${e2.error}` : ""; } catch {}
+              setImportMsg(`✗ Upload failed at lead ${i + 1} (HTTP ${res.status})${detail}`);
+              setTimeout(() => setImportMsg(null), 5000);
+              return;
+            }
+            uploaded += batch.length;
+            setImportMsg(`Uploading… ${uploaded}/${allLeads.length} leads`);
+          }
+          // Reload from DB so all clients see the fresh state
+          try {
+            const fresh = await fetch("/api/leads");
+            if (fresh.ok) { const { leads: dbLeads } = await fresh.json(); setLeads(dbLeads); }
+            else setLeads(allLeads);
+          } catch { setLeads(allLeads); }
+          if (statsObj) {
+            setStats(statsObj);
+            localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(statsObj));
+          }
+          setImportMsg(`✓ ${uploaded} leads uploaded to shared database — your team will see them instantly.`);
+        } catch (err: any) {
+          setImportMsg(`✗ Failed to parse JSON: ${err.message}`);
         }
-        setTimeout(() => setImportMsg(null), 5000);
+        setTimeout(() => setImportMsg(null), 6000);
       };
     }
   };
