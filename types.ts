@@ -6,7 +6,10 @@ export interface LeadAttachment {
   name: string;
   mimeType: string;
   size: number;
-  content: string; // raw text for text/json/html; base64 data URL for pdf/images
+  // Raw text (text/json/html) or base64 data URL (pdf/images). Stored separately
+  // in the lead_attachments table — NOT embedded in the lead JSON. Present only
+  // when explicitly loaded on demand; absent in list/import payloads.
+  content?: string;
   uploadedAt: string;
 }
 

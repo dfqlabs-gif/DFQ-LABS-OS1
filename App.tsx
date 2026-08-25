@@ -33,6 +33,7 @@ import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { AIQAPanel } from "./components/AIQAPanel";
+import { stripAttachmentContent } from "./lib/attachments";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -1072,14 +1073,16 @@ export default function App() {
         try {
           const parsed = JSON.parse(event.target?.result as string);
           if (parsed && Array.isArray(parsed.leads)) {
-            // Upload all leads to shared DB
+            // Import only structured lead fields — never serialize attachment
+            // content (strip any embedded blobs from the backup file).
+            const leadsToImport = parsed.leads.map(stripAttachmentContent);
             const res = await fetch("/api/leads", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ leads: parsed.leads })
+              body: JSON.stringify({ leads: leadsToImport })
             });
             if (res.ok) {
-              setLeads(parsed.leads);
+              setLeads(leadsToImport);
               if (parsed.stats) {
                 setStats(parsed.stats);
                 localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));

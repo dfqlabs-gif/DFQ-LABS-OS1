@@ -2,6 +2,7 @@ import { useState, useMemo, useRef } from "react";
 import { X, UserCheck, AlertTriangle, Calendar, Sprout, Ticket, Lock, CheckCircle2, Brain, GitMerge, ExternalLink, Search, ShieldAlert, Paperclip, Trash2, FileText, Image } from "lucide-react";
 import React from "react";
 import { Lead, LeadAttachment } from "../types";
+import { AttachmentImage } from "./AttachmentImage";
 import { 
   CLIENT_TYPES, 
   SOURCES, 
@@ -125,7 +126,15 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
           content: ev.target?.result as string,
           uploadedAt: new Date().toISOString(),
         };
-        setLead(p => ({ ...p, attachments: [...(p.attachments || []), att] }));
+        // Store the file content separately (lead_attachments table); the lead
+        // JSON keeps only lightweight metadata so list/import stays small.
+        fetch("/api/attachments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ attachment: { ...att, leadId: lead.id } }),
+        }).catch(() => {});
+        const { content: _c, ...meta } = att;
+        setLead(p => ({ ...p, attachments: [...(p.attachments || []), meta as LeadAttachment] }));
       };
       isText ? reader.readAsText(file) : reader.readAsDataURL(file);
     });
@@ -403,10 +412,13 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
                   <div style={{ fontSize: 9, color: MUTED }}>{att.mimeType} · {(att.size / 1024).toFixed(0)} KB · {new Date(att.uploadedAt).toLocaleDateString("en-GB")}</div>
                 </div>
                 {att.mimeType.startsWith("image/") && (
-                  <img src={att.content} alt={att.name} style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, flexShrink: 0 }} />
+                  <AttachmentImage att={att} />
                 )}
                 <button
-                  onClick={() => set("attachments", (lead.attachments || []).filter(a => a.id !== att.id))}
+                  onClick={() => {
+                    fetch(`/api/attachments/${att.id}`, { method: "DELETE" }).catch(() => {});
+                    set("attachments", (lead.attachments || []).filter(a => a.id !== att.id));
+                  }}
                   style={{ background: "none", border: "none", color: MUTED, cursor: "pointer", padding: 4, flexShrink: 0 }}
                   title="Remove attachment"
                 >
