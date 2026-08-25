@@ -1,6 +1,7 @@
 // Vercel serverless handler for /api/leads
 // Handles GET (list), POST (upsert single / bulk), DELETE (by id)
 import { Pool } from "pg";
+import { stripAttachmentContent } from "../lib/attachments";
 
 let pool: Pool | null = null;
 
@@ -31,7 +32,9 @@ export default async function handler(req: any, res: any) {
   if (req.method === "GET") {
     try {
       const result = await db.query("SELECT data FROM leads ORDER BY updated_at ASC");
-      const leads = result.rows.map((r: any) => r.data);
+      // Never return embedded attachment content in the list payload — only
+      // lightweight metadata (keeps the response small, prevents "Load failed").
+      const leads = result.rows.map((r: any) => stripAttachmentContent(r.data));
       return res.status(200).json({ leads });
     } catch (err: any) {
       console.error("GET /api/leads error:", err);

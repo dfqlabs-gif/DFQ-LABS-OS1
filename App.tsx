@@ -33,6 +33,7 @@ import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { AIQAPanel } from "./components/AIQAPanel";
+import { stripAttachmentContent } from "./lib/attachments";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -1071,42 +1072,49 @@ export default function App() {
       fileReader.readAsText(e.target.files[0], "UTF-8");
       fileReader.onload = async (event) => {
         try {
-          const raw = event.target?.result as string;
-          const parsed = JSON.parse(raw);
-          // Accept multiple formats: { leads: [...] }, bare array [...], or single lead object {...}
-          let leadsArr: any[] = [];
-          if (Array.isArray(parsed)) {
-            leadsArr = parsed;
-          } else if (parsed && Array.isArray(parsed.leads)) {
-            leadsArr = parsed.leads;
-          } else if (parsed && typeof parsed === "object" && (parsed.id || parsed.name || parsed.company)) {
-            leadsArr = [parsed];
-          } else {
-            setImportMsg("✗ Invalid file: expected a JSON array of leads or { leads: [...] } object.");
-            setTimeout(() => setImportMsg(null), 8000);
-            return;
-          }
-          // Ensure every lead has an id — generate one for any missing
-          leadsArr = leadsArr.map((l: any, i: number) => ({
-            ...l,
-            id: l.id || `imp-${Date.now()}-${i}`,
-          }));
-          // Upload all leads to shared DB
-          const res = await fetch("/api/leads", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ leads: leadsArr })
-          });
-          if (res.ok) {
-            setLeads(prev => {
-              // Merge imported leads, replacing any with the same id
-              const map = new Map(prev.map(l => [l.id, l]));
-              leadsArr.forEach(l => map.set(l.id, l));
-              return Array.from(map.values());
-            });
-            if (parsed && parsed.stats) {
-              setStats(parsed.stats);
-              localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
+const raw = event.target?.result as string;
+const parsed = JSON.parse(raw);
+// Accept multiple formats: array, { leads: [...] }, or single object
+let leadsArr: any[] = [];
+if (Array.isArray(parsed)) {
+  leadsArr = parsed;
+} else if (parsed && Array.isArray(parsed.leads)) {
+  leadsArr = parsed.leads;
+} else if (parsed && typeof parsed === "object") {
+  leadsArr = [parsed];
+} else {
+  setImportMsg("✗ Invalid file format.");
+  setTimeout(() => setImportMsg(""), 3000);
+  return;
+}
+// Ensure every lead has an id
+leadsArr = leadsArr.map((l, i) => ({
+  ...l,
+  id: l.id || `imp-${Date.now()}-${i}`,
+}));
+// Strip attachment content — never send embedded blobs to the backend
+leadsArr = leadsArr.map(stripAttachmentContent);
+// Upload all leads to shared DB
+const res = await fetch("/api/leads", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ leads: leadsArr })
+});
+if (res.ok) {
+  setLeads(prev => {
+    // Merge imported leads, replacing any with the same id
+    const map = new Map(prev.map(l => [l.id, l]));
+    leadsArr.forEach(l => map.set(l.id, l));
+    return Array.from(map.values());
+  });
+  if (parsed && parsed.stats) {
+    setStats(parsed.stats);
+    localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
+  }
+  setImportMsg("✓ Leads uploaded to shared database — your team will see them instantly.");
+} else {
+  setImportMsg("✗ Upload failed. Check your connection and try again.");
+}
             }
             setImportMsg(`✓ Imported ${leadsArr.length} lead${leadsArr.length !== 1 ? "s" : ""} from ${fileName}.`);
           } else {

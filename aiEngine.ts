@@ -137,18 +137,22 @@ export function buildLeadContext(lead: Lead): string {
   const daysSinceContact = lead.lastContacted ? daysSince(lead.lastContacted) : null;
   const hoursAwaitingReply = lead.awaitingReplySince ? hoursSince(lead.awaitingReplySince) : null;
 
-  // Inject readable attachment content so the AI can reference exchanged documents
+  // Inject readable attachment content so the AI can reference exchanged documents.
+  // Content is optional — it is stored separately and only present when enriched
+  // on demand (e.g. the server-side value-DM pipeline). When absent, the
+  // attachment is still listed by metadata so the AI knows it exists.
   const textAttachments = (lead.attachments || []).filter(a =>
-    a.mimeType.startsWith("text/") || a.mimeType === "application/json"
+    (a.mimeType.startsWith("text/") || a.mimeType === "application/json") && a.content
   );
   const binaryAttachments = (lead.attachments || []).filter(a =>
-    !a.mimeType.startsWith("text/") && a.mimeType !== "application/json"
+    !((a.mimeType.startsWith("text/") || a.mimeType === "application/json") && a.content)
   );
   const attachmentBlock = [
     textAttachments.length > 0
-      ? `=== ATTACHED FILES (readable) ===\n` + textAttachments.map(a =>
-          `--- ${a.name} (${a.mimeType}) ---\n${a.content.length > 4000 ? a.content.slice(0, 4000) + "\n[truncated]" : a.content}`
-        ).join("\n\n")
+      ? `=== ATTACHED FILES (readable) ===\n` + textAttachments.map(a => {
+          const c = a.content || "";
+          return `--- ${a.name} (${a.mimeType}) ---\n${c.length > 4000 ? c.slice(0, 4000) + "\n[truncated]" : c}`;
+        }).join("\n\n")
       : "",
     binaryAttachments.length > 0
       ? `=== ATTACHED FILES (binary — not readable but on file) ===\n` +

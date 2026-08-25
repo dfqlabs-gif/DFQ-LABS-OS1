@@ -5,6 +5,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
 import { runSalesPipeline } from "./aiEngine";
+import { stripAttachmentContent } from "./lib/attachments";
 
 dotenv.config();
 
@@ -30,6 +31,51 @@ db.query(`
     created_at TIMESTAMP DEFAULT NOW()
   )
 `).catch(err => console.error("DB knowledge_sources init error:", err));
+
+// Attachment file content (raw text / base64 data URLs) lives in a dedicated
+// lead_attachments table — separate from the lead JSON, which stores only
+// lightweight attachment metadata. This keeps lead list/import payloads small
+// and prevents the browser "Load failed" error on large blobs. The table is
+// created (and inline content migrated) in the IIFE below.
+
+// One-time migration: move any attachment content still embedded inline in
+// lead records into the dedicated table, then strip it from the lead JSON.
+(async () => {
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS lead_attachments (
+      id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, uploaded_at TIMESTAMP DEFAULT NOW()
+    )`);
+    const { rows } = await db.query(
+      "SELECT id, data FROM leads WHERE data ? 'attachments'"
+    );
+    for (const row of rows) {
+      const lead = row.data;
+      const atts = Array.isArray(lead.attachments) ? lead.attachments : [];
+      if (atts.length === 0) continue;
+      let changed = false;
+      for (const att of atts) {
+        if (att && att.content) {
+          await db.query(
+            `INSERT INTO lead_attachments (id, lead_id, data, uploaded_at) VALUES ($1, $2, $3::jsonb, NOW())
+             ON CONFLICT (id) DO UPDATE SET data = $3::jsonb`,
+            [att.id, lead.id, JSON.stringify(att)]
+          );
+          changed = true;
+        }
+      }
+      if (changed) {
+        const stripped = stripAttachmentContent(lead);
+        await db.query("UPDATE leads SET data = $1::jsonb WHERE id = $2", [
+          JSON.stringify(stripped), lead.id,
+        ]);
+      }
+    }
+    if (rows.length > 0) console.log(`Attachment migration processed ${rows.length} lead(s).`);
+  } catch (err) {
+    console.error("Attachment migration error:", err);
+  }
+})();
+
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 
 // ── AI Provider configuration — change GEMINI_MODEL env var to swap models ──
@@ -345,6 +391,31 @@ Output ONLY the final message text. No meta-commentary.`;
   }
 });
 
+// ── Attachment content enrichment (on-demand) ────────────────────────────────
+// The lead JSON carries only attachment metadata. When the AI needs the actual
+// file content (e.g. the value-DM drafting pipeline), fetch it from the
+// dedicated lead_attachments table and merge it onto the lead object.
+async function enrichLeadAttachments(lead: any): Promise<any> {
+  const atts = lead?.attachments;
+  if (!Array.isArray(atts) || atts.length === 0) return lead;
+  const ids = atts.map((a: any) => a?.id).filter(Boolean);
+  if (ids.length === 0) return lead;
+  try {
+    const result = await db.query(
+      "SELECT id, data FROM lead_attachments WHERE id = ANY($1::text[])",
+      [ids]
+    );
+    const byId = new Map(result.rows.map((r: any) => [r.id, r.data?.content ?? ""]));
+    return {
+      ...lead,
+      attachments: atts.map((a: any) => ({ ...a, content: byId.get(a.id) ?? a.content ?? "" })),
+    };
+  } catch (err) {
+    console.error("enrichLeadAttachments error:", err);
+    return lead;
+  }
+}
+
 // ── Knowledge retrieval (Part 2, 23) ─────────────────────────────────────────
 // Keyword-based retrieval: derive keywords from the lead's context and match
 // against enabled knowledge sources. Returns the most relevant snippets so
@@ -432,8 +503,12 @@ app.post("/api/value-dm", async (req, res) => {
 
   const type: string = messageType || "VALUE_DM";
 
+  // Enrich the lead with attachment content from the dedicated table so the AI
+  // pipeline can reference attached documents (content is not in the lead JSON).
+  const leadWithAttachments = await enrichLeadAttachments(lead);
+
   // Retrieve relevant knowledge for this lead + message type (Part 2)
-  const knowledge = await retrieveKnowledgeForLead(lead, type);
+  const knowledge = await retrieveKnowledgeForLead(leadWithAttachments, type);
   const knowledgeBlock = knowledge.length > 0
     ? `\n\n=== RELEVANT DFQ LABS KNOWLEDGE (use only what is genuinely relevant — do not force unrelated material) ===\n${knowledge.map(k => `--- ${k.title} ---\n${k.snippet}`).join("\n\n")}\n=== END KNOWLEDGE ===`
     : "";
@@ -498,7 +573,7 @@ FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holi
 
   try {
     const fullTask = pipelineTask + knowledgeBlock + repetitionNote;
-    const result = await runSalesPipeline(lead, fullTask, styleInstructions, 600);
+    const result = await runSalesPipeline(leadWithAttachments, fullTask, styleInstructions, 600);
     const sepIdx = result.indexOf("---STRATEGY---");
     const message  = sepIdx !== -1 ? result.slice(0, sepIdx).trim() : result.trim();
     const strategy = sepIdx !== -1 ? result.slice(sepIdx + "---STRATEGY---".length).trim() : "";
@@ -584,12 +659,58 @@ app.post("/api/knowledge/fetch-url", async (req, res) => {
   }
 });
 
+// ── Attachment content API (on-demand) ──────────────────────────────────────
+// Content lives in the lead_attachments table, separate from lead JSON. These
+// endpoints let the UI/AI load a single attachment's content only when needed.
+
+// GET a single attachment (with content) by id — used for viewing/downloading.
+app.get("/api/attachments/:id", async (req, res) => {
+  try {
+    const result = await db.query("SELECT data FROM lead_attachments WHERE id = $1", [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Attachment not found." });
+    res.json({ attachment: result.rows[0].data });
+  } catch (err: any) {
+    console.error("GET /api/attachments:", err);
+    res.status(500).json({ error: "Failed to load attachment." });
+  }
+});
+
+// POST a single attachment (with content) — stores the file content separately.
+app.post("/api/attachments", async (req, res) => {
+  const att = req.body?.attachment;
+  if (!att?.id) return res.status(400).json({ error: "attachment.id is required." });
+  try {
+    await db.query(
+      `INSERT INTO lead_attachments (id, lead_id, data, uploaded_at) VALUES ($1, $2, $3::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = $3::jsonb`,
+      [att.id, att.leadId || att.lead_id || "", JSON.stringify(att)]
+    );
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("POST /api/attachments:", err);
+    res.status(500).json({ error: "Failed to save attachment." });
+  }
+});
+
+// DELETE an attachment's content by id.
+app.delete("/api/attachments/:id", async (req, res) => {
+  try {
+    await db.query("DELETE FROM lead_attachments WHERE id = $1", [req.params.id]);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("DELETE /api/attachments:", err);
+    res.status(500).json({ error: "Failed to delete attachment." });
+  }
+});
+
 // ── Leads API — unified (mirrors api/leads.ts for Vercel) ─────────────────────
 
 app.get("/api/leads", async (_req, res) => {
   try {
     const result = await db.query("SELECT data FROM leads ORDER BY updated_at ASC");
-    res.json({ leads: result.rows.map((r: any) => r.data) });
+    // Never return embedded attachment content in the list payload — only
+    // lightweight metadata. This keeps the response small (prevents "Load failed").
+    res.json({ leads: result.rows.map((r: any) => stripAttachmentContent(r.data)) });
   } catch (err: any) {
     console.error("GET /api/leads:", err);
     res.status(500).json({ error: "Failed to load leads." });
@@ -601,14 +722,19 @@ app.post("/api/leads", async (req, res) => {
   const body = req.body || {};
 
   if (Array.isArray(body.leads)) {
-    const leads = body.leads.filter((l: any) => l?.id);
+    // Import: strip attachment content (never serialize blobs during import) and
+    // preserve existing attachments on conflict — a lead import only updates the
+    // structured lead fields; existing attachments remain untouched.
+    const leads = body.leads.filter((l: any) => l?.id).map((l: any) => stripAttachmentContent(l));
     if (leads.length === 0) return res.json({ ok: true, count: 0 });
     try {
       const values = leads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
       const params = leads.flatMap((l: any) => [l.id, JSON.stringify(l)]);
       await db.query(
         `INSERT INTO leads (id, data, updated_at) VALUES ${values}
-         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+         ON CONFLICT (id) DO UPDATE SET
+           data = jsonb_set(EXCLUDED.data, '{attachments}', COALESCE(leads.data->'attachments', '[]'::jsonb)),
+           updated_at = NOW()`,
         params
       );
       return res.json({ ok: true, count: leads.length });
@@ -618,7 +744,7 @@ app.post("/api/leads", async (req, res) => {
     }
   }
 
-  const lead = body.lead;
+  const lead = stripAttachmentContent(body.lead);
   if (!lead?.id) return res.status(400).json({ error: "lead.id is required." });
   try {
     await db.query(
