@@ -1115,11 +1115,7 @@ if (res.ok) {
 } else {
   setImportMsg("✗ Upload failed. Check your connection and try again.");
 }
-            }
-            setImportMsg(`✓ Imported ${leadsArr.length} lead${leadsArr.length !== 1 ? "s" : ""} from ${fileName}.`);
-          } else {
-            setImportMsg("✗ Upload failed. Check your connection and try again.");
-          }
+           
         } catch (err: any) {
           setImportMsg(`✗ Failed to parse JSON: ${err?.message || "invalid JSON format"}.`);
         }
