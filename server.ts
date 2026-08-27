@@ -730,14 +730,18 @@ app.post("/api/leads", async (req, res) => {
     try {
       const values = leads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
       const params = leads.flatMap((l: any) => [l.id, JSON.stringify(l)]);
-      await db.query(
-        `INSERT INTO leads (id, data, updated_at) VALUES ${values}
-         ON CONFLICT (id) DO UPDATE SET
-           data = jsonb_set(EXCLUDED.data, '{attachments}', COALESCE(leads.data->'attachments', '[]'::jsonb)),
-           updated_at = NOW()`,
-        params
-      );
-      return res.json({ ok: true, count: leads.length });
+      const query = body.import
+        ? `INSERT INTO leads (id, data, updated_at) VALUES ${values}
+          ON CONFLICT (id) DO NOTHING RETURNING id`
+        : `INSERT INTO leads (id, data, updated_at) VALUES ${values}
+          ON CONFLICT (id) DO UPDATE SET
+          data = jsonb_set(EXCLUDED.data, '{attachments}', COALESCE(leads.data->'attachments', '[]'::jsonb)),
+          updated_at = NOW() RETURNING id`;
+      const result = await db.query(query, params);
+      const importedIds = result.rows.map((row: any) => row.id);
+      const importedIdSet = new Set(importedIds);
+      const duplicates = body.import ? leads.filter((lead: any) => !importedIdSet.has(lead.id)).map((lead: any) => lead.id) : [];
+      return res.json({ ok: true, count: importedIds.length, importedIds, duplicates });
     } catch (err: any) {
       console.error("POST /api/leads bulk:", err);
       return res.status(500).json({ error: "Failed to bulk-import leads." });

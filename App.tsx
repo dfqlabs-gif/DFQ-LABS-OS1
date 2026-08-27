@@ -15,6 +15,7 @@ import {
   findDuplicateConflict, autoAssignSpecialist, SESSION_KEY, SESSION_IDLE_MS, 
   ROLE_ACCESS, classifyLead, detectMeetingRequest, meetingQualified, getWeekKey,
   DAILY_FOLLOWUP_CAP, RELATIONSHIP_RENEWAL_DAYS, RELATIONSHIP_WARNING_DAYS, RESPONSE_GUARD_HOURS, MEETING_WINDOW_HOURS,
+  getMissingRequiredFields,
   iStyle, Bdg, BucketBdg, BetaBdg, AssignedBdg, CopyBtn, Celebration,
   SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE, specialistLabel
 } from "./constants";
@@ -1066,66 +1067,98 @@ export default function App() {
   };
 
   const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     const fileReader = new FileReader();
-    if (e.target.files && e.target.files[0]) {
-      const fileName = e.target.files[0].name;
-      fileReader.readAsText(e.target.files[0], "UTF-8");
-      fileReader.onload = async (event) => {
-        try {
-const raw = event.target?.result as string;
-const parsed = JSON.parse(raw);
-// Accept multiple formats: array, { leads: [...] }, or single object
-let leadsArr: any[] = [];
-if (Array.isArray(parsed)) {
-  leadsArr = parsed;
-} else if (parsed && Array.isArray(parsed.leads)) {
-  leadsArr = parsed.leads;
-} else if (parsed && typeof parsed === "object") {
-  leadsArr = [parsed];
-} else {
-  setImportMsg("✗ Invalid file format.");
-  setTimeout(() => setImportMsg(""), 3000);
-  return;
-}
-// Ensure every lead has an id
-leadsArr = leadsArr.map((l, i) => ({
-  ...l,
-  id: l.id || `imp-${Date.now()}-${i}`,
-}));
-// Strip attachment content — never send embedded blobs to the backend
-leadsArr = leadsArr.map(stripAttachmentContent);
-// Upload all leads to shared DB
-const res = await fetch("/api/leads", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ leads: leadsArr })
-});
-if (res.ok) {
-  setLeads(prev => {
-    // Merge imported leads, replacing any with the same id
-    const map = new Map(prev.map(l => [l.id, l]));
-    leadsArr.forEach(l => map.set(l.id, l));
-    return Array.from(map.values());
-  });
-  if (parsed && parsed.stats) {
-    setStats(parsed.stats);
-    localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
-  }
-  setImportMsg("✓ Leads uploaded to shared database — your team will see them instantly.");
-} else {
-  setImportMsg("✗ Upload failed. Check your connection and try again.");
-}
-           
-        } catch (err: any) {
-          setImportMsg(`✗ Failed to parse JSON: ${err?.message || "invalid JSON format"}.`);
+    fileReader.onload = async event => {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(event.target?.result as string);
+      } catch (err: any) {
+        setImportMsg(`✗ Could not parse ${file.name}: ${err?.message || "invalid JSON format"}.`);
+        setTimeout(() => setImportMsg(null), 8000);
+        return;
+      }
+
+      let leadsArr: any[];
+      if (Array.isArray(parsed)) leadsArr = parsed;
+      else if (parsed && Array.isArray(parsed.leads)) leadsArr = parsed.leads;
+      else if (parsed && typeof parsed === "object") leadsArr = [parsed];
+      else {
+        setImportMsg("✗ Invalid file format: expected a lead object, array, or { leads: [...] }.");
+        setTimeout(() => setImportMsg(null), 8000);
+        return;
+      }
+
+      const invalid: string[] = [];
+      const validLeads = leadsArr.flatMap((lead, index) => {
+        if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
+          invalid.push(`record ${index + 1}: expected an object`);
+          return [];
         }
+        const withId = { ...lead, id: lead.id || `imp-${Date.now()}-${index}` };
+        const missing = getMissingRequiredFields(withId as Lead);
+        if (missing.length > 0) {
+          invalid.push(`record ${index + 1}: missing ${missing.join(", ")}`);
+          return [];
+        }
+        return [stripAttachmentContent(withId)];
+      });
+
+      if (validLeads.length === 0) {
+        setImportMsg(`✗ No leads imported. ${invalid.join("; ") || "The file contains no leads."}`);
         setTimeout(() => setImportMsg(null), 8000);
-      };
-      fileReader.onerror = () => {
-        setImportMsg("✗ Could not read the file. Try again.");
+        return;
+      }
+
+      let res: Response;
+      let responseBody: any = null;
+      try {
+        res = await fetch("/api/leads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leads: validLeads, import: true })
+        });
+        const responseText = await res.text();
+        try { responseBody = responseText ? JSON.parse(responseText) : null; } catch { responseBody = null; }
+      } catch (err: any) {
+        setImportMsg(`✗ Could not reach the lead API: ${err?.message || "network request failed"}.`);
         setTimeout(() => setImportMsg(null), 8000);
-      };
-    }
+        return;
+      }
+
+      if (!res.ok) {
+        const detail = responseBody?.error || `HTTP ${res.status} ${res.statusText}`;
+        setImportMsg(`✗ Lead import failed: ${detail}`);
+        setTimeout(() => setImportMsg(null), 8000);
+        return;
+      }
+
+      const importedIds = new Set<string>(responseBody?.importedIds || validLeads.map(l => l.id));
+      setLeads(prev => {
+        const map = new Map(prev.map(l => [l.id, l]));
+        validLeads.forEach(l => {
+          if (importedIds.has(l.id)) map.set(l.id, l);
+        });
+        return Array.from(map.values());
+      });
+      if (parsed && parsed.stats) {
+        setStats(parsed.stats);
+        localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
+      }
+      const imported = responseBody?.count ?? validLeads.length;
+      const duplicates = responseBody?.duplicates || [];
+      const failureCount = invalid.length + duplicates.length;
+      const failureMessage = failureCount > 0 ? ` ${failureCount} failed: ${invalid.concat(duplicates.map((id: string) => `duplicate id ${id}`)).join("; ")}` : "";
+      setImportMsg(`✓ ${imported} lead${imported !== 1 ? "s" : ""} imported successfully.${failureMessage}`);
+      setTimeout(() => setImportMsg(null), 8000);
+    };
+    fileReader.onerror = () => {
+      setImportMsg(`✗ Could not read ${file.name}. Try again.`);
+      setTimeout(() => setImportMsg(null), 8000);
+    };
+    fileReader.readAsText(file, "UTF-8");
+    e.target.value = "";
   };
 
   const saveLead = async (lead: Lead) => {
