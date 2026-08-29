@@ -749,14 +749,44 @@ app.post("/api/leads", async (req, res) => {
   const body = req.body || {};
 
   if (Array.isArray(body.leads)) {
-    // Import: strip attachment content (never serialize blobs during import) and
-    // preserve existing attachments on conflict — a lead import only updates the
-    // structured lead fields; existing attachments remain untouched.
-    const leads = body.leads.filter((l: any) => l?.id).map((l: any) => stripAttachmentContent(l));
-    if (leads.length === 0) return res.json({ ok: true, count: 0 });
+    const rawLeads = Array.isArray(body.leads) ? body.leads : [];
+    const currentIds = new Set((await db.query("SELECT id FROM leads")).rows.map((r: any) => String(r.id)));
+    const valid: any[] = [];
+    const duplicates: string[] = [];
+    const rejected: Array<{ index: number; id?: string; reason: string }> = [];
+    const seen = new Set<string>();
+
+    rawLeads.forEach((lead: any, index: number) => {
+      if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
+        rejected.push({ index, reason: "expected an object" });
+        return;
+      }
+      const id = String(lead.id || "").trim();
+      const hasName = typeof lead.name === "string" ? lead.name.trim() : !!lead.name;
+      const hasCompany = typeof lead.company === "string" ? lead.company.trim() : !!lead.company;
+      if (!hasName || !hasCompany) {
+        rejected.push({ index, id: id || undefined, reason: "missing required name/company" });
+        return;
+      }
+      if (!id) {
+        rejected.push({ index, id: undefined, reason: "missing lead.id" });
+        return;
+      }
+      if (currentIds.has(id) || seen.has(id)) {
+        duplicates.push(id);
+        return;
+      }
+      seen.add(id);
+      valid.push(stripAttachmentContent(lead));
+    });
+
+    if (valid.length === 0) {
+      return res.json({ ok: true, count: 0, importedIds: [], duplicates, rejected, sourceCount: rawLeads.length, validCount: 0, duplicateCount: duplicates.length, rejectedCount: rejected.length });
+    }
+
     try {
-      const values = leads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
-      const params = leads.flatMap((l: any) => [l.id, JSON.stringify(l)]);
+      const values = valid.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
+      const params = valid.flatMap((l: any) => [l.id, JSON.stringify(l)]);
       const query = body.import
         ? `INSERT INTO leads (id, data, updated_at) VALUES ${values}
           ON CONFLICT (id) DO NOTHING RETURNING id`
@@ -767,8 +797,8 @@ app.post("/api/leads", async (req, res) => {
       const result = await db.query(query, params);
       const importedIds = result.rows.map((row: any) => row.id);
       const importedIdSet = new Set(importedIds);
-      const duplicates = body.import ? leads.filter((lead: any) => !importedIdSet.has(lead.id)).map((lead: any) => lead.id) : [];
-      return res.json({ ok: true, count: importedIds.length, importedIds, duplicates });
+      const duplicatesFromDb = valid.filter((lead: any) => !importedIdSet.has(lead.id)).map((lead: any) => lead.id);
+      return res.json({ ok: true, count: importedIds.length, importedIds, duplicates: duplicatesFromDb.length ? duplicatesFromDb : duplicates, rejected, sourceCount: rawLeads.length, validCount: valid.length, duplicateCount: duplicates.length + duplicatesFromDb.length, rejectedCount: rejected.length });
     } catch (err: any) {
       console.error("POST /api/leads bulk:", err);
       return res.status(500).json({ error: "Failed to bulk-import leads." });

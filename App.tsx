@@ -35,6 +35,7 @@ import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { AIQAPanel } from "./components/AIQAPanel";
 import { stripAttachmentContent } from "./lib/attachments";
+import { normalizeImportedLead, summarizeImportBatch } from "./lib/imports";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -921,17 +922,94 @@ export default function App() {
     };
   }, [role, authed, writeSession, logout]);
 
-  // Load leads from shared database; stats remain per-user in localStorage
+  const loadLeadsFromServer = useCallback(async () => {
+    const res = await fetch("/api/leads");
+    if (!res.ok) return [] as Lead[];
+    const { leads: loadedLeads } = await res.json();
+    const rulePatched: Lead[] = [];
+    let changed = false;
+
+    const refreshed = (loadedLeads as any[]).map((l: any) => {
+      let assignedTo = l.assignedTo || "Unassigned";
+      const legacyMap: Record<string, string> = {
+        "Specialist A": "Sa'adatu Mohammed",
+        "Specialist B": "Abigail Dick",
+        "Intern A": "Sa'adatu Mohammed",
+        "Intern B": "Abigail Dick",
+        "Outreach": "Abigail Dick",
+        "Client Relationships": "Sa'adatu Mohammed",
+        "Abigail Dixon": "Abigail Dick",
+        "Abigail Dick": "Abigail Dick",
+      };
+      if (legacyMap[assignedTo]) assignedTo = legacyMap[assignedTo];
+
+      let status = l.status || "New";
+      if (status === "Value Given") status = "Audit Delivered";
+
+      let aiBucket = l.aiBucket;
+      if (aiBucket && !BUCKETS.includes(aiBucket)) aiBucket = undefined;
+
+      const patched: Lead = {
+        lastMeaningfulTouchpoint: l.lastMeaningfulTouchpoint || l.lastContacted || l.dateAdded,
+        awaitingReplySince: l.awaitingReplySince || "",
+        meetingScheduledAt: l.meetingScheduledAt || "",
+        meetingPrepNote: l.meetingPrepNote || "",
+        conversationLog: l.conversationLog || [],
+        ...l,
+        assignedTo,
+        status,
+        aiBucket
+      };
+
+      const ruled = patched.mergedInto ? null : ruleBasedBucket(patched);
+      if (ruled && patched.aiBucket !== ruled.bucket) {
+        changed = true;
+        const updated = {
+          ...patched,
+          aiBucket: ruled.bucket,
+          aiReason: `No reply for ${daysSince(patched.lastContacted || patched.dateAdded)} days — auto-moved to nurture.`,
+          aiNextAction: patched.aiNextAction || "Send a pattern-interrupt re-engagement message.",
+          aiClassifiedAt: new Date().toISOString(),
+          autoFollowUpDate: patched.autoFollowUpDate && patched.autoFollowUpDate > today() ? patched.autoFollowUpDate : addDays(ruled.days ?? 3),
+          autoFollowUpReason: "Send a pattern-interrupt re-engagement message."
+        };
+        rulePatched.push(updated);
+        return updated;
+      }
+      return patched;
+    });
+
+    setLeads(refreshed);
+
+    setStats(prev => {
+      const fromLeads = (refreshed as Lead[]).flatMap(l => l.completedFollowUps || []);
+      const existing = prev.completedDates || [];
+      const merged = Array.from(new Set([...existing, ...fromLeads])).sort();
+      if (merged.length === existing.length) return prev;
+      const updated = { ...prev, completedDates: merged };
+      try { localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+
+    if (changed && rulePatched.length > 0) {
+      fetch("/api/leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leads: rulePatched })
+      }).catch(() => {});
+    }
+
+    return refreshed as Lead[];
+  }, []);
+
   useEffect(() => {
     const loadData = async () => {
-      // Load stats from localStorage (per-user XP / streaks)
       try {
         const r = localStorage.getItem("dfqlabs-v12-stats");
         if (r) {
           const s = JSON.parse(r);
           if (s) setStats(s);
         } else {
-          // Migrate: try to recover stats from old combined key
           const old = localStorage.getItem("dfqlabs-v12");
           if (old) {
             const d = JSON.parse(old);
@@ -940,98 +1018,14 @@ export default function App() {
         }
       } catch (_) {}
 
-      // Load leads from shared PostgreSQL via API
       try {
-        const res = await fetch("/api/leads");
-        if (res.ok) {
-          const { leads: loadedLeads } = await res.json();
-          const rulePatched: Lead[] = [];
-          let changed = false;
-
-          const refreshed = (loadedLeads as any[]).map((l: any) => {
-            let assignedTo = l.assignedTo || "Unassigned";
-            // Normalise legacy assignedTo values to current staff names
-            const legacyMap: Record<string, string> = {
-              "Specialist A": "Sa'adatu Mohammed",
-              "Specialist B": "Abigail Dick",
-              "Intern A": "Sa'adatu Mohammed",
-              "Intern B": "Abigail Dick",
-              "Outreach": "Abigail Dick",
-              "Client Relationships": "Sa'adatu Mohammed",
-              "Abigail Dixon": "Abigail Dick",
-              "Abigail Dick": "Abigail Dick",
-            };
-            if (legacyMap[assignedTo]) assignedTo = legacyMap[assignedTo];
-
-            // "Value Given" is the same as "Audit Delivered" — remap on load
-            // so it disappears as a distinct status without losing any data.
-            let status = l.status || "New";
-            if (status === "Value Given") status = "Audit Delivered";
-
-            let aiBucket = l.aiBucket;
-            if (aiBucket && !BUCKETS.includes(aiBucket)) aiBucket = undefined;
-
-            const patched: Lead = {
-              lastMeaningfulTouchpoint: l.lastMeaningfulTouchpoint || l.lastContacted || l.dateAdded,
-              awaitingReplySince: l.awaitingReplySince || "",
-              meetingScheduledAt: l.meetingScheduledAt || "",
-              meetingPrepNote: l.meetingPrepNote || "",
-              conversationLog: l.conversationLog || [],
-              ...l,
-              assignedTo,
-              status,  // use remapped status (Value Given → Audit Delivered)
-              aiBucket
-            };
-
-            // Leads merged away into another record are tombstoned — never
-            // reclassify, resurface, or let AI analyze them (Lead Integrity spec).
-            const ruled = patched.mergedInto ? null : ruleBasedBucket(patched);
-            if (ruled && patched.aiBucket !== ruled.bucket) {
-              changed = true;
-              const updated = {
-                ...patched,
-                aiBucket: ruled.bucket,
-                aiReason: `No reply for ${daysSince(patched.lastContacted || patched.dateAdded)} days — auto-moved to nurture.`,
-                aiNextAction: patched.aiNextAction || "Send a pattern-interrupt re-engagement message.",
-                aiClassifiedAt: new Date().toISOString(),
-                autoFollowUpDate: patched.autoFollowUpDate && patched.autoFollowUpDate > today() ? patched.autoFollowUpDate : addDays(ruled.days ?? 3),
-                autoFollowUpReason: "Send a pattern-interrupt re-engagement message."
-              };
-              rulePatched.push(updated);
-              return updated;
-            }
-            return patched;
-          });
-
-          setLeads(refreshed);
-
-          // Rebuild completedDates from lead data so the dashboard stays accurate
-          // even if localStorage was cleared or a different device is used.
-          setStats(prev => {
-            const fromLeads = (refreshed as Lead[]).flatMap(l => l.completedFollowUps || []);
-            const existing = prev.completedDates || [];
-            const merged = Array.from(new Set([...existing, ...fromLeads])).sort();
-            if (merged.length === existing.length) return prev;
-            const updated = { ...prev, completedDates: merged };
-            try { localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(updated)); } catch {}
-            return updated;
-          });
-
-          // Persist any rule-based reclassifications back to the DB
-          if (changed && rulePatched.length > 0) {
-            fetch("/api/leads", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ leads: rulePatched })
-            }).catch(() => {});
-          }
-        }
+        await loadLeadsFromServer();
       } catch (_) {}
 
       setLoading(false);
     };
     loadData();
-  }, []);
+  }, [loadLeadsFromServer]);
 
   // persist() now only saves stats (per-user); leads live in the shared DB
   const persist = useCallback(async (_l: Lead[], s: Stats) => {
@@ -1090,23 +1084,19 @@ export default function App() {
         return;
       }
 
-      const invalid: string[] = [];
-      const validLeads = leadsArr.flatMap((lead, index) => {
-        if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
-          invalid.push(`record ${index + 1}: expected an object`);
-          return [];
-        }
-        const withId = { ...lead, id: lead.id || `imp-${Date.now()}-${index}` };
-        const missing = getMissingRequiredFields(withId as Lead);
-        if (missing.length > 0) {
-          invalid.push(`record ${index + 1}: missing ${missing.join(", ")}`);
-          return [];
-        }
-        return [stripAttachmentContent(withId)];
-      });
+      const currentIds = await fetch("/api/leads")
+        .then(async (r) => {
+          if (!r.ok) return [] as string[];
+          const data = await r.json();
+          return (data.leads || []).map((l: any) => String(l.id));
+        })
+        .catch(() => [] as string[]);
+      const summary = summarizeImportBatch(leadsArr, new Set(currentIds));
+      const deduped = summary.valid.map((lead: any) => normalizeImportedLead(lead, 0));
 
-      if (validLeads.length === 0) {
-        setImportMsg(`✗ No leads imported. ${invalid.join("; ") || "The file contains no leads."}`);
+      if (deduped.length === 0) {
+        const reasons = summary.rejected.map((item: any) => item.reason || "unknown rejection").join("; ");
+        setImportMsg(`✗ No leads imported. ${reasons || "The file contains no valid leads."}`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
@@ -1117,7 +1107,7 @@ export default function App() {
         res = await fetch("/api/leads", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ leads: validLeads, import: true })
+          body: JSON.stringify({ leads: deduped.map((l: any) => stripAttachmentContent(l)), import: true })
         });
         const responseText = await res.text();
         try { responseBody = responseText ? JSON.parse(responseText) : null; } catch { responseBody = null; }
@@ -1134,22 +1124,19 @@ export default function App() {
         return;
       }
 
-      const importedIds = new Set<string>(responseBody?.importedIds || validLeads.map(l => l.id));
-      setLeads(prev => {
-        const map = new Map(prev.map(l => [l.id, l]));
-        validLeads.forEach(l => {
-          if (importedIds.has(l.id)) map.set(l.id, l);
-        });
-        return Array.from(map.values());
-      });
+      const duplicates = responseBody?.duplicates || summary.duplicates.map((d: any) => d.id);
+      const rejectedRecords = responseBody?.rejected || summary.rejected;
+      const imported = responseBody?.count ?? deduped.length;
+
+      const refreshed = await loadLeadsFromServer();
+      setLeads(refreshed);
       if (parsed && parsed.stats) {
         setStats(parsed.stats);
         localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
       }
-      const imported = responseBody?.count ?? validLeads.length;
-      const duplicates = responseBody?.duplicates || [];
-      const failureCount = invalid.length + duplicates.length;
-      const failureMessage = failureCount > 0 ? ` ${failureCount} failed: ${invalid.concat(duplicates.map((id: string) => `duplicate id ${id}`)).join("; ")}` : "";
+
+      const failureCount = (rejectedRecords?.length || 0) + (duplicates?.length || 0);
+      const failureMessage = failureCount > 0 ? ` ${failureCount} skipped: ${[...rejectedRecords.map((r: any) => r.reason || `record ${r.index || r.id || "unknown"}`), ...duplicates.map((id: string) => `duplicate id ${id}`)].join("; ")}` : "";
       setImportMsg(`✓ ${imported} lead${imported !== 1 ? "s" : ""} imported successfully.${failureMessage}`);
       setTimeout(() => setImportMsg(null), 8000);
     };
