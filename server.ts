@@ -14,37 +14,58 @@ const app = express();
 // ── PostgreSQL connection pool ─────────────────────────────────────────────────
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// Ensure the leads table exists on startup
-db.query(`
-  CREATE TABLE IF NOT EXISTS leads (
-    id TEXT PRIMARY KEY,
-    data JSONB NOT NULL,
-    updated_at TIMESTAMP DEFAULT NOW()
-  )
-`).catch(err => console.error("DB table init error:", err));
+// ── Sequential database initialization ─────────────────────────────────────────
+async function initializeDatabase() {
+  // 1. Verify DATABASE_URL is configured
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL environment variable is not configured. Cannot connect to PostgreSQL.");
+  }
 
-// Ensure the knowledge_sources table exists on startup
-db.query(`
-  CREATE TABLE IF NOT EXISTS knowledge_sources (
-    id TEXT PRIMARY KEY,
-    data JSONB NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
-  )
-`).catch(err => console.error("DB knowledge_sources init error:", err));
-
-// Attachment file content (raw text / base64 data URLs) lives in a dedicated
-// lead_attachments table — separate from the lead JSON, which stores only
-// lightweight attachment metadata. This keeps lead list/import payloads small
-// and prevents the browser "Load failed" error on large blobs. The table is
-// created (and inline content migrated) in the IIFE below.
-
-// One-time migration: move any attachment content still embedded inline in
-// lead records into the dedicated table, then strip it from the lead JSON.
-(async () => {
+  // 2. Create the leads table
   try {
-    await db.query(`CREATE TABLE IF NOT EXISTS lead_attachments (
-      id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, uploaded_at TIMESTAMP DEFAULT NOW()
-    )`);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("✓ leads table initialized");
+  } catch (err) {
+    throw new Error(`Failed to create leads table: ${err}`);
+  }
+
+  // 3. Create the knowledge_sources table
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS knowledge_sources (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("✓ knowledge_sources table initialized");
+  } catch (err) {
+    throw new Error(`Failed to create knowledge_sources table: ${err}`);
+  }
+
+  // 4. Create the lead_attachments table
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS lead_attachments (
+        id TEXT PRIMARY KEY,
+        lead_id TEXT NOT NULL,
+        data JSONB NOT NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("✓ lead_attachments table initialized");
+  } catch (err) {
+    throw new Error(`Failed to create lead_attachments table: ${err}`);
+  }
+
+  // 5. Run attachment migration (only after all tables exist)
+  try {
     const { rows } = await db.query(
       "SELECT id, data FROM leads WHERE data ? 'attachments'"
     );
@@ -70,11 +91,17 @@ db.query(`
         ]);
       }
     }
-    if (rows.length > 0) console.log(`Attachment migration processed ${rows.length} lead(s).`);
+    if (rows.length > 0) {
+      console.log(`✓ Attachment migration processed ${rows.length} lead(s)`);
+    } else {
+      console.log(`✓ Attachment migration complete (no attachments to migrate)`);
+    }
   } catch (err) {
-    console.error("Attachment migration error:", err);
+    throw new Error(`Attachment migration error: ${err}`);
   }
-})();
+
+  console.log("✓ Database initialization successful");
+}
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 
@@ -797,4 +824,13 @@ async function startServer() {
   });
 }
 
-startServer();
+// ── Initialize database and start server ────────────────────────────────────────
+(async () => {
+  try {
+    await initializeDatabase();
+    await startServer();
+  } catch (err) {
+    console.error("✗ Failed to start application:", err);
+    process.exit(1);
+  }
+})();
