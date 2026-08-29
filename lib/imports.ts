@@ -10,6 +10,14 @@ export interface ImportDuplicate {
 }
 
 export interface ImportSummary {
+  sourceCount: number;
+  validCount: number;
+  rejectedCount: number;
+  duplicateSourceCount: number;
+  newCount: number;
+  updatedCount: number;
+  failedCount: number;
+  finalDatabaseCount: number;
   valid: any[];
   importable: any[];
   duplicates: ImportDuplicate[];
@@ -91,10 +99,12 @@ export function normalizeImportedLead(raw: any, index: number): any {
 }
 
 export function summarizeImportBatch(rawLeads: any[], existingIds: Set<string>): ImportSummary {
-  const valid: any[] = [];
+  const validById = new Map<string, any>();
   const duplicates: ImportDuplicate[] = [];
   const rejected: ImportRejection[] = [];
-  const seen = new Set<string>();
+
+  let newCount = 0;
+  let updatedCount = 0;
 
   rawLeads.forEach((lead, index) => {
     if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
@@ -121,20 +131,38 @@ export function summarizeImportBatch(rawLeads: any[], existingIds: Set<string>):
       return;
     }
 
-    if (existingIds.has(normalized.id)) {
-      duplicates.push({ id: normalized.id, reason: "already exists in database" });
-      return;
-    }
-    if (seen.has(normalized.id)) {
-      duplicates.push({ id: normalized.id, reason: "duplicate within source file" });
-      return;
+    const existingEntry = validById.get(normalized.id);
+    if (existingEntry) {
+      duplicates.push({ id: normalized.id, reason: "duplicate within source file; latest row wins" });
     }
 
-    seen.add(normalized.id);
-    valid.push(normalized);
+    validById.set(normalized.id, normalized);
   });
 
+  const valid = Array.from(validById.values());
+  valid.forEach((lead) => {
+    if (existingIds.has(lead.id)) {
+      updatedCount += 1;
+    } else {
+      newCount += 1;
+    }
+  });
+
+  const validCount = valid.length;
+  const rejectedCount = rejected.length;
+  const duplicateSourceCount = duplicates.length;
+  const failedCount = rejectedCount + duplicateSourceCount;
+  const finalDatabaseCount = existingIds.size + newCount;
+
   return {
+    sourceCount: rawLeads.length,
+    validCount,
+    rejectedCount,
+    duplicateSourceCount,
+    newCount,
+    updatedCount,
+    failedCount,
+    finalDatabaseCount,
     valid,
     importable: valid,
     duplicates,

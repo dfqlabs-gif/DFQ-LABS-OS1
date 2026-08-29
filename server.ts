@@ -751,54 +751,89 @@ app.post("/api/leads", async (req, res) => {
   if (Array.isArray(body.leads)) {
     const rawLeads = Array.isArray(body.leads) ? body.leads : [];
     const currentIds = new Set((await db.query("SELECT id FROM leads")).rows.map((r: any) => String(r.id)));
-    const valid: any[] = [];
-    const duplicates: string[] = [];
+    const validById = new Map<string, any>();
+    const duplicates: Array<{ id: string; reason: string }> = [];
     const rejected: Array<{ index: number; id?: string; reason: string }> = [];
-    const seen = new Set<string>();
 
     rawLeads.forEach((lead: any, index: number) => {
       if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
         rejected.push({ index, reason: "expected an object" });
         return;
       }
-      const id = String(lead.id || "").trim();
+
+      const idRaw = String(lead.id || "").trim();
       const hasName = typeof lead.name === "string" ? lead.name.trim() : !!lead.name;
       const hasCompany = typeof lead.company === "string" ? lead.company.trim() : !!lead.company;
       if (!hasName || !hasCompany) {
-        rejected.push({ index, id: id || undefined, reason: "missing required name/company" });
+        rejected.push({ index, id: idRaw || undefined, reason: "missing required name/company" });
         return;
       }
-      if (!id) {
+      if (!idRaw) {
         rejected.push({ index, id: undefined, reason: "missing lead.id" });
         return;
       }
-      if (currentIds.has(id) || seen.has(id)) {
-        duplicates.push(id);
-        return;
+
+      const cleaned = stripAttachmentContent(lead);
+      if (validById.has(idRaw)) {
+        duplicates.push({ id: idRaw, reason: "duplicate within source file; latest row wins" });
       }
-      seen.add(id);
-      valid.push(stripAttachmentContent(lead));
+      validById.set(idRaw, cleaned);
     });
 
+    const valid = Array.from(validById.values());
+    const newCount = valid.filter((lead: any) => !currentIds.has(String(lead.id))).length;
+    const updatedCount = valid.length - newCount;
+    const sourceCount = rawLeads.length;
+    const validCount = valid.length;
+    const rejectedCount = rejected.length;
+    const duplicateSourceCount = duplicates.length;
+    const failedCount = rejectedCount + duplicateSourceCount;
+    const finalDatabaseCount = currentIds.size + newCount;
+
     if (valid.length === 0) {
-      return res.json({ ok: true, count: 0, importedIds: [], duplicates, rejected, sourceCount: rawLeads.length, validCount: 0, duplicateCount: duplicates.length, rejectedCount: rejected.length });
+      return res.json({
+        ok: true,
+        count: 0,
+        importedIds: [],
+        duplicates,
+        rejected,
+        sourceCount,
+        validCount: 0,
+        rejectedCount,
+        duplicateSourceCount,
+        duplicateCount: duplicateSourceCount,
+        newCount: 0,
+        updatedCount: 0,
+        failedCount,
+        finalDatabaseCount: currentIds.size,
+      });
     }
 
     try {
       const values = valid.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
-      const params = valid.flatMap((l: any) => [l.id, JSON.stringify(l)]);
-      const query = body.import
-        ? `INSERT INTO leads (id, data, updated_at) VALUES ${values}
-          ON CONFLICT (id) DO NOTHING RETURNING id`
-        : `INSERT INTO leads (id, data, updated_at) VALUES ${values}
-          ON CONFLICT (id) DO UPDATE SET
-          data = jsonb_set(EXCLUDED.data, '{attachments}', COALESCE(leads.data->'attachments', '[]'::jsonb)),
-          updated_at = NOW() RETURNING id`;
+      const params = valid.flatMap((l: any) => [String(l.id), JSON.stringify(l)]);
+      const query = `INSERT INTO leads (id, data, updated_at) VALUES ${values}
+        ON CONFLICT (id) DO UPDATE SET
+        data = EXCLUDED.data,
+        updated_at = NOW() RETURNING id`;
       const result = await db.query(query, params);
       const importedIds = result.rows.map((row: any) => row.id);
-      const importedIdSet = new Set(importedIds);
-      const duplicatesFromDb = valid.filter((lead: any) => !importedIdSet.has(lead.id)).map((lead: any) => lead.id);
-      return res.json({ ok: true, count: importedIds.length, importedIds, duplicates: duplicatesFromDb.length ? duplicatesFromDb : duplicates, rejected, sourceCount: rawLeads.length, validCount: valid.length, duplicateCount: duplicates.length + duplicatesFromDb.length, rejectedCount: rejected.length });
+      return res.json({
+        ok: true,
+        count: importedIds.length,
+        importedIds,
+        duplicates,
+        rejected,
+        sourceCount,
+        validCount,
+        rejectedCount,
+        duplicateSourceCount,
+        duplicateCount: duplicateSourceCount,
+        newCount,
+        updatedCount,
+        failedCount,
+        finalDatabaseCount,
+      });
     } catch (err: any) {
       console.error("POST /api/leads bulk:", err);
       return res.status(500).json({ error: "Failed to bulk-import leads." });

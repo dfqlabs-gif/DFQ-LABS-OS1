@@ -48,17 +48,26 @@ export default async function handler(req: any, res: any) {
 
     // Bulk upsert
     if (Array.isArray(body.leads)) {
-      const leads = body.leads.filter((l: any) => l?.id);
-      if (leads.length === 0) return res.status(200).json({ ok: true, count: 0 });
+      const deduped = new Map<string, any>();
+      const duplicates: Array<{ id: string; reason: string }> = [];
+      for (const lead of body.leads) {
+        if (!lead || typeof lead !== "object" || Array.isArray(lead) || !lead.id) continue;
+        const id = String(lead.id).trim();
+        if (!id) continue;
+        if (deduped.has(id)) duplicates.push({ id, reason: "duplicate within source file; latest row wins" });
+        deduped.set(id, stripAttachmentContent(lead));
+      }
+      const leads = Array.from(deduped.values());
+      if (leads.length === 0) return res.status(200).json({ ok: true, count: 0, duplicates, rejected: [] });
       try {
         const values = leads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb)`).join(", ");
-        const params = leads.flatMap((l: any) => [l.id, JSON.stringify(l)]);
+        const params = leads.flatMap((l: any) => [String(l.id), JSON.stringify(l)]);
         await db.query(
           `INSERT INTO leads (id, data, updated_at) VALUES ${values}
            ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
           params
         );
-        return res.status(200).json({ ok: true, count: leads.length });
+        return res.status(200).json({ ok: true, count: leads.length, duplicates, rejected: [] });
       } catch (err: any) {
         console.error("POST /api/leads bulk error:", err);
         return res.status(500).json({ error: "Failed to bulk-import leads." });
