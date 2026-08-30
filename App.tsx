@@ -35,7 +35,7 @@ import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { AIQAPanel } from "./components/AIQAPanel";
 import { stripAttachmentContent } from "./lib/attachments";
-import { normalizeImportedLead, summarizeImportBatch } from "./lib/imports";
+import { normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -848,6 +848,7 @@ export default function App() {
   const [classifying, setClassifying] = useState<Set<string>>(new Set());
   const importRef = useRef<HTMLInputElement>(null);
   const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
   const [role, setRole] = useState<string | null>(null);
   const [authed, setAuthed] = useState(false);
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
@@ -1066,9 +1067,12 @@ export default function App() {
     const fileReader = new FileReader();
     fileReader.onload = async event => {
       let parsed: any;
+      setIsImporting(true);
+      setImportMsg("Validating snapshot…");
       try {
         parsed = JSON.parse(event.target?.result as string);
       } catch (err: any) {
+        setIsImporting(false);
         setImportMsg(`✗ Could not parse ${file.name}: ${err?.message || "invalid JSON format"}.`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
@@ -1079,54 +1083,78 @@ export default function App() {
       else if (parsed && Array.isArray(parsed.leads)) leadsArr = parsed.leads;
       else if (parsed && typeof parsed === "object") leadsArr = [parsed];
       else {
+        setIsImporting(false);
         setImportMsg("✗ Invalid file format: expected a lead object, array, or { leads: [...] }.");
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
 
-      const currentIds = await fetch("/api/leads")
-        .then(async (r) => {
-          if (!r.ok) return [] as string[];
-          const data = await r.json();
-          return (data.leads || []).map((l: any) => String(l.id));
-        })
-        .catch(() => [] as string[]);
-      const summary = summarizeImportBatch(leadsArr, new Set(currentIds));
+      const summary = summarizeSnapshotImport(leadsArr);
       const deduped = summary.valid.map((lead: any) => normalizeImportedLead(lead, 0));
 
-      if (deduped.length === 0) {
+      if (!summary.canReplace || deduped.length === 0) {
+        setIsImporting(false);
         const reasons = summary.rejected.map((item: any) => item.reason || "unknown rejection").join("; ");
-        setImportMsg(`✗ No leads imported. ${reasons || "The file contains no valid leads."}`);
+        setImportMsg(`✗ No valid leads available for snapshot replacement. ${reasons || "The file contains no valid leads."}`);
         setTimeout(() => setImportMsg(null), 8000);
+        return;
+      }
+
+      const currentCount = leads.length || (await loadLeadsFromServer().catch(() => [])).length;
+      const shouldReplace = window.confirm(
+        `Replace the entire CRM with ${deduped.length} validated lead${deduped.length !== 1 ? "s" : ""}? This will delete ${currentCount} existing lead${currentCount === 1 ? "" : "s"} in the database.`
+      );
+
+      if (!shouldReplace) {
+        setIsImporting(false);
+        setImportMsg("Import canceled.");
+        setTimeout(() => setImportMsg(null), 3000);
         return;
       }
 
       let res: Response;
       let responseBody: any = null;
       try {
+        setImportMsg("Replacing lead database…");
         res = await fetch("/api/leads", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ leads: deduped.map((l: any) => stripAttachmentContent(l)), import: true })
+          body: JSON.stringify({
+            leads: deduped.map((l: any) => stripAttachmentContent(l)),
+            snapshot: true,
+            replace: true,
+          })
         });
         const responseText = await res.text();
         try { responseBody = responseText ? JSON.parse(responseText) : null; } catch { responseBody = null; }
       } catch (err: any) {
+        setIsImporting(false);
         setImportMsg(`✗ Could not reach the lead API: ${err?.message || "network request failed"}.`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
 
       if (!res.ok) {
+        setIsImporting(false);
         const detail = responseBody?.error || `HTTP ${res.status} ${res.statusText}`;
-        setImportMsg(`✗ Lead import failed: ${detail}`);
+        setImportMsg(`✗ Snapshot replacement failed: ${detail}`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
 
-      const duplicates = responseBody?.duplicates || summary.duplicates.map((d: any) => d.id);
-      const rejectedRecords = responseBody?.rejected || summary.rejected;
-      const imported = responseBody?.count ?? deduped.length;
+      const finalSummary = {
+        imported: responseBody?.count ?? deduped.length,
+        newCount: responseBody?.newCount ?? summary.newCount,
+        updatedCount: responseBody?.updatedCount ?? summary.updatedCount,
+        rejected: responseBody?.rejected || summary.rejected,
+        duplicates: responseBody?.duplicates || summary.duplicates.map((d: any) => d.id),
+        sourceCount: responseBody?.sourceCount ?? summary.sourceCount,
+        validCount: responseBody?.validCount ?? summary.validCount,
+        rejectedCount: responseBody?.rejectedCount ?? summary.rejectedCount,
+        duplicateSourceCount: responseBody?.duplicateSourceCount ?? summary.duplicateSourceCount,
+        failedCount: responseBody?.failedCount ?? summary.failedCount,
+        finalDatabaseCount: responseBody?.finalDatabaseCount ?? summary.finalDatabaseCount,
+      };
 
       const refreshed = await loadLeadsFromServer();
       setLeads(refreshed);
@@ -1135,13 +1163,20 @@ export default function App() {
         localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
       }
 
-      const failureCount = (rejectedRecords?.length || 0) + (duplicates?.length || 0);
-      const failureMessage = failureCount > 0 ? ` ${failureCount} skipped: ${[...rejectedRecords.map((r: any) => r.reason || `record ${r.index || r.id || "unknown"}`), ...duplicates.map((id: string) => `duplicate id ${id}`)].join("; ")}` : "";
-      setImportMsg(`✓ ${imported} lead${imported !== 1 ? "s" : ""} imported successfully.${failureMessage}`);
+      const failureSummary = [
+        finalSummary.rejectedCount > 0 ? `${finalSummary.rejectedCount} rejected` : null,
+        finalSummary.duplicateSourceCount > 0 ? `${finalSummary.duplicateSourceCount} duplicate source rows` : null,
+        finalSummary.updatedCount > 0 ? `${finalSummary.updatedCount} updated` : null,
+        finalSummary.newCount > 0 ? `${finalSummary.newCount} new` : null,
+      ].filter(Boolean).join(" · ");
+
+      setImportMsg(`✓ Snapshot replaced ${finalSummary.imported} lead${finalSummary.imported !== 1 ? "s" : ""} (${finalSummary.newCount} imported${finalSummary.failedCount ? `, ${finalSummary.failedCount} failed` : ""})${failureSummary ? ` · ${failureSummary}` : ""}`);
+      setIsImporting(false);
       setTimeout(() => setImportMsg(null), 8000);
     };
     fileReader.onerror = () => {
       setImportMsg(`✗ Could not read ${file.name}. Try again.`);
+      setIsImporting(false);
       setTimeout(() => setImportMsg(null), 8000);
     };
     fileReader.readAsText(file, "UTF-8");
@@ -1557,6 +1592,7 @@ export default function App() {
             <button onClick={() => importRef.current?.click()} style={{ background: "transparent", color: MUTED, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Upload size={12} /></button>
             <button onClick={exportData} style={{ background: "transparent", color: G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Download size={12} /></button>
             {importMsg && <div style={{ fontSize: 12, fontWeight: 700, color: importMsg.startsWith("✓") ? "#22C55E" : "#EF4444", background: importMsg.startsWith("✓") ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", border: `1px solid ${importMsg.startsWith("✓") ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`, borderRadius: 6, padding: "8px 12px", marginTop: 4, width: "100%", textAlign: "center" }}>{importMsg}</div>}
+            {isImporting && <span style={{ color: G, fontSize: 10, fontWeight: 700 }}>SYNCING…</span>}
             <span style={{ color: MUTED, fontSize: 10 }}>{saving ? <span style={{ color: G }}>SAVING…</span> : `${leads.length} leads`}</span>
             <button onClick={() => setModal({
               id: Date.now().toString(), name: "", company: "", phone: "", source: "WhatsApp", clientType: "Real Estate Developer", service: "Growth — ₦500K/mo", status: "New", priority: "Medium", assignedTo: "Unassigned", notes: "", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: today(), lastContacted: "", lastMeaningfulTouchpoint: today(), awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: getWeekKey(new Date()), completedFollowUps: [], deliveryStage: "Discovery", deliveryNote: "", betaCandidate: false, autoFollowUpDate: today(), autoFollowUpReason: "New lead."

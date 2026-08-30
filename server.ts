@@ -6,6 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
 import { runSalesPipeline } from "./aiEngine";
 import { stripAttachmentContent } from "./lib/attachments";
+import { summarizeSnapshotImport } from "./lib/imports";
 
 dotenv.config();
 
@@ -744,12 +745,74 @@ app.get("/api/leads", async (_req, res) => {
   }
 });
 
-// POST handles both single { lead } and bulk { leads }
+// POST handles single { lead }, bulk { leads }, and authoritative snapshot replacement
 app.post("/api/leads", async (req, res) => {
   const body = req.body || {};
 
   if (Array.isArray(body.leads)) {
     const rawLeads = Array.isArray(body.leads) ? body.leads : [];
+    const isSnapshot = body.snapshot === true || body.replace === true || body.mode === "snapshot";
+
+    if (isSnapshot) {
+      const summary = summarizeSnapshotImport(rawLeads);
+      const valid = summary.valid.map((lead: any) => stripAttachmentContent(lead));
+
+      if (!summary.canReplace || valid.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          error: "Snapshot replacement requires at least one valid lead.",
+          sourceCount: summary.sourceCount,
+          validCount: summary.validCount,
+          rejectedCount: summary.rejectedCount,
+          duplicateSourceCount: summary.duplicateSourceCount,
+          duplicates: summary.duplicates,
+          rejected: summary.rejected,
+          finalDatabaseCount: 0,
+        });
+      }
+
+      try {
+        await db.query("BEGIN");
+        await db.query("DELETE FROM leads");
+
+        if (valid.length > 0) {
+          const values = valid.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
+          const params = valid.flatMap((lead: any) => [String(lead.id), JSON.stringify(lead)]);
+          await db.query(`INSERT INTO leads (id, data, updated_at) VALUES ${values}`, params);
+        }
+
+        const incomingIds = valid.map((lead: any) => String(lead.id));
+        if (incomingIds.length > 0) {
+          await db.query("DELETE FROM lead_attachments WHERE lead_id != ALL($1::text[])", [incomingIds]);
+        } else {
+          await db.query("DELETE FROM lead_attachments");
+        }
+
+        await db.query("COMMIT");
+
+        return res.json({
+          ok: true,
+          count: valid.length,
+          importedIds: incomingIds,
+          duplicates: summary.duplicates,
+          rejected: summary.rejected,
+          sourceCount: summary.sourceCount,
+          validCount: summary.validCount,
+          rejectedCount: summary.rejectedCount,
+          duplicateSourceCount: summary.duplicateSourceCount,
+          duplicateCount: summary.duplicateSourceCount,
+          newCount: summary.newCount,
+          updatedCount: summary.updatedCount,
+          failedCount: summary.failedCount,
+          finalDatabaseCount: summary.finalDatabaseCount,
+        });
+      } catch (err: any) {
+        await db.query("ROLLBACK").catch(() => {});
+        console.error("POST /api/leads snapshot replace:", err);
+        return res.status(500).json({ error: "Snapshot replacement failed and was rolled back." });
+      }
+    }
+
     const currentIds = new Set((await db.query("SELECT id FROM leads")).rows.map((r: any) => String(r.id)));
     const validById = new Map<string, any>();
     const duplicates: Array<{ id: string; reason: string }> = [];

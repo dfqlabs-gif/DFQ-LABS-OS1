@@ -24,6 +24,11 @@ export interface ImportSummary {
   rejected: ImportRejection[];
 }
 
+export interface SnapshotImportSummary extends ImportSummary {
+  replaceMode: boolean;
+  canReplace: boolean;
+}
+
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
@@ -167,5 +172,67 @@ export function summarizeImportBatch(rawLeads: any[], existingIds: Set<string>):
     importable: valid,
     duplicates,
     rejected,
+  };
+}
+
+export function summarizeSnapshotImport(rawLeads: any[]): SnapshotImportSummary {
+  const validById = new Map<string, any>();
+  const duplicates: ImportDuplicate[] = [];
+  const rejected: ImportRejection[] = [];
+
+  rawLeads.forEach((lead, index) => {
+    if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
+      rejected.push({ index, reason: "expected an object" });
+      return;
+    }
+
+    const idSeed = [lead.id, lead.name, lead.company, lead.phone, lead.email, lead.instagram, lead.whatsapp]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join("|");
+    const normalizedId = normalizeText(lead.id) || (idSeed ? `imp-${sdbHash(idSeed)}` : undefined);
+    const id = normalizedId || `imp-${Date.now()}-${index}`;
+
+    if (!normalizeText(lead.name) || !normalizeText(lead.company)) {
+      rejected.push({ index, id, reason: "missing required name/company" });
+      return;
+    }
+
+    let normalized: any;
+    try {
+      normalized = normalizeImportedLead(lead, index);
+    } catch (error: any) {
+      rejected.push({ index, id, reason: error?.message || "invalid record" });
+      return;
+    }
+
+    if (validById.has(normalized.id)) {
+      duplicates.push({ id: normalized.id, reason: "duplicate within source file; latest row wins" });
+    }
+    validById.set(normalized.id, normalized);
+  });
+
+  const valid = Array.from(validById.values());
+  const validCount = valid.length;
+  const rejectedCount = rejected.length;
+  const duplicateSourceCount = duplicates.length;
+  const failedCount = rejectedCount + duplicateSourceCount;
+  const finalDatabaseCount = validCount;
+  const canReplace = validCount > 0;
+
+  return {
+    sourceCount: rawLeads.length,
+    validCount,
+    rejectedCount,
+    duplicateSourceCount,
+    newCount: validCount,
+    updatedCount: 0,
+    failedCount,
+    finalDatabaseCount,
+    valid,
+    importable: valid,
+    duplicates,
+    rejected,
+    replaceMode: true,
+    canReplace,
   };
 }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeImportedLead, summarizeImportBatch } from "./imports.js";
+import { normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./imports.js";
 import { buildSalesIntelligenceContext, validateValueDM } from "../aiEngine";
 
 test("normalizeImportedLead fills safe defaults and preserves valid field data", () => {
@@ -21,29 +21,50 @@ test("normalizeImportedLead fills safe defaults and preserves valid field data",
   assert.equal(lead.priority, "Medium");
 });
 
-test("summarizeImportBatch counts invalid duplicates and valid imports distinctly", () => {
-  const summary = summarizeImportBatch([
+test("summarizeSnapshotImport replaces the authoritative dataset and rejects empty snapshots", () => {
+  const summary = summarizeSnapshotImport([
     { id: "dup-1", name: "A", company: "Co", source: "Imported", assignedTo: "Sa'adatu Mohammed", status: "New" },
     { id: "dup-1", name: "A", company: "Co", source: "Imported", assignedTo: "Sa'adatu Mohammed", status: "New" },
     { id: "dup-2", name: "", company: "Co", source: "Imported", assignedTo: "Sa'adatu Mohammed", status: "New" },
     { id: "dup-3", name: "B", company: "Co", source: "Imported", assignedTo: "Sa'adatu Mohammed", status: "New" },
-  ], new Set(["dup-3"]));
+  ]);
 
   assert.equal(summary.sourceCount, 4);
   assert.equal(summary.validCount, 2);
   assert.equal(summary.rejectedCount, 1);
   assert.equal(summary.duplicateSourceCount, 1);
-  assert.equal(summary.newCount, 1);
-  assert.equal(summary.updatedCount, 1);
+  assert.equal(summary.newCount, 2);
+  assert.equal(summary.updatedCount, 0);
   assert.equal(summary.failedCount, 2);
   assert.equal(summary.finalDatabaseCount, 2);
   assert.equal(summary.valid.length, 2);
   assert.equal(summary.rejected.length, 1);
   assert.equal(summary.duplicates.length, 1);
   assert.equal(summary.importable.length, 2);
+  assert.equal(summary.replaceMode, true);
+
+  const empty = summarizeSnapshotImport([]);
+  assert.equal(empty.validCount, 0);
+  assert.equal(empty.rejectedCount, 0);
+  assert.equal(empty.canReplace, false);
 });
 
-test("summarizeImportBatch treats existing IDs as updates and tracks exact CRM sync counts", () => {
+test("summarizeSnapshotImport keeps the latest row for duplicates within a file and counts replacement size correctly", () => {
+  const summary = summarizeSnapshotImport([
+    { id: "lead-9", name: "Ada", company: "Ada Realty", status: "New" },
+    { id: "lead-9", name: "Ada", company: "Ada Realty", status: "DM Sent" },
+  ]);
+
+  assert.equal(summary.validCount, 1);
+  assert.equal(summary.duplicateSourceCount, 1);
+  assert.equal(summary.updatedCount, 0);
+  assert.equal(summary.newCount, 1);
+  assert.equal(summary.valid[0].status, "DM Sent");
+  assert.equal(summary.duplicates[0].id, "lead-9");
+  assert.equal(summary.finalDatabaseCount, 1);
+});
+
+test("summarizeImportBatch preserves the legacy incremental sync behavior for non-snapshot import paths", () => {
   const summary = summarizeImportBatch([
     { id: "lead-1", name: "A", company: "Co One", status: "New" },
     { id: "lead-1", name: "A", company: "Co One Updated", status: "DM Sent" },
@@ -63,20 +84,6 @@ test("summarizeImportBatch treats existing IDs as updates and tracks exact CRM s
   assert.equal(summary.importable.length, 2);
   assert.equal(summary.duplicates.length, 2);
   assert.equal(summary.rejected.length, 1);
-});
-
-test("summarizeImportBatch keeps the latest row for duplicates within a file", () => {
-  const summary = summarizeImportBatch([
-    { id: "lead-9", name: "Ada", company: "Ada Realty", status: "New" },
-    { id: "lead-9", name: "Ada", company: "Ada Realty", status: "DM Sent" },
-  ], new Set(["lead-9"]));
-
-  assert.equal(summary.validCount, 1);
-  assert.equal(summary.duplicateSourceCount, 1);
-  assert.equal(summary.updatedCount, 1);
-  assert.equal(summary.newCount, 0);
-  assert.equal(summary.valid[0].status, "DM Sent");
-  assert.equal(summary.duplicates[0].id, "lead-9");
 });
 
 test("validateValueDM rejects sales-style call to action and asks", () => {

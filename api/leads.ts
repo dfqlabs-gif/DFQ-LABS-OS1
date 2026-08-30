@@ -2,6 +2,7 @@
 // Handles GET (list), POST (upsert single / bulk), DELETE (by id)
 import { Pool } from "pg";
 import { stripAttachmentContent } from "../lib/attachments";
+import { summarizeSnapshotImport } from "../lib/imports";
 
 let pool: Pool | null = null;
 
@@ -42,12 +43,72 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // ── POST — upsert single { lead } or bulk { leads } ─────────────────────
+  // ── POST — single upsert, bulk upsert, or authoritative snapshot replace ──
   if (req.method === "POST") {
     const body = req.body || {};
 
-    // Bulk upsert
     if (Array.isArray(body.leads)) {
+      const isSnapshot = body.snapshot === true || body.replace === true || body.mode === "snapshot";
+
+      if (isSnapshot) {
+        const summary = summarizeSnapshotImport(body.leads);
+        const valid = summary.valid.map((lead: any) => stripAttachmentContent(lead));
+
+        if (!summary.canReplace || valid.length === 0) {
+          return res.status(400).json({
+            ok: false,
+            error: "Snapshot replacement requires at least one valid lead.",
+            sourceCount: summary.sourceCount,
+            validCount: summary.validCount,
+            rejectedCount: summary.rejectedCount,
+            duplicateSourceCount: summary.duplicateSourceCount,
+            duplicates: summary.duplicates,
+            rejected: summary.rejected,
+          });
+        }
+
+        try {
+          await db.query("BEGIN");
+          await db.query("DELETE FROM leads");
+
+          if (valid.length > 0) {
+            const values = valid.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
+            const params = valid.flatMap((lead: any) => [String(lead.id), JSON.stringify(lead)]);
+            await db.query(`INSERT INTO leads (id, data, updated_at) VALUES ${values}`, params);
+          }
+
+          const incomingIds = valid.map((lead: any) => String(lead.id));
+          if (incomingIds.length > 0) {
+            await db.query("DELETE FROM lead_attachments WHERE lead_id != ALL($1::text[])", [incomingIds]);
+          } else {
+            await db.query("DELETE FROM lead_attachments");
+          }
+
+          await db.query("COMMIT");
+          return res.status(200).json({
+            ok: true,
+            count: valid.length,
+            importedIds: incomingIds,
+            duplicates: summary.duplicates,
+            rejected: summary.rejected,
+            sourceCount: summary.sourceCount,
+            validCount: summary.validCount,
+            rejectedCount: summary.rejectedCount,
+            duplicateSourceCount: summary.duplicateSourceCount,
+            duplicateCount: summary.duplicateSourceCount,
+            newCount: summary.newCount,
+            updatedCount: summary.updatedCount,
+            failedCount: summary.failedCount,
+            finalDatabaseCount: summary.finalDatabaseCount,
+          });
+        } catch (err: any) {
+          await db.query("ROLLBACK").catch(() => {});
+          console.error("POST /api/leads snapshot replace error:", err);
+          return res.status(500).json({ error: "Snapshot replacement failed and was rolled back." });
+        }
+      }
+
+      // Bulk upsert (legacy fallback)
       const deduped = new Map<string, any>();
       const duplicates: Array<{ id: string; reason: string }> = [];
       for (const lead of body.leads) {
