@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { normalizeImportedLead, summarizeImportBatch } from "./imports.js";
+import { buildSalesIntelligenceContext, validateValueDM } from "../aiEngine";
 
 test("normalizeImportedLead fills safe defaults and preserves valid field data", () => {
   const lead = normalizeImportedLead({
@@ -76,4 +77,41 @@ test("summarizeImportBatch keeps the latest row for duplicates within a file", (
   assert.equal(summary.newCount, 0);
   assert.equal(summary.valid[0].status, "DM Sent");
   assert.equal(summary.duplicates[0].id, "lead-9");
+});
+
+test("validateValueDM rejects sales-style call to action and asks", () => {
+  const result = validateValueDM("I noticed your page and would love to chat about a quick call to see if we can help with your marketing.");
+  assert.equal(result.pass, false);
+  assert.match(result.reason, /call-to-action|sales ask/i);
+});
+
+test("validateValueDM accepts a value-first message without CTA", () => {
+  const result = validateValueDM("Your listing pages are likely pushing buyers into a comparison trap. A stronger section would explain why this property fits a specific buyer profile and what trade-offs are acceptable, so the decision feels clearer and less risky.");
+  assert.equal(result.pass, true);
+});
+
+test("buildSalesIntelligenceContext labels unknown findings and fact safety rules", () => {
+  const context = buildSalesIntelligenceContext({
+    id: "lead-x",
+    name: "Jane", company: "Vale Realty",
+    status: "New",
+    service: "Lead Generation",
+    clientType: "Real Estate Developer",
+    notes: "No notes",
+    attachments: [],
+    conversationLog: [],
+    completedFollowUps: [],
+    auditLog: [],
+    outboundMessages: [],
+    dmText: "",
+    prospectInitialResponse: "",
+    prospectLatestResponse: "",
+  } as any, [
+    { status: "VERIFIED", label: "Instagram activity", detail: "Property walkthrough reels are active." },
+    { status: "UNKNOWN", label: "Conversion rate", detail: "Cannot verify from public data." },
+  ]);
+
+  assert.match(context, /VERIFIED: Instagram activity/i);
+  assert.match(context, /UNKNOWN: Conversion rate/i);
+  assert.match(context, /Use VERIFIED facts as the primary basis/i);
 });

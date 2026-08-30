@@ -131,6 +131,54 @@ export function formatConversationLog(lead: Lead): string {
   return parts.join("\n");
 }
 
+export interface ResearchFinding {
+  status: "VERIFIED" | "INFERRED" | "UNKNOWN";
+  label: string;
+  detail: string;
+  source?: string;
+  confidence?: "high" | "medium" | "low";
+}
+
+export function buildSalesIntelligenceContext(lead: Lead, research: ResearchFinding[] = []): string {
+  const value = SERVICE_VALUE[lead.service] || 0;
+  const score = scoreLead(lead);
+  const daysSinceContact = lead.lastContacted ? daysSince(lead.lastContacted) : null;
+  const hoursAwaitingReply = lead.awaitingReplySince ? hoursSince(lead.awaitingReplySince) : null;
+
+  const verified = research.filter(r => r.status === "VERIFIED");
+  const inferred = research.filter(r => r.status === "INFERRED");
+  const unknown = research.filter(r => r.status === "UNKNOWN");
+
+  const researchBlock = research.length > 0
+    ? `=== PUBLIC RESEARCH STATUS ===
+${verified.map(r => `VERIFIED: ${r.label} — ${r.detail}${r.source ? ` (${r.source})` : ""}`).join("\n") || "None"}
+${inferred.length ? `\nINFERRED: ${inferred.map(r => `${r.label} — ${r.detail}`).join("; ")}` : ""}
+${unknown.length ? `\nUNKNOWN: ${unknown.map(r => `${r.label} — ${r.detail}`).join("; ")}` : ""}
+=== END RESEARCH ===`
+    : "=== PUBLIC RESEARCH STATUS ===\nNo public research was verified in this session. The system is using CRM, conversation, and DFQ Labs knowledge only.\n=== END RESEARCH ===";
+
+  return `=== SALES INTELLIGENCE CONTEXT ===
+Lead: ${lead.name || "Unknown"} — ${lead.company || "Unknown company"}
+Client archetype: ${lead.clientType || "Real Estate Developer"}
+Service under discussion: ${lead.service} (value ${value ? "₦" + value.toLocaleString() : "unknown"}/mo)
+Assigned specialist: ${lead.assignedTo || "Unassigned"}
+CRM quality score: ${score}
+Days since we last contacted them: ${daysSinceContact ?? "n/a"}
+Hours currently awaiting their reply: ${hoursAwaitingReply !== null && !Number.isNaN(hoursAwaitingReply) ? Math.round(hoursAwaitingReply) : "n/a"}
+Current pipeline stage: ${lead.status || "New"}
+Current objective: ${stageObjective(lead.status || "New")}
+Internal notes: ${lead.notes || "none"}
+
+${researchBlock}
+
+=== FACT SAFETY ===
+Use VERIFIED facts as the primary basis for any recommendation.
+Use INFERRED observations only as clearly labeled hypotheses.
+Treat UNKNOWN items as unverified and do not present them as fact.
+=== END FACT SAFETY ===
+=== END SALES INTELLIGENCE CONTEXT ===`;
+}
+
 export function buildLeadContext(lead: Lead): string {
   const value = SERVICE_VALUE[lead.service] || 0;
   const score = scoreLead(lead);
@@ -160,7 +208,11 @@ export function buildLeadContext(lead: Lead): string {
       : "",
   ].filter(Boolean).join("\n\n");
 
-  return `=== CRM CONTEXT ===
+  const intelligenceContext = buildSalesIntelligenceContext(lead);
+
+  return `${intelligenceContext}
+
+=== CRM CONTEXT ===
 Lead: ${lead.name || "Unknown"} — ${lead.company || "Unknown company"}
 Client archetype: ${lead.clientType || "Real Estate Developer"}
 Service under discussion: ${lead.service} (value ${value ? "₦" + value.toLocaleString() : "unknown"}/mo)
@@ -354,6 +406,49 @@ ${styleInstructions}`;
 // pipeline regenerates exactly once with the failure reason as a fix instruction.
 export interface QualityResult { pass: boolean; reason: string; }
 
+export function validateValueDM(message: string): { pass: boolean; reason: string } {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return { pass: false, reason: "empty value DM" };
+
+  const noCtaPatterns = [
+    /would you like/i,
+    /let me know if/i,
+    /could we/i,
+    /book a call/i,
+    /schedule a call/i,
+    /reply if/i,
+    /send me a message/i,
+    /drop me a message/i,
+    /visit .*website/i,
+    /check out .*website/i,
+    /i can help you/i,
+    /would love to/i,
+    /interested in/i,
+    /let's talk/i,
+    /happy to chat/i,
+  ];
+
+  const hit = noCtaPatterns.find(pattern => pattern.test(text));
+  if (hit) {
+    return { pass: false, reason: "value DM contains a call-to-action or sales ask" };
+  }
+
+  const salesyPatterns = [
+    /we help .*real estate/i,
+    /our service/i,
+    /we specialize in/i,
+    /we can help you grow/i,
+    /book a free consult/i,
+    /let's discuss/i,
+  ];
+
+  if (salesyPatterns.some(pattern => pattern.test(text))) {
+    return { pass: false, reason: "value DM reads like a sales pitch" };
+  }
+
+  return { pass: true, reason: "" };
+}
+
 async function runQualityChecker(message: string, strategy: Strategy): Promise<QualityResult> {
   const prompt = `You are a strict sales quality checker. Answer with EXACTLY one line: "PASS" or "FAIL: <one short reason>".
 
@@ -376,6 +471,14 @@ ${message}
   // Strategy Generator — 200 leaves enough headroom for a one-line verdict.
   const verdict = await runAI(prompt, 200);
   const fail = /^FAIL/i.test(verdict.trim());
+
+  if (!fail && /value/i.test((strategy.nextObjective || "").toLowerCase()) || /value/i.test((strategy.currentStage || "").toLowerCase())) {
+    const valueCheck = validateValueDM(message);
+    if (!valueCheck.pass) {
+      return { pass: false, reason: valueCheck.reason };
+    }
+  }
+
   return { pass: !fail, reason: fail ? verdict.replace(/^FAIL:?\s*/i, "").trim() : "" };
 }
 
