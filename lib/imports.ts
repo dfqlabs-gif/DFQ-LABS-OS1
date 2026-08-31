@@ -29,6 +29,33 @@ export interface SnapshotImportSummary extends ImportSummary {
   canReplace: boolean;
 }
 
+export type ImportStage =
+  | "idle"
+  | "reading"
+  | "validating"
+  | "deduplicating"
+  | "preparing"
+  | "importing"
+  | "verifying"
+  | "success"
+  | "error";
+
+export const IMPORT_STAGE_META: Record<ImportStage, { title: string; progress: number; summary: string }> = {
+  idle: { title: "Idle", progress: 0, summary: "Waiting for a snapshot." },
+  reading: { title: "Reading snapshot", progress: 10, summary: "Loading the uploaded JSON and preparing to validate it." },
+  validating: { title: "Validating records", progress: 25, summary: "Checking each record for required fields and valid structure." },
+  deduplicating: { title: "Resolving duplicates", progress: 40, summary: "Keeping the latest valid row for each duplicate lead." },
+  preparing: { title: "Preparing import", progress: 55, summary: "Preparing the final replacement batch for the database." },
+  importing: { title: "Replacing database snapshot", progress: 75, summary: "Safely replacing the lead snapshot in the database." },
+  verifying: { title: "Verifying import", progress: 90, summary: "Confirming the final lead count and imported state." },
+  success: { title: "Import complete", progress: 100, summary: "The lead snapshot has been replaced successfully." },
+  error: { title: "Import failed", progress: 75, summary: "The snapshot could not be imported safely." },
+};
+
+export function getImportStageMeta(stage: ImportStage) {
+  return IMPORT_STAGE_META[stage] ?? IMPORT_STAGE_META.idle;
+}
+
 export function describeDbError(error: any): Record<string, string | undefined> {
   if (!error || typeof error !== "object") return { message: "Unknown database error." };
 

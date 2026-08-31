@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeImportedLead, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./imports.js";
+import { getImportStageMeta, normalizeImportedLead, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./imports.js";
 import { buildSalesIntelligenceContext, validateValueDM } from "../aiEngine";
 
 test("normalizeImportedLead fills safe defaults and preserves valid field data", () => {
@@ -54,6 +54,18 @@ test("runSnapshotReplaceTransaction uses one DB client for the whole snapshot tr
     "COMMIT",
     "release",
   ]);
+});
+
+test("import stage metadata follows the expected glacier-blue progress sequence", () => {
+  assert.equal(getImportStageMeta("reading").progress, 10);
+  assert.equal(getImportStageMeta("validating").progress, 25);
+  assert.equal(getImportStageMeta("deduplicating").progress, 40);
+  assert.equal(getImportStageMeta("preparing").progress, 55);
+  assert.equal(getImportStageMeta("importing").progress, 75);
+  assert.equal(getImportStageMeta("verifying").progress, 90);
+  assert.equal(getImportStageMeta("success").progress, 100);
+  assert.equal(getImportStageMeta("error").title, "Import failed");
+  assert.equal(getImportStageMeta("idle").progress, 0);
 });
 
 test("summarizeSnapshotImport replaces the authoritative dataset and rejects empty snapshots", () => {

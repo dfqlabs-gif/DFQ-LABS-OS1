@@ -35,7 +35,7 @@ import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { AIQAPanel } from "./components/AIQAPanel";
 import { stripAttachmentContent } from "./lib/attachments";
-import { normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
+import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -849,6 +849,9 @@ export default function App() {
   const importRef = useRef<HTMLInputElement>(null);
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [importStage, setImportStage] = useState<"idle" | "reading" | "validating" | "deduplicating" | "preparing" | "importing" | "verifying" | "success" | "error">("idle");
+  const [importCounts, setImportCounts] = useState<{ raw?: number; duplicates?: number; valid?: number; final?: number; imported?: number }>({});
+  const [importError, setImportError] = useState<string | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [authed, setAuthed] = useState(false);
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
@@ -1063,16 +1066,23 @@ export default function App() {
 
   const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || isImporting) return;
+
     const fileReader = new FileReader();
     fileReader.onload = async event => {
       let parsed: any;
       setIsImporting(true);
-      setImportMsg("Validating snapshot…");
+      setImportStage("reading");
+      setImportError(null);
+      setImportCounts({});
+      setImportMsg(null);
+
       try {
         parsed = JSON.parse(event.target?.result as string);
       } catch (err: any) {
         setIsImporting(false);
+        setImportStage("error");
+        setImportError(`Could not parse ${file.name}: ${err?.message || "invalid JSON format"}.`);
         setImportMsg(`✗ Could not parse ${file.name}: ${err?.message || "invalid JSON format"}.`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
@@ -1084,22 +1094,31 @@ export default function App() {
       else if (parsed && typeof parsed === "object") leadsArr = [parsed];
       else {
         setIsImporting(false);
+        setImportStage("error");
+        setImportError("Invalid file format: expected a lead object, array, or { leads: [...] }.");
         setImportMsg("✗ Invalid file format: expected a lead object, array, or { leads: [...] }.");
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
 
+      setImportCounts({ raw: leadsArr.length });
+      setImportStage("validating");
       const summary = summarizeSnapshotImport(leadsArr);
       const deduped = summary.valid.map((lead: any) => normalizeImportedLead(lead, 0));
+      setImportCounts({ raw: leadsArr.length, duplicates: summary.duplicateSourceCount, valid: deduped.length, final: deduped.length });
 
       if (!summary.canReplace || deduped.length === 0) {
         setIsImporting(false);
+        setImportStage("error");
         const reasons = summary.rejected.map((item: any) => item.reason || "unknown rejection").join("; ");
-        setImportMsg(`✗ No valid leads available for snapshot replacement. ${reasons || "The file contains no valid leads."}`);
+        const message = `No valid leads available for snapshot replacement. ${reasons || "The file contains no valid leads."}`;
+        setImportError(message);
+        setImportMsg(`✗ ${message}`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
 
+      setImportStage("deduplicating");
       const currentCount = leads.length || (await loadLeadsFromServer().catch(() => [])).length;
       const shouldReplace = window.confirm(
         `Replace the entire CRM with ${deduped.length} validated lead${deduped.length !== 1 ? "s" : ""}? This will delete ${currentCount} existing lead${currentCount === 1 ? "" : "s"} in the database.`
@@ -1107,15 +1126,18 @@ export default function App() {
 
       if (!shouldReplace) {
         setIsImporting(false);
+        setImportStage("idle");
+        setImportError(null);
         setImportMsg("Import canceled.");
         setTimeout(() => setImportMsg(null), 3000);
         return;
       }
 
+      setImportStage("preparing");
       let res: Response;
       let responseBody: any = null;
       try {
-        setImportMsg("Replacing lead database…");
+        setImportMsg("Preparing final snapshot…");
         res = await fetch("/api/leads", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1125,17 +1147,22 @@ export default function App() {
             replace: true,
           })
         });
+        setImportStage("importing");
         const responseText = await res.text();
         try { responseBody = responseText ? JSON.parse(responseText) : null; } catch { responseBody = null; }
       } catch (err: any) {
         setIsImporting(false);
-        setImportMsg(`✗ Could not reach the lead API: ${err?.message || "network request failed"}.`);
+        setImportStage("error");
+        const message = `Could not reach the lead API: ${err?.message || "network request failed"}.`;
+        setImportError(message);
+        setImportMsg(`✗ ${message}`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
 
       if (!res.ok) {
         setIsImporting(false);
+        setImportStage("error");
         const details = responseBody?.details;
         const detailParts = [
           responseBody?.error,
@@ -1146,11 +1173,14 @@ export default function App() {
           details?.detail ? details.detail : null,
         ].filter(Boolean);
         const detail = detailParts.length > 0 ? detailParts.join(" | ") : `HTTP ${res.status} ${res.statusText}`;
-        setImportMsg(`✗ Snapshot replacement failed: ${detail}`);
+        const message = `The snapshot could not be imported because the server rejected the transaction. ${detail}`;
+        setImportError(message);
+        setImportMsg(`✗ ${message}`);
         setTimeout(() => setImportMsg(null), 8000);
         return;
       }
 
+      setImportStage("verifying");
       const finalSummary = {
         imported: responseBody?.count ?? deduped.length,
         newCount: responseBody?.newCount ?? summary.newCount,
@@ -1172,20 +1202,28 @@ export default function App() {
         localStorage.setItem("dfqlabs-v12-stats", JSON.stringify(parsed.stats));
       }
 
-      const failureSummary = [
-        finalSummary.rejectedCount > 0 ? `${finalSummary.rejectedCount} rejected` : null,
-        finalSummary.duplicateSourceCount > 0 ? `${finalSummary.duplicateSourceCount} duplicate source rows` : null,
-        finalSummary.updatedCount > 0 ? `${finalSummary.updatedCount} updated` : null,
-        finalSummary.newCount > 0 ? `${finalSummary.newCount} new` : null,
-      ].filter(Boolean).join(" · ");
-
-      setImportMsg(`✓ Snapshot replaced ${finalSummary.imported} lead${finalSummary.imported !== 1 ? "s" : ""} (${finalSummary.newCount} imported${finalSummary.failedCount ? `, ${finalSummary.failedCount} failed` : ""})${failureSummary ? ` · ${failureSummary}` : ""}`);
+      setImportCounts({
+        raw: finalSummary.sourceCount,
+        duplicates: finalSummary.duplicateSourceCount,
+        valid: finalSummary.validCount,
+        final: finalSummary.finalDatabaseCount,
+        imported: finalSummary.imported,
+      });
+      setImportStage("success");
+      setImportMsg(`✓ Snapshot replaced ${finalSummary.imported} lead${finalSummary.imported !== 1 ? "s" : ""} (${finalSummary.finalDatabaseCount} confirmed in database)`);
       setIsImporting(false);
-      setTimeout(() => setImportMsg(null), 8000);
+      setTimeout(() => {
+        setImportMsg(null);
+        setImportStage("idle");
+        setImportCounts({});
+      }, 6000);
     };
     fileReader.onerror = () => {
-      setImportMsg(`✗ Could not read ${file.name}. Try again.`);
       setIsImporting(false);
+      setImportStage("error");
+      const message = `Could not read ${file.name}. Try again.`;
+      setImportError(message);
+      setImportMsg(`✗ ${message}`);
       setTimeout(() => setImportMsg(null), 8000);
     };
     fileReader.readAsText(file, "UTF-8");
@@ -1523,6 +1561,10 @@ export default function App() {
     { key: "knowledge", label: "Knowledge Base" }
   ];
 
+  const importStageMeta = getImportStageMeta(importStage);
+  const importProgress = (isImporting || importStage === "success") ? importStageMeta.progress : 0;
+  const hasImportBanner = Boolean(importMsg || importError || isImporting || importStage === "success");
+
   if (loading) return <div style={{ background: BG, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: G, fontFamily: "monospace", letterSpacing: 4, fontSize: 13 }}>LOADING OS…</span></div>;
   if (!role) return <RoleSelect onSelect={setRole} />;
   if (!authed) return <AccessGate roleKey={role} onSuccess={() => { setAuthed(true); writeSession(role); }} onBack={() => setRole(null)} />;
@@ -1571,6 +1613,120 @@ export default function App() {
       `}</style>
       
       {celebration && <Celebration msg={celebration.msg} sub={celebration.sub} onDone={() => setCelebration(null)} />}
+
+      {(isImporting || importStage === "success" || importStage === "error") && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(2,6,23,0.78)",
+            backdropFilter: "blur(10px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            zIndex: 100,
+          }}
+        >
+          <div style={{ width: "min(560px, 100%)", background: "linear-gradient(180deg, rgba(18,18,18,0.96), rgba(5,5,5,0.98))", border: `1px solid ${importStage === "error" ? "rgba(248,113,113,0.35)" : G_BORDER}`, borderRadius: 18, boxShadow: `0 18px 60px rgba(0,0,0,0.5), 0 0 28px ${G}20`, padding: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 18 }}>
+              <div>
+                <div style={{ color: G, fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", fontWeight: 800 }}>Lead Snapshot</div>
+                <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.04em", marginTop: 4, color: TEXT }}>
+                  {importStage === "success" ? "Import Complete" : importStage === "error" ? "Import Failed" : "Importing Lead Snapshot"}
+                </div>
+              </div>
+              {(importStage === "success" || importStage === "error") && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportStage("idle");
+                    setImportCounts({});
+                    setImportError(null);
+                    setImportMsg(null);
+                    setIsImporting(false);
+                  }}
+                  style={{ background: "transparent", border: `1px solid ${BORDER}`, color: TEXT, borderRadius: 8, padding: "8px 10px", fontWeight: 700, cursor: "pointer" }}
+                >
+                  Close
+                </button>
+              )}
+            </div>
+
+            <div style={{ position: "relative", height: 12, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,0.06)", border: `1px solid ${G_BORDER}`, marginBottom: 12 }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${importProgress}%`,
+                  background: importStage === "error" ? "linear-gradient(90deg,#F87171,#FCA5A5)" : "linear-gradient(90deg,#7DD3FC,#3ECFDC 45%,#8B5CF6)",
+                  boxShadow: importStage === "error" ? "0 0 18px rgba(248,113,113,0.45)" : "0 0 18px rgba(62,207,220,0.55)",
+                  transition: "width 0.35s ease",
+                  borderRadius: 999,
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, gap: 12 }}>
+              <div style={{ color: G, fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                {importStageMeta.title}
+              </div>
+              <div style={{ color: TEXT, fontSize: 12, fontWeight: 700 }}>{importStageMeta.progress}%</div>
+            </div>
+
+            <div style={{ color: MUTED, fontSize: 13, lineHeight: 1.6, marginBottom: 12 }}>
+              {importStage === "success"
+                ? "The lead snapshot has been replaced successfully. The CRM is now aligned with the imported dataset."
+                : importStage === "error"
+                  ? (importError || "The snapshot could not be imported safely.")
+                  : importStageMeta.summary}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 18 }}>
+              {Object.entries({ raw: "Raw records", duplicates: "Duplicates resolved", valid: "Unique valid", final: "Final snapshot" }).map(([key, label]) => {
+                const value = importCounts[key as keyof typeof importCounts];
+                return (
+                  <div key={key} style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ color: MUTED, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+                    <div style={{ color: TEXT, fontSize: 18, fontWeight: 800 }}>{value ?? "—"}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {importStage === "error" ? (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => importRef.current?.click()}
+                  style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(248,113,113,0.35)", color: "#FCA5A5", borderRadius: 10, padding: "10px 14px", fontWeight: 800, cursor: "pointer" }}
+                >
+                  Try Again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportStage("idle");
+                    setImportCounts({});
+                    setImportError(null);
+                    setImportMsg(null);
+                    setIsImporting(false);
+                  }}
+                  style={{ background: "transparent", border: `1px solid ${BORDER}`, color: TEXT, borderRadius: 10, padding: "10px 14px", fontWeight: 800, cursor: "pointer" }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            ) : isImporting ? (
+              <div style={{ color: G, fontSize: 12, fontWeight: 700 }} aria-live="polite">
+                Still working — safely replacing the lead snapshot…
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
       
       <header style={{ borderBottom: `1px solid ${BORDER}`, padding: "10px 14px", background: `linear-gradient(180deg, rgba(62,207,220,0.04), transparent)` }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -1600,7 +1756,34 @@ export default function App() {
             <input ref={importRef} type="file" accept=".json" onChange={importData} style={{ display: "none" }} />
             <button onClick={() => importRef.current?.click()} style={{ background: "transparent", color: MUTED, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Upload size={12} /></button>
             <button onClick={exportData} style={{ background: "transparent", color: G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Download size={12} /></button>
-            {importMsg && <div style={{ fontSize: 12, fontWeight: 700, color: importMsg.startsWith("✓") ? "#22C55E" : "#EF4444", background: importMsg.startsWith("✓") ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", border: `1px solid ${importMsg.startsWith("✓") ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`, borderRadius: 6, padding: "8px 12px", marginTop: 4, width: "100%", textAlign: "center" }}>{importMsg}</div>}
+            {hasImportBanner && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isImporting || importStage === "success" || importStage === "error") {
+                    return;
+                  }
+                  importRef.current?.click();
+                }}
+                aria-live="polite"
+                aria-busy={isImporting}
+                style={{
+                  background: importStage === "error" ? "rgba(239,68,68,0.08)" : "rgba(62,207,220,0.08)",
+                  color: importStage === "error" ? "#F87171" : G,
+                  border: `1px solid ${importStage === "error" ? "rgba(248,113,113,0.35)" : G_BORDER}`,
+                  borderRadius: 999,
+                  padding: "6px 12px",
+                  fontWeight: 700,
+                  fontSize: 10,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  cursor: isImporting ? "default" : "pointer",
+                  boxShadow: importStage === "success" ? `0 0 18px ${G}30` : "none",
+                }}
+              >
+                {isImporting ? `${importStageMeta.title.toUpperCase()}…` : importStage === "success" ? "IMPORT COMPLETE" : importStage === "error" ? "IMPORT ERROR" : "IMPORT"}
+              </button>
+            )}
             {isImporting && <span style={{ color: G, fontSize: 10, fontWeight: 700 }}>SYNCING…</span>}
             <span style={{ color: MUTED, fontSize: 10 }}>{saving ? <span style={{ color: G }}>SAVING…</span> : `${leads.length} leads`}</span>
             <button onClick={() => setModal({
