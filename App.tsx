@@ -1136,7 +1136,16 @@ export default function App() {
 
       if (!res.ok) {
         setIsImporting(false);
-        const detail = responseBody?.error || `HTTP ${res.status} ${res.statusText}`;
+        const details = responseBody?.details;
+        const detailParts = [
+          responseBody?.error,
+          details?.code ? `code ${details.code}` : null,
+          details?.constraint ? `constraint ${details.constraint}` : null,
+          details?.column ? `column ${details.column}` : null,
+          details?.message ? `db: ${details.message}` : null,
+          details?.detail ? details.detail : null,
+        ].filter(Boolean);
+        const detail = detailParts.length > 0 ? detailParts.join(" | ") : `HTTP ${res.status} ${res.statusText}`;
         setImportMsg(`✗ Snapshot replacement failed: ${detail}`);
         setTimeout(() => setImportMsg(null), 8000);
         return;

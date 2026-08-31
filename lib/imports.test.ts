@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./imports.js";
+import { normalizeImportedLead, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./imports.js";
 import { buildSalesIntelligenceContext, validateValueDM } from "../aiEngine";
 
 test("normalizeImportedLead fills safe defaults and preserves valid field data", () => {
@@ -19,6 +19,41 @@ test("normalizeImportedLead fills safe defaults and preserves valid field data",
   assert.equal(lead.clientType, "Real Estate");
   assert.equal(lead.service, "Lead Generation");
   assert.equal(lead.priority, "Medium");
+});
+
+test("runSnapshotReplaceTransaction uses one DB client for the whole snapshot transaction", async () => {
+  const calls: string[] = [];
+  const client = {
+    query: async (sql: string, params?: any[]) => {
+      calls.push(sql);
+      if (sql === "BEGIN") return { rows: [] };
+      if (sql.startsWith("DELETE FROM leads")) return { rows: [] };
+      if (sql.startsWith("INSERT INTO leads")) return { rows: [] };
+      if (sql.startsWith("DELETE FROM lead_attachments")) return { rows: [] };
+      if (sql === "COMMIT") return { rows: [] };
+      if (sql === "ROLLBACK") return { rows: [] };
+      return { rows: [] };
+    },
+    release: () => { calls.push("release"); },
+  };
+
+  const pool = {
+    connect: async () => client,
+    query: async () => {
+      throw new Error("pool.query must not be used inside snapshot transaction");
+    },
+  };
+
+  await runSnapshotReplaceTransaction(pool as any, [{ id: "lead-1", name: "A", company: "Co", status: "New" }]);
+
+  assert.deepEqual(calls, [
+    "BEGIN",
+    "DELETE FROM leads",
+    "INSERT INTO leads (id, data, updated_at) VALUES ($1, $2::jsonb, NOW())",
+    "DELETE FROM lead_attachments WHERE lead_id != ALL($1::text[])",
+    "COMMIT",
+    "release",
+  ]);
 });
 
 test("summarizeSnapshotImport replaces the authoritative dataset and rejects empty snapshots", () => {

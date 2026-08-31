@@ -29,6 +29,60 @@ export interface SnapshotImportSummary extends ImportSummary {
   canReplace: boolean;
 }
 
+export function describeDbError(error: any): Record<string, string | undefined> {
+  if (!error || typeof error !== "object") return { message: "Unknown database error." };
+
+  const details: Record<string, string | undefined> = {
+    code: typeof error.code === "string" ? error.code : undefined,
+    message: typeof error.message === "string" ? error.message : undefined,
+    detail: typeof error.detail === "string" ? error.detail : undefined,
+    hint: typeof error.hint === "string" ? error.hint : undefined,
+    constraint: typeof error.constraint === "string" ? error.constraint : undefined,
+    column: typeof error.column === "string" ? error.column : undefined,
+    table: typeof error.table === "string" ? error.table : undefined,
+  };
+
+  const sanitized = Object.fromEntries(
+    Object.entries(details).filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+  );
+
+  return Object.keys(sanitized).length > 0 ? sanitized : { message: "Unknown database error." };
+}
+
+export async function runSnapshotReplaceTransaction(pool: any, validLeads: any[]) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM leads");
+
+    if (validLeads.length > 0) {
+      const values = validLeads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
+      const params = validLeads.flatMap((lead: any) => [String(lead.id), JSON.stringify(lead)]);
+      await client.query(`INSERT INTO leads (id, data, updated_at) VALUES ${values}`, params);
+    }
+
+    const incomingIds = validLeads.map((lead: any) => String(lead.id));
+    if (incomingIds.length > 0) {
+      await client.query("DELETE FROM lead_attachments WHERE lead_id != ALL($1::text[])", [incomingIds]);
+    } else {
+      await client.query("DELETE FROM lead_attachments");
+    }
+
+    await client.query("COMMIT");
+    return {
+      count: validLeads.length,
+      importedIds: incomingIds,
+      finalDatabaseCount: validLeads.length,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }

@@ -6,7 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
 import { runSalesPipeline } from "./aiEngine";
 import { stripAttachmentContent } from "./lib/attachments";
-import { summarizeSnapshotImport } from "./lib/imports";
+import { describeDbError, runSnapshotReplaceTransaction, summarizeSnapshotImport } from "./lib/imports";
 
 dotenv.config();
 
@@ -772,28 +772,12 @@ app.post("/api/leads", async (req, res) => {
       }
 
       try {
-        await db.query("BEGIN");
-        await db.query("DELETE FROM leads");
-
-        if (valid.length > 0) {
-          const values = valid.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb, NOW())`).join(", ");
-          const params = valid.flatMap((lead: any) => [String(lead.id), JSON.stringify(lead)]);
-          await db.query(`INSERT INTO leads (id, data, updated_at) VALUES ${values}`, params);
-        }
-
-        const incomingIds = valid.map((lead: any) => String(lead.id));
-        if (incomingIds.length > 0) {
-          await db.query("DELETE FROM lead_attachments WHERE lead_id != ALL($1::text[])", [incomingIds]);
-        } else {
-          await db.query("DELETE FROM lead_attachments");
-        }
-
-        await db.query("COMMIT");
+        const transactionResult = await runSnapshotReplaceTransaction(db, valid);
 
         return res.json({
           ok: true,
-          count: valid.length,
-          importedIds: incomingIds,
+          count: transactionResult.count,
+          importedIds: transactionResult.importedIds,
           duplicates: summary.duplicates,
           rejected: summary.rejected,
           sourceCount: summary.sourceCount,
@@ -804,12 +788,16 @@ app.post("/api/leads", async (req, res) => {
           newCount: summary.newCount,
           updatedCount: summary.updatedCount,
           failedCount: summary.failedCount,
-          finalDatabaseCount: summary.finalDatabaseCount,
+          finalDatabaseCount: transactionResult.finalDatabaseCount,
         });
       } catch (err: any) {
-        await db.query("ROLLBACK").catch(() => {});
-        console.error("POST /api/leads snapshot replace:", err);
-        return res.status(500).json({ error: "Snapshot replacement failed and was rolled back." });
+        const safeDetails = describeDbError(err);
+        console.error("POST /api/leads snapshot replace error:", safeDetails);
+        return res.status(500).json({
+          ok: false,
+          error: "Snapshot replacement failed and was rolled back.",
+          details: safeDetails,
+        });
       }
     }
 
