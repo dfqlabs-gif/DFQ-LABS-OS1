@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import { getImportStageMeta, normalizeImportedLead, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./imports.js";
 import { buildSalesIntelligenceContext, validateValueDM } from "../aiEngine";
+import { applySentMessage, applyWhatsAppOpened } from "./execution";
+import { newOutboundMessage } from "./outbound";
 
 test("normalizeImportedLead fills safe defaults and preserves valid field data", () => {
   const lead = normalizeImportedLead({
@@ -168,4 +170,53 @@ test("buildSalesIntelligenceContext labels unknown findings and fact safety rule
   assert.match(context, /VERIFIED: Instagram activity/i);
   assert.match(context, /UNKNOWN: Conversion rate/i);
   assert.match(context, /Use VERIFIED facts as the primary basis/i);
+});
+
+test("applyWhatsAppOpened records the human-approved handoff without marking it sent", () => {
+  const lead = {
+    id: "lead-1",
+    name: "Jane",
+    company: "Vale Realty",
+    status: "New",
+    dmText: "",
+    prospectInitialResponse: "",
+    prospectLatestResponse: "",
+    conversationLog: [],
+    completedFollowUps: [],
+    outboundMessages: [
+      newOutboundMessage({ leadId: "lead-1", userId: "user-1", messageType: "VALUE_DM", messageText: "Test message", source: "mission_control" }),
+    ],
+  } as any;
+
+  const next = applyWhatsAppOpened(lead, lead.outboundMessages[0].id);
+  assert.equal(next.outboundMessages[0].status, "WHATSAPP_OPENED");
+  assert.ok(next.outboundMessages[0].whatsappOpenedAt);
+  assert.equal(next.outboundMessages[0].sentAt, undefined);
+});
+
+test("applySentMessage logs the outbound message and marks the follow-up as completed", () => {
+  const lead = {
+    id: "lead-2",
+    name: "Ada",
+    company: "Ada Holdings",
+    status: "New",
+    dmText: "",
+    prospectInitialResponse: "",
+    prospectLatestResponse: "",
+    conversationLog: [],
+    completedFollowUps: [],
+    followUpCount: 0,
+    outboundMessages: [
+      newOutboundMessage({ leadId: "lead-2", userId: "user-1", messageType: "VALUE_DM", messageText: "A concrete insight", source: "ask_ai" }),
+    ],
+  } as any;
+
+  const next = applySentMessage(lead, "A concrete insight", "VALUE_DM", "user-1", lead.outboundMessages[0].id, "Value-first message");
+
+  assert.equal(next.outboundMessages[0].status, "SENT");
+  assert.equal(next.dmText, "A concrete insight");
+  assert.equal(next.followUpCount, 1);
+  assert.equal(next.conversationLog.length, 1);
+  assert.equal(next.conversationLog[0].type, "dm");
+  assert.match(next.conversationLog[0].label, /VALUE_DM/i);
 });

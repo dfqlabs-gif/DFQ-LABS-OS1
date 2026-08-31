@@ -83,7 +83,26 @@ export function newOutboundMessage(params: {
  * Anti-duplication: does NOT create a new record — updates the existing one.
  * Never marks as SENT (opening WhatsApp only proves the message was prepared).
  */
+export function markReadyToSend(om: OutboundMessage): OutboundMessage {
+  return {
+    ...om,
+    status: "READY_TO_SEND",
+  };
+}
+
+/**
+ * Transition an outbound message to WHATSAPP_OPENED.
+ * Anti-duplication: does NOT create a new record — updates the existing one.
+ * Never marks as SENT (opening WhatsApp only proves the message was prepared).
+ */
 export function markWhatsAppOpened(om: OutboundMessage): OutboundMessage {
+  if (om.status === "SENT") {
+    return {
+      ...om,
+      whatsappOpenedAt: om.whatsappOpenedAt || new Date().toISOString(),
+    };
+  }
+
   return {
     ...om,
     status: "WHATSAPP_OPENED",
@@ -99,7 +118,7 @@ export function markSent(om: OutboundMessage): OutboundMessage {
   return {
     ...om,
     status: "SENT",
-    sentAt: new Date().toISOString(),
+    sentAt: om.sentAt || new Date().toISOString(),
   };
 }
 

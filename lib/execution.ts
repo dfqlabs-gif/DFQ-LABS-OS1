@@ -8,9 +8,33 @@
 
 import type { Lead } from "../types";
 import type { OutboundMessage } from "./outbound";
-import { markSent as markOutboundSent } from "./outbound";
+import {
+  markSent as markOutboundSent,
+  markWhatsAppOpened as markOutboundOpened,
+} from "./outbound";
 import { today, addDays, nowISO } from "../constants";
 import type { MessageType } from "./messageTypes";
+
+/**
+ * Mark a generated outbound message as opened in WhatsApp without treating it as
+ * sent. This retains the human approval gate while recording the fact that the
+ * rep prepared and opened the message.
+ */
+export function applyWhatsAppOpened(
+  lead: Lead,
+  outboundId?: string,
+): Lead {
+  const outboundMessages = (lead.outboundMessages || []).map(om => {
+    if (outboundId && om.id !== outboundId) return om;
+    if (!outboundId && !(om.status === "GENERATED" || om.status === "READY_TO_SEND")) return om;
+    return markOutboundOpened(om);
+  });
+
+  return {
+    ...lead,
+    outboundMessages,
+  };
+}
 
 /**
  * Apply a confirmed-sent message to a lead.
