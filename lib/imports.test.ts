@@ -23,6 +23,32 @@ test("normalizeImportedLead fills safe defaults and preserves valid field data",
   assert.equal(lead.priority, "Medium");
 });
 
+test("snapshot imports preserve a named lead with blank company using the established fallback", () => {
+  const summary = summarizeSnapshotImport([{ id: "lead-blank-company", name: "Known Contact", company: "   " }]);
+
+  assert.equal(summary.validCount, 1);
+  assert.equal(summary.rejectedCount, 0);
+  assert.equal(summary.valid[0].name, "Known Contact");
+  assert.equal(summary.valid[0].company, "Unknown Company");
+});
+
+test("snapshot imports recover an unambiguous Team at Company contact label without changing the contact", () => {
+  const summary = summarizeSnapshotImport([{ id: "lead-team", name: "Team at Acme Homes", company: "" }]);
+
+  assert.equal(summary.validCount, 1);
+  assert.equal(summary.rejectedCount, 0);
+  assert.equal(summary.valid[0].name, "Team at Acme Homes");
+  assert.equal(summary.valid[0].company, "Acme Homes");
+});
+
+test("snapshot imports still reject a missing required name", () => {
+  const summary = summarizeSnapshotImport([{ id: "lead-no-name", name: "  ", company: "Acme Homes" }]);
+
+  assert.equal(summary.validCount, 0);
+  assert.equal(summary.rejectedCount, 1);
+  assert.equal(summary.rejected[0].reason, "missing required name");
+});
+
 test("runSnapshotReplaceTransaction uses one DB client for the whole snapshot transaction", async () => {
   const calls: string[] = [];
   const client = {

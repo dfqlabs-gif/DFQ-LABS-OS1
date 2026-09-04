@@ -114,6 +114,15 @@ function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
+export function hasRequiredImportedName(raw: unknown): boolean {
+  return !!raw && typeof raw === "object" && !Array.isArray(raw) && normalizeText((raw as any).name).length > 0;
+}
+
+function deriveCompanyFromContactName(value: unknown): string {
+  const match = normalizeText(value).match(/^team\s+at\s+(.+)$/i);
+  return match ? normalizeText(match[1]) : "";
+}
+
 function sdbHash(value: string): string {
   let hash = 2166136261;
   for (let i = 0; i < value.length; i++) {
@@ -131,7 +140,10 @@ export function normalizeImportedLead(raw: any, index: number): any {
 
   const base = { ...raw };
   const name = normalizeText(base.name) || `Lead ${index + 1}`;
-  const company = normalizeText(base.company) || "Unknown Company";
+  // Historical rows may identify a shared contact as "Team at <Company>".
+  // Keep that contact label intact while recovering the explicit company only
+  // when the convention is unambiguous; otherwise use the established fallback.
+  const company = normalizeText(base.company) || deriveCompanyFromContactName(base.name) || "Unknown Company";
   const idSeed = [base.id, base.name, base.company, base.phone, base.email, base.instagram, base.whatsapp]
     .filter(Boolean)
     .join("|");
@@ -204,8 +216,8 @@ export function summarizeImportBatch(rawLeads: any[], existingIds: Set<string>):
     const normalizedId = normalizeText(lead.id) || (idSeed ? `imp-${sdbHash(idSeed)}` : undefined);
     const id = normalizedId || `imp-${Date.now()}-${index}`;
 
-    if (!normalizeText(lead.name) || !normalizeText(lead.company)) {
-      rejected.push({ index, id, reason: "missing required name/company" });
+    if (!hasRequiredImportedName(lead)) {
+      rejected.push({ index, id, reason: "missing required name" });
       return;
     }
 
@@ -273,8 +285,8 @@ export function summarizeSnapshotImport(rawLeads: any[]): SnapshotImportSummary 
     const normalizedId = normalizeText(lead.id) || (idSeed ? `imp-${sdbHash(idSeed)}` : undefined);
     const id = normalizedId || `imp-${Date.now()}-${index}`;
 
-    if (!normalizeText(lead.name) || !normalizeText(lead.company)) {
-      rejected.push({ index, id, reason: "missing required name/company" });
+    if (!hasRequiredImportedName(lead)) {
+      rejected.push({ index, id, reason: "missing required name" });
       return;
     }
 

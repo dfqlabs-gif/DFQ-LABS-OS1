@@ -2,7 +2,7 @@
 // Handles GET (list), POST (upsert single / bulk), DELETE (by id)
 import { Pool } from "pg";
 import { stripAttachmentContent } from "../lib/attachments";
-import { describeDbError, runSnapshotReplaceTransaction, summarizeSnapshotImport } from "../lib/imports";
+import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "../lib/imports";
 
 let pool: Pool | null = null;
 
@@ -97,18 +97,13 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // Bulk upsert (legacy fallback)
-      const deduped = new Map<string, any>();
-      const duplicates: Array<{ id: string; reason: string }> = [];
-      for (const lead of body.leads) {
-        if (!lead || typeof lead !== "object" || Array.isArray(lead) || !lead.id) continue;
-        const id = String(lead.id).trim();
-        if (!id) continue;
-        if (deduped.has(id)) duplicates.push({ id, reason: "duplicate within source file; latest row wins" });
-        deduped.set(id, stripAttachmentContent(lead));
-      }
-      const leads = Array.from(deduped.values());
-      if (leads.length === 0) return res.status(200).json({ ok: true, count: 0, duplicates, rejected: [] });
+      // Bulk upsert (legacy fallback) uses the shared import summary so its
+      // validation, normalization, and duplicate rules match snapshot imports.
+      const currentIds = new Set((await db.query("SELECT id FROM leads")).rows.map((row: any) => String(row.id)));
+      const summary = summarizeImportBatch(body.leads, currentIds);
+      const leads = summary.valid.map((lead: any) => stripAttachmentContent(lead));
+      const { valid: _valid, importable: _importable, ...responseSummary } = summary;
+      if (leads.length === 0) return res.status(200).json({ ok: true, count: 0, ...responseSummary });
       try {
         const values = leads.map((_: any, i: number) => `($${i * 2 + 1}, $${i * 2 + 2}::jsonb)`).join(", ");
         const params = leads.flatMap((l: any) => [String(l.id), JSON.stringify(l)]);
@@ -117,7 +112,7 @@ export default async function handler(req: any, res: any) {
            ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
           params
         );
-        return res.status(200).json({ ok: true, count: leads.length, duplicates, rejected: [] });
+        return res.status(200).json({ ok: true, count: leads.length, ...responseSummary });
       } catch (err: any) {
         console.error("POST /api/leads bulk error:", err);
         return res.status(500).json({ error: "Failed to bulk-import leads." });

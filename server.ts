@@ -6,7 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
 import { runSalesPipeline } from "./aiEngine";
 import { stripAttachmentContent } from "./lib/attachments";
-import { describeDbError, runSnapshotReplaceTransaction, summarizeSnapshotImport } from "./lib/imports";
+import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
 dotenv.config();
 
@@ -802,44 +802,12 @@ app.post("/api/leads", async (req, res) => {
     }
 
     const currentIds = new Set((await db.query("SELECT id FROM leads")).rows.map((r: any) => String(r.id)));
-    const validById = new Map<string, any>();
-    const duplicates: Array<{ id: string; reason: string }> = [];
-    const rejected: Array<{ index: number; id?: string; reason: string }> = [];
-
-    rawLeads.forEach((lead: any, index: number) => {
-      if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
-        rejected.push({ index, reason: "expected an object" });
-        return;
-      }
-
-      const idRaw = String(lead.id || "").trim();
-      const hasName = typeof lead.name === "string" ? lead.name.trim() : !!lead.name;
-      const hasCompany = typeof lead.company === "string" ? lead.company.trim() : !!lead.company;
-      if (!hasName || !hasCompany) {
-        rejected.push({ index, id: idRaw || undefined, reason: "missing required name/company" });
-        return;
-      }
-      if (!idRaw) {
-        rejected.push({ index, id: undefined, reason: "missing lead.id" });
-        return;
-      }
-
-      const cleaned = stripAttachmentContent(lead);
-      if (validById.has(idRaw)) {
-        duplicates.push({ id: idRaw, reason: "duplicate within source file; latest row wins" });
-      }
-      validById.set(idRaw, cleaned);
-    });
-
-    const valid = Array.from(validById.values());
-    const newCount = valid.filter((lead: any) => !currentIds.has(String(lead.id))).length;
-    const updatedCount = valid.length - newCount;
-    const sourceCount = rawLeads.length;
-    const validCount = valid.length;
-    const rejectedCount = rejected.length;
-    const duplicateSourceCount = duplicates.length;
-    const failedCount = rejectedCount + duplicateSourceCount;
-    const finalDatabaseCount = currentIds.size + newCount;
+    const summary = summarizeImportBatch(rawLeads, currentIds);
+    const valid = summary.valid.map((lead: any) => stripAttachmentContent(lead));
+    const {
+      duplicates, rejected, sourceCount, validCount, rejectedCount,
+      duplicateSourceCount, failedCount, finalDatabaseCount, newCount, updatedCount,
+    } = summary;
 
     if (valid.length === 0) {
       return res.json({
