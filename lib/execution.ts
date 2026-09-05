@@ -58,6 +58,8 @@ export function applySentMessage(
   userId: string,
   outboundId?: string,
   strategy?: string,
+  nextAction?: string,
+  nextActionDate?: string,
 ): Lead {
   if (outboundId && (lead.outboundMessages || []).some(om => om.id === outboundId && om.status === "SENT")) {
     return lead;
@@ -88,8 +90,10 @@ export function applySentMessage(
     awaitingReplySince: "",
     followUpCount: (lead.followUpCount || 0) + 1,
     completedFollowUps: [...(lead.completedFollowUps || []), now],
-    autoFollowUpDate: ["Closed", "Lost"].includes(lead.status) ? null : addDays(3),
+    autoFollowUpDate: ["Closed", "Lost"].includes(lead.status) ? null : (nextActionDate || addDays(3)),
     autoFollowUpReason: "Recently contacted via WhatsApp outbound.",
+    nextAction: nextAction || "Wait for reply and review the response.",
+    nextActionDate: nextActionDate || addDays(3),
     // Update quick-reference DM field for DM-type messages
     ...(isDm ? { dmText: messageText } : {}),
     outboundMessages,

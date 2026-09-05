@@ -114,9 +114,8 @@ function relativeTime(ts: string): string {
 }
 
 export function formatConversationLog(lead: Lead): string {
-  // Only the three key conversation fields — initial DM, initial reply, latest thread.
-  // The full conversationLog is intentionally excluded so the AI focuses on
-  // what was actually said rather than internal CRM status changes.
+  // Keep actual two-way history, including executed outbound messages, so a
+  // later Sales Brain run never treats a follow-up as a new conversation.
   const parts: string[] = [];
   if (lead.dmText) {
     parts.push(`[ALEX (us) — Initial DM]: ${lead.dmText}`);
@@ -126,6 +125,10 @@ export function formatConversationLog(lead: Lead): string {
   }
   if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) {
     parts.push(`[LEAD — Latest Message]: ${lead.prospectLatestResponse}`);
+  }
+  for (const entry of (lead.conversationLog || []).filter(entry => entry.type === "dm" || entry.type === "reply").slice(-12)) {
+    const speaker = entry.type === "dm" ? "DFQ LABS (us)" : "LEAD";
+    if (!parts.some(part => part.includes(entry.text))) parts.push(`[${speaker} — ${entry.label}]: ${entry.text}`);
   }
   if (parts.length === 0) return "No conversation yet — this is the first outbound touch to this lead.";
   return parts.join("\n");
@@ -487,26 +490,16 @@ ${message}
 // priorContext is passed on regeneration cycles so the DM Writer can improve on
 // previous drafts rather than starting from scratch.
 export async function runSalesPipeline(lead: Lead, task: string, styleInstructions: string, maxTokens = 900, priorContext?: DraftContext): Promise<string> {
-  const strategy = await runStrategyGenerator(lead, task);
-
-  const draft = (fix?: string) => runAI(
-    buildDMWriterPrompt(lead, strategy, fix ? `${styleInstructions}\n\nIMPORTANT FIX (a quality check flagged the previous draft): ${fix}` : styleInstructions, priorContext),
-    maxTokens
-  );
-
-  let message = await draft();
-  const check = await runQualityChecker(message, strategy);
-  if (!check.pass) {
-    message = await draft(check.reason);
-  }
-
-  const strategyBlock = `Current Stage: ${strategy.currentStage || lead.status}
-Next Objective: ${strategy.nextObjective}
-Reasoning: ${strategy.reasoning}
-Risk: ${strategy.risk}
-Confidence: ${strategy.confidence}`;
-
-  return `${message}\n\n---STRATEGY---\n${strategyBlock}`;
+  // Compatibility boundary for older assistant surfaces. Strategic decisions now
+  // come exclusively from Sales Brain; callers which still need text get a
+  // lossless text projection of its structured result.
+  const { runSalesBrain } = await import("./salesBrain");
+  const brain = await runSalesBrain(lead, { task });
+  return `${brain.message}\n\n---STRATEGY---\nCurrent Stage: ${brain.salesStage}
+Next Objective: ${brain.primaryObjective}
+Reasoning: ${brain.reasoningSummary}
+Risk: ${brain.riskLevel}
+Confidence: ${brain.confidence}%`;
 }
 
 export function followUpWriteInstructions(): string {

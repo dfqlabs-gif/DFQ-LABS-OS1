@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from "react";
 import { Brain, Target, Copy as CopyIcon, CheckCircle2 } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
-import { AIQAPanel } from "./AIQAPanel";
 import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, MUTED2, TEXT } from "../constants";
 import { runAI, runFollowUpReply, runProspectSummary, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildClosingDMPrompt, buildFollowUpDMPrompt, buildPipelinePrompt } from "../aiEngine";
 
@@ -283,11 +282,6 @@ export function AICoach({ leads }: AICoachProps) {
                 >
                   {copied ? <><CheckCircle2 size={11} />Copied</> : <><CopyIcon size={11} />Copy Playbook</>}
                 </button>
-                <AIQAPanel
-                  draft={output}
-                  lead={selected}
-                  onRegenerate={isValueDM ? confirmValueDM : runPlaybook}
-                />
               </div>
             )}
           </>

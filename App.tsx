@@ -20,8 +20,8 @@ import {
   SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE, specialistLabel
 } from "./constants";
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
-import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspectSummary, DraftContext } from "./aiEngine";
-import { QARegenerateContext } from "./components/AIQAPanel";
+import { runAI, buildFollowUpPrompt, runQuickReply, runProspectSummary, DraftContext } from "./aiEngine";
+import { runSalesBrain, SalesBrainResult } from "./salesBrain";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -33,11 +33,10 @@ import { AIGateway } from "./components/AIGateway";
 import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
-import { AIQAPanel } from "./components/AIQAPanel";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
-import { applySentMessage } from "./lib/execution";
-import { newOutboundMessage, markWhatsAppOpened } from "./lib/outbound";
+import { applySentMessage, applyWhatsAppOpened } from "./lib/execution";
+import { newOutboundMessage } from "./lib/outbound";
 import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
 
 // Define general global style utility
@@ -461,12 +460,11 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
                 </div>
               )}
 
-              {/* Step 2 — generated reply + QA pipeline */}
+              {/* Legacy queue: generated reply is already Sales-Brain checked. */}
               {dm && step === 'idle' && (
                 <div style={{ padding: "12px 14px", background: SURFACE2, borderTop: `1px solid ${BORDER}` }}>
                   <div style={{ fontSize: 12, lineHeight: 1.85, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10 }}>{dm}</div>
                   <CopyBtn text={dm} />
-                  <AIQAPanel draft={dm} lead={l} onRegenerate={() => confirmGen(l)} />
                 </div>
               )}
             </div>
@@ -2053,6 +2051,8 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
   }, [darkMode]);
   const [search, setSearch] = useState("");
   const [dmOutputs, setDmOutputs] = useState<Record<string, string>>({});
+  const [brainResults, setBrainResults] = useState<Record<string, SalesBrainResult>>({});
+  const [outboundIds, setOutboundIds] = useState<Record<string, string>>({});
   // dmStep tracks the two-step DM generation flow per lead:
   // 'idle' | 'summarizing' | 'awaiting-confirm' | 'generating'
   const [dmStep, setDmStep] = useState<Record<string, string>>({});
@@ -2095,57 +2095,30 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
   // Step 1 — read the conversation thread and show the specialist a plain-English
   // summary of where the prospect is. The specialist confirms before the DM is drafted.
   const startDMFlow = async (lead: Lead) => {
-    setDmStep(p => ({ ...p, [lead.id]: 'summarizing' }));
-    setDmSummary(p => ({ ...p, [lead.id]: '' }));
+    setDmStep(p => ({ ...p, [lead.id]: 'generating' }));
     setDmOutputs(p => ({ ...p, [lead.id]: '' }));
     try {
-      const summary = await runProspectSummary(lead);
-      setDmSummary(p => ({ ...p, [lead.id]: summary }));
-      setDmStep(p => ({ ...p, [lead.id]: 'awaiting-confirm' }));
-    } catch (e: any) {
-      setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
-    }
-  };
-
-  // Step 2 — specialist confirmed the summary; now generate the actual DM.
-  // priorCtx is populated on regeneration cycles (learning loop): it carries
-  // the original draft + QA-adjusted draft so the next generation can improve on both.
-  const confirmAndGenerateDM = async (lead: Lead, priorCtx?: DraftContext) => {
-    setDmStep(p => ({ ...p, [lead.id]: 'generating' }));
-
-    // Build full context: always include the specialist-confirmed summary from step 1.
-    const summary = dmSummary[lead.id];
-    const context: DraftContext | undefined = (summary || priorCtx) ? {
-      summary: priorCtx?.summary || summary || undefined,
-      originalDraft: priorCtx?.originalDraft,
-      adjustedDraft: priorCtx?.adjustedDraft,
-    } : undefined;
-
-    try {
-      const text = await runFollowUpReply(lead, context);
-      setDmOutputs(p => ({ ...p, [lead.id]: text }));
+      const brain = await runSalesBrain(lead, { task: "Determine the best next outbound action from the complete CRM and conversation context." });
+      setBrainResults(p => ({ ...p, [lead.id]: brain }));
+      setDmOutputs(p => ({ ...p, [lead.id]: brain.message }));
       const outbound = newOutboundMessage({
         leadId: lead.id,
         userId: displayName,
-        messageType: "VALUE_DM",
-        messageText: text.split('\n\n---STRATEGY---')[0].trim(),
+        messageType: brain.messageType,
+        messageText: brain.message,
         source: "follow_up_queue",
+        strategy: brain.reasoningSummary,
+        salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel },
       });
+      setOutboundIds(p => ({ ...p, [lead.id]: outbound.id }));
       onSave({ ...lead, outboundMessages: [...(lead.outboundMessages || []), outbound] });
-      // Save original draft (without strategy block) for the learning loop.
-      // On next "Regenerate", the QA panel passes it back via onRegenerate(ctx).
-      const cleanDraft = text.split('\n\n---STRATEGY---')[0].trim();
-      setDmPriorContext(p => ({ ...p, [lead.id]: { summary: summary || undefined, originalDraft: cleanDraft } }));
     } catch (e: any) {
       setDmOutputs(p => ({ ...p, [lead.id]: 'Error: ' + e.message }));
     }
     setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
   };
 
-  const cancelDMFlow = (lead: Lead) => {
-    setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
-    setDmSummary(p => ({ ...p, [lead.id]: '' }));
-  };
+  const cancelDMFlow = (lead: Lead) => setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
 
   const saveReply = (lead: Lead) => {
     const draft = replyDrafts[lead.id];
@@ -2250,7 +2223,6 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                 {filtered.map((lead: Lead) => {
                   const dm = dmOutputs[lead.id];
                   const step = dmStep[lead.id] || 'idle';
-                  const summary = dmSummary[lead.id];
                   const due = effectiveDue(lead);
                   const isOverdue = due && due < today();
                   const meetingFlag = detectMeetingRequest(lead) && !meetingQualified(lead);
@@ -2280,56 +2252,37 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                         </div>
                       </div>
 
-                      {/* Step 1 result — show prospect summary and ask specialist to confirm */}
-                      {step === 'awaiting-confirm' && summary && (
-                        <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: "rgba(62,207,220,0.04)" }}>
-                          <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>WHERE IS THIS PROSPECT?</div>
-                          <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 12 }}>{summary}</div>
-                          <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10 }}>Does this match your understanding of where they are?</div>
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button onClick={() => confirmAndGenerateDM(lead)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "7px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate DM</button>
-                            <button onClick={() => cancelDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Step 2 result — show the generated DM + QA pipeline */}
+                      {/* Sales Brain returns one internally checked, executable result. */}
                       {dm && step === 'idle' && (
                         <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: SURFACE2 }}>
-                          <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>SUGGESTED CONVERSATION MESSAGE</div>
+                          {brainResults[lead.id] && <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.6, marginBottom: 10 }}>
+                            <strong style={{ color: G }}>SALES BRAIN</strong> · {brainResults[lead.id].salesStage} · {brainResults[lead.id].buyerIntent}<br />
+                            Objective: {brainResults[lead.id].primaryObjective}<br />
+                            Next action: {brainResults[lead.id].recommendedAction}
+                          </div>}
+                          <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>FINAL APPROVED MESSAGE</div>
                           <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 8 }}>{dm}</div>
                           <div style={{ display: "flex", gap: 8 }}>
                             <CopyBtn text={dm} />
                             <WhatsAppExecutionButton
                               lead={lead}
-                              message={dm.split('\n\n---STRATEGY---')[0].trim()}
-                              messageType="VALUE_DM"
+                              message={dm}
+                              messageType={brainResults[lead.id]?.messageType || "FOLLOW_UP"}
                               source="follow_up_queue"
                               userId={displayName}
+                              outboundId={outboundIds[lead.id] || ""}
                               compact
-                              onWhatsAppOpened={() => {
-                                const cleanMessage = dm.split('\n\n---STRATEGY---')[0].trim();
-                                const outbound = [...(lead.outboundMessages || [])].reverse().find(om => om.messageText === cleanMessage && om.status !== "SENT" && om.status !== "CANCELLED");
-                                if (!outbound) return;
-                                onSave({ ...lead, outboundMessages: (lead.outboundMessages || []).map(om => om.id === outbound.id ? markWhatsAppOpened(om) : om) });
+                              disabled={!outboundIds[lead.id]}
+                              onWhatsAppOpened={(outboundId) => {
+                                onSave(applyWhatsAppOpened(lead, outboundId));
                               }}
-                              onSent={() => {
-                                const cleanMessage = dm.split('\n\n---STRATEGY---')[0].trim();
-                                const outbound = [...(lead.outboundMessages || [])].reverse().find(om => om.messageText === cleanMessage && om.status !== "SENT" && om.status !== "CANCELLED");
-                                onSave(applySentMessage(lead, cleanMessage, "VALUE_DM", displayName, outbound?.id));
+                              onSent={(outboundId) => {
+                                const brain = brainResults[lead.id];
+                                onSave(applySentMessage(lead, dm, brain?.messageType || "FOLLOW_UP", displayName, outboundId, brain?.reasoningSummary, brain?.recommendedAction, brain?.recommendedFollowUpDate));
                               }}
                             />
                             <button onClick={() => startDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
                           </div>
-                          <AIQAPanel draft={dm} lead={lead} onRegenerate={(ctx?: QARegenerateContext) => {
-                            // Learning loop: pass the original draft + QA-adjusted draft back into generation
-                            const learningCtx: DraftContext = {
-                              summary: dmSummary[lead.id],
-                              originalDraft: ctx?.originalDraft || dmPriorContext[lead.id]?.originalDraft,
-                              adjustedDraft: ctx?.adjustedDraft,
-                            };
-                            confirmAndGenerateDM(lead, learningCtx);
-                          }} />
                         </div>
                       )}
 

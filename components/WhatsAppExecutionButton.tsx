@@ -30,8 +30,9 @@ interface Props {
   messageType?: MessageType;
   source?: string;
   userId?: string;
-  onWhatsAppOpened?: () => void;
-  onSent?: () => void;
+  outboundId: string;
+  onWhatsAppOpened?: (outboundId: string) => void;
+  onSent?: (outboundId: string) => void;
   followUpId?: string;
   compact?: boolean;
   disabled?: boolean;
@@ -43,6 +44,7 @@ export function WhatsAppExecutionButton({
   messageType = "VALUE_DM",
   source = "os",
   userId,
+  outboundId,
   onWhatsAppOpened,
   onSent,
   followUpId,
@@ -62,13 +64,13 @@ export function WhatsAppExecutionButton({
       return;
     }
     setOpened(true);
-    onWhatsAppOpened?.();
+    onWhatsAppOpened?.(outboundId);
   };
 
   const handleMarkSent = () => {
     setSent(true);
     setShowConfirm(false);
-    onSent?.();
+    onSent?.(outboundId);
   };
 
   const pad = compact ? "5px 10px" : "7px 14px";

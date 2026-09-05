@@ -50,6 +50,7 @@ export interface OutboundMessage {
   source: string;          // e.g. "mission_control", "ask_ai", "follow_up_queue"
   followUpId?: string;     // links to a follow-up task if applicable
   strategy?: string;       // internal AI strategy — stored separately, never sent
+  salesBrain?: { salesStage: string; buyerIntent: string; recommendedAction: string; recommendedFollowUpDate: string; reasoningSummary: string; riskLevel: string };
   knowledgeUsed?: string[]; // titles of knowledge sources used
 }
 
@@ -62,6 +63,7 @@ export function newOutboundMessage(params: {
   strategy?: string;
   knowledgeUsed?: string[];
   followUpId?: string;
+  salesBrain?: OutboundMessage["salesBrain"];
 }): OutboundMessage {
   return {
     id: "om-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
@@ -75,6 +77,7 @@ export function newOutboundMessage(params: {
     strategy: params.strategy,
     knowledgeUsed: params.knowledgeUsed,
     followUpId: params.followUpId,
+    salesBrain: params.salesBrain,
   };
 }
 

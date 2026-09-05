@@ -7,8 +7,8 @@ import {
   daysSince, hoursSince, SERVICE_VALUE, today, getWeekStart,
   getInternActivities, getInternActivitiesRange, nowISO,
 } from "../constants";
-import { runQAReview, runQAAdjust } from "../aiQA";
 import { stripMarkdown } from "../aiEngine";
+import { runSalesBrain } from "../salesBrain";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,7 +17,6 @@ interface AiMessage {
   text: string;
   dm?: string;
   strategy?: string;
-  qaFiltered?: boolean;
   mentionedLeads?: Lead[];   // leads detected in this AI response
 }
 
@@ -468,7 +467,6 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIPro
           text: data.text || "",
           dm: data.text || undefined,
           strategy: data.strategy || undefined,
-          qaFiltered: false,
           mentionedLeads: [lead],
           messageType: data.messageType || "VALUE_DM",
           knowledgeUsed: data.knowledgeUsed || [],
@@ -563,24 +561,22 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIPro
         strategy = raw.slice(raw.indexOf(stratMarker) + stratMarker.length).trim();
       }
 
-      // QA filtering for DMs with a referenced lead
+      // A message request for a specific lead is always finalized by the
+      // canonical Sales Brain; Ask AI only explains the result.
       let finalDm = dm;
-      let qaFiltered = false;
       if (dm && ctxLead) {
         try {
-          const review = await runQAReview(dm, ctxLead);
-          if (review.needsAdjustment) {
-            const adjusted = await runQAAdjust(review, dm, ctxLead);
-            if (adjusted?.trim()) { finalDm = adjusted.trim(); qaFiltered = true; }
-          }
-        } catch { /* QA is best-effort */ }
+          const brain = await runSalesBrain(ctxLead, { task: q });
+          finalDm = brain.message;
+          strategy = brain.reasoningSummary;
+        } catch { /* Preserve the explanatory response if Sales Brain is unavailable. */ }
       }
 
       const mentioned = extractMentionedLeads(raw, leads);
 
       setMessages(prev => [
         ...prev,
-        { role: "ai", text: raw, dm: finalDm || undefined, strategy: strategy || undefined, qaFiltered, mentionedLeads: mentioned },
+        { role: "ai", text: raw, dm: finalDm || undefined, strategy: strategy || undefined, mentionedLeads: mentioned },
       ]);
     } catch (err: any) {
       setMessages(prev => [...prev, { role: "ai", text: "Error: " + err.message }]);
@@ -697,7 +693,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIPro
                       <>
                         <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 12px" }}>
                           <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>
-                            📨 SUGGESTED MESSAGE{msg.qaFiltered ? " (QA-Improved)" : ""}
+                            📨 FINAL SALES BRAIN MESSAGE
                           </div>
                           <div style={{ fontSize: 12, color: "#ddd", lineHeight: 1.78, whiteSpace: "pre-wrap" }}>
                             {msg.dm}

@@ -17,7 +17,6 @@ import {
   RESPONSE_GUARD_HOURS, MEETING_WINDOW_HOURS, scoreLead
 } from "../constants";
 import { buildCEOAdvisorPrompt, runAI, runProspectSummary, runFollowUpReply } from "../aiEngine";
-import { AIQAPanel } from "./AIQAPanel";
 
 interface CEOTabProps {
   leads: Lead[];
@@ -842,7 +841,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
               </>
             )}
             {draftDMStep === 'generating' && (
-              <div style={{ fontSize: 11, color: MUTED }}>Writing DM through AI + QA pipeline…</div>
+              <div style={{ fontSize: 11, color: MUTED }}>Sales Brain is preparing the final message…</div>
             )}
             {draftDMStep === 'done' && draftDMOutput && (
               <>
@@ -853,13 +852,6 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
                   </button>
                   <button onClick={cancelDraftDM} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 5, padding: "5px 12px", fontSize: 10, cursor: "pointer" }}>Close</button>
                 </div>
-                {draftDMLead && (
-                  <AIQAPanel
-                    draft={draftDMOutput}
-                    lead={draftDMLead}
-                    onRegenerate={confirmDraftDM}
-                  />
-                )}
               </>
             )}
           </div>
