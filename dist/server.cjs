@@ -606,6 +606,13 @@ async function runSnapshotReplaceTransaction(pool, validLeads) {
 function normalizeText(value) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
+function hasRequiredImportedName(raw) {
+  return !!raw && typeof raw === "object" && !Array.isArray(raw) && normalizeText(raw.name).length > 0;
+}
+function deriveCompanyFromContactName(value) {
+  const match = normalizeText(value).match(/^team\s+at\s+(.+)$/i);
+  return match ? normalizeText(match[1]) : "";
+}
 function sdbHash(value) {
   let hash = 2166136261;
   for (let i = 0; i < value.length; i++) {
@@ -621,7 +628,7 @@ function normalizeImportedLead(raw, index) {
   }
   const base = { ...raw };
   const name = normalizeText(base.name) || `Lead ${index + 1}`;
-  const company = normalizeText(base.company) || "Unknown Company";
+  const company = normalizeText(base.company) || deriveCompanyFromContactName(base.name) || "Unknown Company";
   const idSeed = [base.id, base.name, base.company, base.phone, base.email, base.instagram, base.whatsapp].filter(Boolean).join("|");
   const generatedId = idSeed ? `imp-${sdbHash(idSeed)}` : `imp-${Date.now()}-${index}`;
   const lead = {
@@ -670,6 +677,65 @@ function normalizeImportedLead(raw, index) {
   };
   return lead;
 }
+function summarizeImportBatch(rawLeads, existingIds) {
+  const validById = /* @__PURE__ */ new Map();
+  const duplicates = [];
+  const rejected = [];
+  let newCount = 0;
+  let updatedCount = 0;
+  rawLeads.forEach((lead, index) => {
+    if (!lead || typeof lead !== "object" || Array.isArray(lead)) {
+      rejected.push({ index, reason: "expected an object" });
+      return;
+    }
+    const idSeed = [lead.id, lead.name, lead.company, lead.phone, lead.email, lead.instagram, lead.whatsapp].filter((value) => typeof value === "string" && value.trim().length > 0).join("|");
+    const normalizedId = normalizeText(lead.id) || (idSeed ? `imp-${sdbHash(idSeed)}` : void 0);
+    const id = normalizedId || `imp-${Date.now()}-${index}`;
+    if (!hasRequiredImportedName(lead)) {
+      rejected.push({ index, id, reason: "missing required name" });
+      return;
+    }
+    let normalized;
+    try {
+      normalized = normalizeImportedLead(lead, index);
+    } catch (error) {
+      rejected.push({ index, id, reason: error?.message || "invalid record" });
+      return;
+    }
+    const existingEntry = validById.get(normalized.id);
+    if (existingEntry) {
+      duplicates.push({ id: normalized.id, reason: "duplicate within source file; latest row wins" });
+    }
+    validById.set(normalized.id, normalized);
+  });
+  const valid = Array.from(validById.values());
+  valid.forEach((lead) => {
+    if (existingIds.has(lead.id)) {
+      updatedCount += 1;
+    } else {
+      newCount += 1;
+    }
+  });
+  const validCount = valid.length;
+  const rejectedCount = rejected.length;
+  const duplicateSourceCount = duplicates.length;
+  const failedCount = rejectedCount + duplicateSourceCount;
+  const finalDatabaseCount = existingIds.size + newCount;
+  return {
+    sourceCount: rawLeads.length,
+    validCount,
+    rejectedCount,
+    duplicateSourceCount,
+    newCount,
+    updatedCount,
+    failedCount,
+    finalDatabaseCount,
+    valid,
+    importable: valid,
+    duplicates,
+    rejected
+  };
+}
 function summarizeSnapshotImport(rawLeads) {
   const validById = /* @__PURE__ */ new Map();
   const duplicates = [];
@@ -682,8 +748,8 @@ function summarizeSnapshotImport(rawLeads) {
     const idSeed = [lead.id, lead.name, lead.company, lead.phone, lead.email, lead.instagram, lead.whatsapp].filter((value) => typeof value === "string" && value.trim().length > 0).join("|");
     const normalizedId = normalizeText(lead.id) || (idSeed ? `imp-${sdbHash(idSeed)}` : void 0);
     const id = normalizedId || `imp-${Date.now()}-${index}`;
-    if (!normalizeText(lead.name) || !normalizeText(lead.company)) {
-      rejected.push({ index, id, reason: "missing required name/company" });
+    if (!hasRequiredImportedName(lead)) {
+      rejected.push({ index, id, reason: "missing required name" });
       return;
     }
     let normalized;
@@ -807,6 +873,10 @@ async function initializeDatabase() {
 }
 var PORT = process.env.PORT ? parseInt(process.env.PORT) : 5e3;
 var GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
+function getGeminiApiKey() {
+  const value = process.env.GEMINI_API_KEY?.trim();
+  return value || void 0;
+}
 var aiHealth = {
   lastSuccessAt: null,
   lastModelUsed: null,
@@ -828,7 +898,7 @@ function recordFailure(model, message) {
 }
 app.use(import_express.default.json({ limit: "25mb" }));
 async function callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, temperature) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured on the server.");
   const ai = new import_genai.GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
@@ -867,7 +937,7 @@ function friendlyError(error) {
   if (raw.includes("401") || raw.includes("403") || raw.toLowerCase().includes("api key") || raw.toLowerCase().includes("invalid")) {
     return "Invalid GEMINI_API_KEY. Check your environment variables.";
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     return "GEMINI_API_KEY is not configured. Add it to your environment variables.";
   }
   return raw.replace(/\{[\s\S]*?\}/g, "").trim().slice(0, 200) || "AI service temporarily unavailable.";
@@ -879,7 +949,7 @@ app.post("/api/ai", async (req, res) => {
     res.status(400).json({ error: "userPrompt is required" });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -899,7 +969,9 @@ app.get("/api/ai-status", (req, res) => {
   res.setHeader("Content-Type", "application/json");
   const avgLatencyMs = aiHealth.successCount > 0 ? Math.round(aiHealth.totalLatencyMs / aiHealth.successCount) : null;
   res.json({
-    configured: !!process.env.GEMINI_API_KEY,
+    configured: !!getGeminiApiKey(),
+    keySource: "server runtime environment",
+    keyLength: getGeminiApiKey()?.length || 0,
     provider: "gemini",
     defaultModel: GEMINI_MODEL,
     lastSuccessAt: aiHealth.lastSuccessAt,
@@ -912,7 +984,7 @@ app.get("/api/ai-status", (req, res) => {
 });
 app.post("/api/ai-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.json({ ok: false, error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -938,7 +1010,7 @@ app.post("/api/call-gemini", async (req, res) => {
     res.status(400).json({ error: "prompt is required" });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -957,7 +1029,7 @@ app.post("/api/call-gemini", async (req, res) => {
 app.post("/api/infer-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
   const { currentStatus, dmText, prospectInitialResponse, prospectLatestResponse, notes, name, company } = req.body || {};
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -1013,7 +1085,7 @@ app.post("/api/generate-dm", async (req, res) => {
     res.status(400).json({ error: "Prospect name and company are required." });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -1359,18 +1431,18 @@ app.post("/api/leads", async (req, res) => {
     const rawLeads = Array.isArray(body.leads) ? body.leads : [];
     const isSnapshot = body.snapshot === true || body.replace === true || body.mode === "snapshot";
     if (isSnapshot) {
-      const summary = summarizeSnapshotImport(rawLeads);
-      const valid2 = summary.valid.map((lead2) => stripAttachmentContent(lead2));
-      if (!summary.canReplace || valid2.length === 0) {
+      const summary2 = summarizeSnapshotImport(rawLeads);
+      const valid2 = summary2.valid.map((lead2) => stripAttachmentContent(lead2));
+      if (!summary2.canReplace || valid2.length === 0) {
         return res.status(400).json({
           ok: false,
           error: "Snapshot replacement requires at least one valid lead.",
-          sourceCount: summary.sourceCount,
-          validCount: summary.validCount,
-          rejectedCount: summary.rejectedCount,
-          duplicateSourceCount: summary.duplicateSourceCount,
-          duplicates: summary.duplicates,
-          rejected: summary.rejected,
+          sourceCount: summary2.sourceCount,
+          validCount: summary2.validCount,
+          rejectedCount: summary2.rejectedCount,
+          duplicateSourceCount: summary2.duplicateSourceCount,
+          duplicates: summary2.duplicates,
+          rejected: summary2.rejected,
           finalDatabaseCount: 0
         });
       }
@@ -1380,16 +1452,16 @@ app.post("/api/leads", async (req, res) => {
           ok: true,
           count: transactionResult.count,
           importedIds: transactionResult.importedIds,
-          duplicates: summary.duplicates,
-          rejected: summary.rejected,
-          sourceCount: summary.sourceCount,
-          validCount: summary.validCount,
-          rejectedCount: summary.rejectedCount,
-          duplicateSourceCount: summary.duplicateSourceCount,
-          duplicateCount: summary.duplicateSourceCount,
-          newCount: summary.newCount,
-          updatedCount: summary.updatedCount,
-          failedCount: summary.failedCount,
+          duplicates: summary2.duplicates,
+          rejected: summary2.rejected,
+          sourceCount: summary2.sourceCount,
+          validCount: summary2.validCount,
+          rejectedCount: summary2.rejectedCount,
+          duplicateSourceCount: summary2.duplicateSourceCount,
+          duplicateCount: summary2.duplicateSourceCount,
+          newCount: summary2.newCount,
+          updatedCount: summary2.updatedCount,
+          failedCount: summary2.failedCount,
           finalDatabaseCount: transactionResult.finalDatabaseCount
         });
       } catch (err) {
@@ -1403,40 +1475,20 @@ app.post("/api/leads", async (req, res) => {
       }
     }
     const currentIds = new Set((await db.query("SELECT id FROM leads")).rows.map((r) => String(r.id)));
-    const validById = /* @__PURE__ */ new Map();
-    const duplicates = [];
-    const rejected = [];
-    rawLeads.forEach((lead2, index) => {
-      if (!lead2 || typeof lead2 !== "object" || Array.isArray(lead2)) {
-        rejected.push({ index, reason: "expected an object" });
-        return;
-      }
-      const idRaw = String(lead2.id || "").trim();
-      const hasName = typeof lead2.name === "string" ? lead2.name.trim() : !!lead2.name;
-      const hasCompany = typeof lead2.company === "string" ? lead2.company.trim() : !!lead2.company;
-      if (!hasName || !hasCompany) {
-        rejected.push({ index, id: idRaw || void 0, reason: "missing required name/company" });
-        return;
-      }
-      if (!idRaw) {
-        rejected.push({ index, id: void 0, reason: "missing lead.id" });
-        return;
-      }
-      const cleaned = stripAttachmentContent(lead2);
-      if (validById.has(idRaw)) {
-        duplicates.push({ id: idRaw, reason: "duplicate within source file; latest row wins" });
-      }
-      validById.set(idRaw, cleaned);
-    });
-    const valid = Array.from(validById.values());
-    const newCount = valid.filter((lead2) => !currentIds.has(String(lead2.id))).length;
-    const updatedCount = valid.length - newCount;
-    const sourceCount = rawLeads.length;
-    const validCount = valid.length;
-    const rejectedCount = rejected.length;
-    const duplicateSourceCount = duplicates.length;
-    const failedCount = rejectedCount + duplicateSourceCount;
-    const finalDatabaseCount = currentIds.size + newCount;
+    const summary = summarizeImportBatch(rawLeads, currentIds);
+    const valid = summary.valid.map((lead2) => stripAttachmentContent(lead2));
+    const {
+      duplicates,
+      rejected,
+      sourceCount,
+      validCount,
+      rejectedCount,
+      duplicateSourceCount,
+      failedCount,
+      finalDatabaseCount,
+      newCount,
+      updatedCount
+    } = summary;
     if (valid.length === 0) {
       return res.json({
         ok: true,

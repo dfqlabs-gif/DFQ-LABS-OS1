@@ -110,6 +110,11 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 // gemini-3.1-flash-lite: fastest confirmed working model for high-volume free-tier
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 
+function getGeminiApiKey(): string | undefined {
+  const value = process.env.GEMINI_API_KEY?.trim();
+  return value || undefined;
+}
+
 // ── In-memory AI health tracking ─────────────────────────────────────────────
 const aiHealth = {
   lastSuccessAt: null as string | null,
@@ -144,7 +149,7 @@ async function callGeminiRaw(
   maxTokens: number,
   temperature: number
 ): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured on the server.");
 
   const ai = new GoogleGenAI({ apiKey });
@@ -195,7 +200,7 @@ function friendlyError(error: any): string {
   if (raw.includes("401") || raw.includes("403") || raw.toLowerCase().includes("api key") || raw.toLowerCase().includes("invalid")) {
     return "Invalid GEMINI_API_KEY. Check your environment variables.";
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     return "GEMINI_API_KEY is not configured. Add it to your environment variables.";
   }
   return raw.replace(/\{[\s\S]*?\}/g, "").trim().slice(0, 200) || "AI service temporarily unavailable.";
@@ -210,7 +215,7 @@ app.post("/api/ai", async (req, res) => {
     res.status(400).json({ error: "userPrompt is required" });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -233,7 +238,9 @@ app.get("/api/ai-status", (req, res) => {
   res.setHeader("Content-Type", "application/json");
   const avgLatencyMs = aiHealth.successCount > 0 ? Math.round(aiHealth.totalLatencyMs / aiHealth.successCount) : null;
   res.json({
-    configured: !!process.env.GEMINI_API_KEY,
+    configured: !!getGeminiApiKey(),
+    keySource: "server runtime environment",
+    keyLength: getGeminiApiKey()?.length || 0,
     provider: "gemini",
     defaultModel: GEMINI_MODEL,
     lastSuccessAt: aiHealth.lastSuccessAt,
@@ -247,7 +254,7 @@ app.get("/api/ai-status", (req, res) => {
 
 app.post("/api/ai-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.json({ ok: false, error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -276,7 +283,7 @@ app.post("/api/call-gemini", async (req, res) => {
     res.status(400).json({ error: "prompt is required" });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -299,7 +306,7 @@ app.post("/api/infer-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
   const { currentStatus, dmText, prospectInitialResponse, prospectLatestResponse, notes, name, company } = req.body || {};
 
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }
@@ -365,7 +372,7 @@ app.post("/api/generate-dm", async (req, res) => {
     res.status(400).json({ error: "Prospect name and company are required." });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!getGeminiApiKey()) {
     res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
     return;
   }

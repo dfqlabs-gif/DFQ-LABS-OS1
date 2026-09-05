@@ -59,6 +59,10 @@ export function applySentMessage(
   outboundId?: string,
   strategy?: string,
 ): Lead {
+  if (outboundId && (lead.outboundMessages || []).some(om => om.id === outboundId && om.status === "SENT")) {
+    return lead;
+  }
+
   const now = nowISO();
   const isDm = ["VALUE_DM", "SALES_DM", "INTRODUCTION_DM", "REACTIVATION_DM", "NURTURE_DM"].includes(messageType);
 

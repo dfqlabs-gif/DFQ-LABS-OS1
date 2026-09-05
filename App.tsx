@@ -36,6 +36,9 @@ import { AskAI } from "./components/AskAI";
 import { AIQAPanel } from "./components/AIQAPanel";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
+import { applySentMessage } from "./lib/execution";
+import { newOutboundMessage, markWhatsAppOpened } from "./lib/outbound";
+import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -2121,6 +2124,14 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
     try {
       const text = await runFollowUpReply(lead, context);
       setDmOutputs(p => ({ ...p, [lead.id]: text }));
+      const outbound = newOutboundMessage({
+        leadId: lead.id,
+        userId: displayName,
+        messageType: "VALUE_DM",
+        messageText: text.split('\n\n---STRATEGY---')[0].trim(),
+        source: "follow_up_queue",
+      });
+      onSave({ ...lead, outboundMessages: [...(lead.outboundMessages || []), outbound] });
       // Save original draft (without strategy block) for the learning loop.
       // On next "Regenerate", the QA panel passes it back via onRegenerate(ctx).
       const cleanDraft = text.split('\n\n---STRATEGY---')[0].trim();
@@ -2289,6 +2300,25 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                           <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 8 }}>{dm}</div>
                           <div style={{ display: "flex", gap: 8 }}>
                             <CopyBtn text={dm} />
+                            <WhatsAppExecutionButton
+                              lead={lead}
+                              message={dm.split('\n\n---STRATEGY---')[0].trim()}
+                              messageType="VALUE_DM"
+                              source="follow_up_queue"
+                              userId={displayName}
+                              compact
+                              onWhatsAppOpened={() => {
+                                const cleanMessage = dm.split('\n\n---STRATEGY---')[0].trim();
+                                const outbound = [...(lead.outboundMessages || [])].reverse().find(om => om.messageText === cleanMessage && om.status !== "SENT" && om.status !== "CANCELLED");
+                                if (!outbound) return;
+                                onSave({ ...lead, outboundMessages: (lead.outboundMessages || []).map(om => om.id === outbound.id ? markWhatsAppOpened(om) : om) });
+                              }}
+                              onSent={() => {
+                                const cleanMessage = dm.split('\n\n---STRATEGY---')[0].trim();
+                                const outbound = [...(lead.outboundMessages || [])].reverse().find(om => om.messageText === cleanMessage && om.status !== "SENT" && om.status !== "CANCELLED");
+                                onSave(applySentMessage(lead, cleanMessage, "VALUE_DM", displayName, outbound?.id));
+                              }}
+                            />
                             <button onClick={() => startDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
                           </div>
                           <AIQAPanel draft={dm} lead={lead} onRegenerate={(ctx?: QARegenerateContext) => {
