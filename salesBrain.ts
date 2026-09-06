@@ -94,9 +94,9 @@ function normalise(lead: Lead, data: Record<string, unknown>, requested?: Messag
 
 export async function runSalesBrain(lead: Lead, options: SalesBrainOptions = {}): Promise<SalesBrainResult> {
   const requested = options.requestedMessageType || "FOLLOW_UP";
-  let result = normalise(lead, jsonFromModel(await runAI(prompt(lead, { ...options, requested }), 1200)), requested);
+  let result = normalise(lead, jsonFromModel(await runAI(prompt(lead, options), 1200)), requested);
   const failure = validateSalesBrainMessage(result.message, result.messageType);
-  if (failure) result = normalise(lead, jsonFromModel(await runAI(prompt(lead, { ...options, requested }, failure), 1200)), requested, true);
+  if (failure) result = normalise(lead, jsonFromModel(await runAI(prompt(lead, options, failure), 1200)), requested, true);
   const finalFailure = validateSalesBrainMessage(result.message, result.messageType);
   if (finalFailure) throw new Error(`Sales Brain could not approve a safe message: ${finalFailure}.`);
   return result;
