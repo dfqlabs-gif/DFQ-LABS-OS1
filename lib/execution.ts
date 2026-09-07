@@ -70,7 +70,9 @@ export function applySentMessage(
 
   // Update outbound message record (Part 10, 15)
   const outboundMessages = (lead.outboundMessages || []).map(om =>
-    outboundId && om.id === outboundId ? markOutboundSent(om) : om
+    outboundId && om.id === outboundId
+      ? markOutboundSent({ ...om, originalGeneratedMessage: om.originalGeneratedMessage || om.messageText, messageText })
+      : om
   );
 
   // Conversation log entry — ONLY the actual message (Part 11)

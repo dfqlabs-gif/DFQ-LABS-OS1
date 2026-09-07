@@ -6,6 +6,8 @@ import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
 import { SYSTEM_PROMPT } from "./aiEngine";
 import { runSalesBrainWithGenerator } from "./salesBrain";
+import type { Lead } from "./types";
+import { LEARNING_OUTCOMES, analyzeLearningEvents, buildLearningEvent, relevantInsights, summarizeLearning, type LearningEvent, type LearningInsight } from "./lib/learning";
 import { stripAttachmentContent } from "./lib/attachments";
 import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
@@ -66,6 +68,11 @@ async function initializeDatabase() {
     throw new Error(`Failed to create lead_attachments table: ${err}`);
   }
 
+  // Append-only-ish organizational learning evidence. Existing lead JSON stays
+  // authoritative for CRM data; these tables make cross-lead learning durable.
+  await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_events (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, outbound_id TEXT UNIQUE NOT NULL, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
+  await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_insights (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
+
   // 5. Run attachment migration (only after all tables exist)
   try {
     const { rows } = await db.query(
@@ -106,6 +113,8 @@ async function initializeDatabase() {
 }
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
+const LEARNING_ENABLED = process.env.SALES_BRAIN_LEARNING_ENABLED !== "false";
+const LEARNING_INFLUENCE_ENABLED = process.env.SALES_BRAIN_LEARNING_INFLUENCE_ENABLED === "true";
 
 // ── AI Provider configuration — change GEMINI_MODEL env var to swap models ──
 // gemini-3.1-flash-lite: fastest confirmed working model for high-volume free-tier
@@ -137,6 +146,33 @@ function recordFailure(model: string, message: string) {
   aiHealth.failureCount++;
   aiHealth.recentErrors.unshift({ ts: new Date().toISOString(), message: String(message).slice(0, 200), model });
   aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
+}
+
+async function syncLearningForLead(lead: Lead): Promise<void> {
+  if (!LEARNING_ENABLED || !Array.isArray(lead.outboundMessages)) return;
+  for (const outbound of lead.outboundMessages) {
+    const prior = await db.query("SELECT data FROM sales_learning_events WHERE outbound_id = $1", [outbound.id]);
+    const event = buildLearningEvent(lead, outbound, prior.rows[0]?.data as LearningEvent | undefined);
+    await db.query(`INSERT INTO sales_learning_events (id, lead_id, outbound_id, data, updated_at) VALUES ($1, $2, $3, $4::jsonb, NOW()) ON CONFLICT (outbound_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`, [event.id, event.leadId, event.outboundId, JSON.stringify(event)]);
+  }
+  scheduleLearningAnalysis();
+}
+
+let learningAnalysisTimer: ReturnType<typeof setTimeout> | undefined;
+function scheduleLearningAnalysis() {
+  if (learningAnalysisTimer) return;
+  learningAnalysisTimer = setTimeout(() => {
+    learningAnalysisTimer = undefined;
+    refreshLearningInsights().catch(error => console.error("Learning analysis failed:", error));
+  }, 500);
+}
+
+async function refreshLearningInsights(): Promise<void> {
+  if (!LEARNING_ENABLED) return;
+  const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row: any) => row.data as LearningEvent);
+  const prior = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight);
+  const insights = analyzeLearningEvents(events, prior);
+  for (const insight of insights) await db.query(`INSERT INTO sales_learning_insights (id, data, updated_at) VALUES ($1, $2::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`, [insight.id, JSON.stringify(insight)]);
 }
 
 // 25mb limit — bulk lead imports/exports can be large JSON payloads
@@ -612,9 +648,19 @@ FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holi
     // This route is already on the server: use its Gemini provider directly.
     // Calling runSalesBrain (the browser wrapper) here used fetch("/api/ai")
     // in Node and caused the production "Failed to parse URL" failure.
+    const storedInsights = LEARNING_INFLUENCE_ENABLED
+      ? (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight)
+      : [];
+    const learningInsights = relevantInsights(storedInsights, leadWithAttachments, type).map(insight => ({
+      insightId: insight.id,
+      pattern: insight.pattern,
+      relevance: `${insight.segment} / ${insight.strategyType}`,
+      confidence: insight.confidence,
+      evidenceSummary: `${insight.evidenceCount} sent; ${Math.round(insight.positiveResponseRate * 100)}% positive; ${insight.meetingCount} meetings`,
+    }));
     const brain = await runSalesBrainWithGenerator(
       leadWithAttachments,
-      { task: fullTask, requestedMessageType: type as any },
+      { task: fullTask, requestedMessageType: type as any, learningInsights },
       (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
     );
     res.json({
@@ -623,11 +669,62 @@ FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holi
       messageType: brain.messageType,
       brain,
       knowledgeUsed: knowledge.map(k => k.title),
+      learningInsights,
     });
   } catch (err: any) {
     console.error("POST /api/value-dm error:", err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Sales Brain Learning API ────────────────────────────────────────────────
+// These endpoints expose aggregate organizational evidence only; raw private
+// conversations remain in the CRM and are never returned by analytics.
+app.get("/api/learning/summary", async (_req, res) => {
+  try {
+    const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row: any) => row.data as LearningEvent);
+    const insights = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight);
+    res.json({ enabled: LEARNING_ENABLED, influenceEnabled: LEARNING_INFLUENCE_ENABLED, summary: summarizeLearning(events, insights), insights: insights.sort((a, b) => b.confidence - a.confidence).slice(0, 20) });
+  } catch (error) { console.error("GET /api/learning/summary:", error); res.status(500).json({ error: "Failed to load learning analytics." }); }
+});
+
+app.get("/api/learning/insights", async (req, res) => {
+  if (!LEARNING_INFLUENCE_ENABLED) return res.json({ insights: [] });
+  try {
+    const leadId = String(req.query.leadId || "");
+    const leadResult = await db.query("SELECT data FROM leads WHERE id = $1", [leadId]);
+    if (!leadResult.rows[0]) return res.json({ insights: [] });
+    const insights = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight);
+    const selected = relevantInsights(insights, leadResult.rows[0].data as Lead, String(req.query.messageType || "")).map(insight => ({ insightId: insight.id, pattern: insight.pattern, relevance: `${insight.segment} / ${insight.strategyType}`, confidence: insight.confidence, evidenceSummary: `${insight.evidenceCount} sent; ${Math.round(insight.positiveResponseRate * 100)}% positive; ${insight.meetingCount} meetings` }));
+    res.json({ insights: selected });
+  } catch (error) { console.error("GET /api/learning/insights:", error); res.status(500).json({ error: "Failed to retrieve learning insights." }); }
+});
+
+app.post("/api/learning/insights/:id/disable", async (req, res) => {
+  try {
+    const result = await db.query("SELECT data FROM sales_learning_insights WHERE id = $1", [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Insight not found." });
+    const insight = { ...(result.rows[0].data as LearningInsight), status: "DISABLED" as const, updatedAt: new Date().toISOString() };
+    await db.query("UPDATE sales_learning_insights SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(insight), req.params.id]);
+    res.json({ ok: true, insight });
+  } catch (error) { console.error("POST /api/learning/insights disable:", error); res.status(500).json({ error: "Failed to disable learning insight." }); }
+});
+
+app.post("/api/learning/outcomes", async (req, res) => {
+  const { outboundId, outcome, responseMessage, outcomeRecordedAt } = req.body || {};
+  if (!outboundId || !LEARNING_OUTCOMES.includes(outcome)) return res.status(400).json({ error: "A valid outboundId and controlled outcome are required." });
+  try {
+    const result = await db.query("SELECT data FROM sales_learning_events WHERE outbound_id = $1", [outboundId]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Learning event not found for outbound message." });
+    const event = result.rows[0].data as LearningEvent;
+    // Idempotent retries with the same outcome replace metadata, never create a second event.
+    const recordedAt = outcomeRecordedAt || new Date().toISOString();
+    if (event.sentAt && new Date(recordedAt).getTime() < new Date(event.sentAt).getTime()) return res.status(400).json({ error: "An outcome cannot precede the sent timestamp." });
+    const updated: LearningEvent = { ...event, outcome, outcomeSource: "manual", outcomeRecordedAt: recordedAt, responseMessage: responseMessage || event.responseMessage, outcomeConfidence: 100, responseTimeSeconds: event.sentAt ? Math.round((new Date(recordedAt).getTime() - new Date(event.sentAt).getTime()) / 1000) : undefined, updatedAt: new Date().toISOString() };
+    await db.query("UPDATE sales_learning_events SET data = $1::jsonb, updated_at = NOW() WHERE outbound_id = $2", [JSON.stringify(updated), outboundId]);
+    scheduleLearningAnalysis();
+    res.json({ ok: true, event: updated });
+  } catch (error) { console.error("POST /api/learning/outcomes:", error); res.status(500).json({ error: "Failed to record learning outcome." }); }
 });
 
 // ── Knowledge Base API (Parts 1, 2, 23) ──────────────────────────────────────
@@ -786,6 +883,9 @@ app.post("/api/leads", async (req, res) => {
 
       try {
         const transactionResult = await runSnapshotReplaceTransaction(db, valid);
+        // Backfill only deterministic outbound/conversation evidence after the
+        // snapshot transaction has succeeded; never block or alter the import.
+        for (const imported of valid) void syncLearningForLead(imported as Lead).catch(error => console.error("Learning snapshot sync failed:", error));
 
         return res.json({
           ok: true,
@@ -850,6 +950,7 @@ app.post("/api/leads", async (req, res) => {
         updated_at = NOW() RETURNING id`;
       const result = await db.query(query, params);
       const importedIds = result.rows.map((row: any) => row.id);
+      for (const imported of valid) void syncLearningForLead(imported as Lead).catch(error => console.error("Learning bulk sync failed:", error));
       return res.json({
         ok: true,
         count: importedIds.length,
@@ -880,6 +981,9 @@ app.post("/api/leads", async (req, res) => {
        ON CONFLICT (id) DO UPDATE SET data = $2::jsonb, updated_at = NOW()`,
       [lead.id, JSON.stringify(lead)]
     );
+    // CRM persistence is authoritative. Learning is an idempotent, best-effort
+    // projection keyed by outbound ID and can never prevent a lead save.
+    void syncLearningForLead(lead as Lead).catch(error => console.error("Learning lead sync failed:", error));
     res.json({ ok: true });
   } catch (err: any) {
     console.error("POST /api/leads single:", err);

@@ -43,6 +43,8 @@ export interface OutboundMessage {
   userId: string;          // team member who generated/sent
   messageType: MessageType;
   messageText: string;     // ONLY the actual message (never strategy/metadata)
+  // Preserves the AI-approved original when a human sends an edited final version.
+  originalGeneratedMessage?: string;
   status: OutboundStatus;
   generatedAt: string;     // ISO
   whatsappOpenedAt?: string;
@@ -71,6 +73,7 @@ export function newOutboundMessage(params: {
     userId: params.userId,
     messageType: params.messageType,
     messageText: params.messageText,
+    originalGeneratedMessage: params.messageText,
     status: "GENERATED",
     generatedAt: new Date().toISOString(),
     source: params.source,

@@ -38,6 +38,7 @@ import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summar
 import { applySentMessage, applyWhatsAppOpened } from "./lib/execution";
 import { newOutboundMessage } from "./lib/outbound";
 import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
+import { LearningIntelligence } from "./components/LearningIntelligence";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -52,6 +53,7 @@ function SalesBrainExecution({ lead, brain, outboundId, onSave, userId }: { lead
   return <div style={{ padding: "12px 14px", background: SURFACE2, borderTop: `1px solid ${BORDER}` }}>
     <div style={{ fontSize: 9, color: G, fontWeight: 800, letterSpacing: "0.1em", marginBottom: 6 }}>SALES BRAIN RECOMMENDATION</div>
     <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.6, marginBottom: 10 }}>Stage: {brain.salesStage} · Intent: {brain.buyerIntent}<br />Objective: {brain.primaryObjective}<br />Follow-up: {brain.recommendedFollowUpDate} · {brain.messageType} · {brain.confidence}% confidence</div>
+    {brain.learningInsights?.length ? <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.5, marginBottom: 10, borderLeft: `2px solid ${G}`, paddingLeft: 8 }}><strong style={{ color: G }}>LEARNING SIGNAL</strong><br />{brain.learningInsights[0].pattern}<br />Evidence: {brain.learningInsights[0].evidenceSummary} · {brain.learningInsights[0].confidence}/100</div> : null}
     <div style={{ fontSize: 9, color: G, fontWeight: 800, letterSpacing: "0.1em", marginBottom: 6 }}>FINAL MESSAGE</div>
     <div style={{ fontSize: 12, color: "#ddd", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 10 }}>{brain.message}</div>
     <WhatsAppExecutionButton lead={lead} message={brain.message} messageType={brain.messageType} source="follow_up_queue" userId={userId} outboundId={outboundId} compact onWhatsAppOpened={(id) => onSave(applyWhatsAppOpened(lead, id))} onSent={(id) => onSave(applySentMessage(lead, brain.message, brain.messageType, userId, id, brain.reasoningSummary, brain.recommendedAction, brain.recommendedFollowUpDate))} />
@@ -1539,6 +1541,7 @@ export default function App() {
     { key: "ceo", label: "CEO Dashboard" },
     { key: "duplicates", label: "Duplicates" },
     { key: "gateway", label: "AI Gateway" },
+    { key: "learning", label: "Learning" },
     { key: "knowledge", label: "Knowledge Base" }
   ];
 
@@ -1821,6 +1824,7 @@ export default function App() {
         {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
         {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
+        {tab === "learning" && <LearningIntelligence />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}

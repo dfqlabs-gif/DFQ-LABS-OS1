@@ -25,9 +25,11 @@ export interface SalesBrainResult {
   reasoningSummary: string;
   qualityChecked: true;
   rewritten: boolean;
+  learningInsights?: SalesBrainLearningInsight[];
 }
 
-export interface SalesBrainOptions { requestedMessageType?: MessageType; task?: string; }
+export interface SalesBrainLearningInsight { insightId: string; pattern: string; relevance: string; confidence: number; evidenceSummary: string; }
+export interface SalesBrainOptions { requestedMessageType?: MessageType; task?: string; learningInsights?: SalesBrainLearningInsight[]; }
 export type SalesBrainGenerator = (prompt: string, maxTokens: number) => Promise<string>;
 
 const jsonFromModel = (raw: string): Record<string, unknown> => {
@@ -54,6 +56,9 @@ export function validateSalesBrainMessage(message: string, type: MessageType): s
 function prompt(lead: Lead, options: SalesBrainOptions, rewriteReason?: string): string {
   const requested = options.requestedMessageType || "FOLLOW_UP";
   const timeline = buildTimeline(lead).map(event => `${event.occurred ? "done" : "not done"}: ${event.label}`).join("; ");
+  const learningBlock = options.learningInsights?.length
+    ? `\nOrganizational learning (historical advisory evidence, never rules):\n${options.learningInsights.map(insight => `- ${insight.pattern} Confidence ${insight.confidence}/100; ${insight.evidenceSummary}`).join("\n")}\nUse this only when genuinely relevant. Current lead history, research, and fact safety take precedence. Do not invent facts or force a historically successful strategy.\n`
+    : "";
   return `You are the DFQ Labs AI SALES BRAIN. You are the only strategic authority for this lead. Analyze before writing, but do not reveal private chain-of-thought.
 
 Use only verified CRM/conversation information below. Never fabricate a person name: if contact identity is unknown, address the company/team naturally. A company name is not automatically a person's name. A Value DM must provide contextual, actionable value with no CTA or disguised sales ask. Do not write a lazy check-in. If an audit was delivered and the prospect is silent, acknowledge that specific prior interaction and choose a commercially useful, low-pressure next move.
@@ -65,6 +70,7 @@ Requested type: ${requested}
 ${rewriteReason ? `The first internal self-check failed because: ${rewriteReason}. Rewrite the message and return a stronger result.` : "Perform an internal self-check before returning: stage fit, factual grounding, conversation continuity, repetition, generic language, premature CTA, unsupported claims, useful next move, and WhatsApp length."}
 
 ${buildLeadContext(lead)}
+${learningBlock}
 
 Return ONLY valid JSON with exactly these fields:
 {"salesStage":"string","buyerIntent":"string","confidence":0,"primaryObjective":"string","strategicReason":"concise factual reason","detectedFriction":"string","recommendedAction":"string","messageType":"${requested}","message":"final approved WhatsApp message","cta":"string or empty for value DM","recommendedFollowUpDate":"YYYY-MM-DD","recommendedChannel":"WhatsApp","riskLevel":"low|medium|high","reasoningSummary":"one concise user-safe sentence"}
@@ -109,5 +115,15 @@ export async function runSalesBrainWithGenerator(
 }
 
 export async function runSalesBrain(lead: Lead, options: SalesBrainOptions = {}): Promise<SalesBrainResult> {
-  return runSalesBrainWithGenerator(lead, options, runAI);
+  let learningInsights = options.learningInsights;
+  // The read is intentionally best-effort: Sales Brain remains available if the
+  // learning service is disabled, unavailable, or still collecting evidence.
+  if (!learningInsights && typeof window !== "undefined") {
+    try {
+      const response = await fetch(`/api/learning/insights?leadId=${encodeURIComponent(lead.id)}&messageType=${encodeURIComponent(options.requestedMessageType || "")}`);
+      if (response.ok) learningInsights = (await response.json()).insights || [];
+    } catch { /* safe rollout: no learning context is better than a failed draft */ }
+  }
+  const result = await runSalesBrainWithGenerator(lead, { ...options, learningInsights }, runAI);
+  return { ...result, learningInsights };
 }
