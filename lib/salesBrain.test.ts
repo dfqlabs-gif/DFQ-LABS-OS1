@@ -36,8 +36,8 @@ test("Sales Brain returns structured output and rewrites an internally rejected 
 });
 
 test("execution preserves an exact outbound ID and is idempotent", () => {
-  const outbound = newOutboundMessage({ leadId: lead.id, userId: "Team", messageType: "FOLLOW_UP", messageText: "Exact final message", source: "test" });
-  const opened = applyWhatsAppOpened({ ...lead, outboundMessages: [outbound] }, outbound.id);
+  const outbound = newOutboundMessage({ leadId: lead.id, userId: "Team", messageType: "FOLLOW_UP", messageText: "Exact final message", source: "mission_control" });
+  const opened = applyWhatsAppOpened({ ...lead, awaitingReplySince: "2026-09-07T08:00:00.000Z", outboundMessages: [outbound] }, outbound.id);
   assert.equal(opened.outboundMessages?.[0].status, "WHATSAPP_OPENED");
   const sent = applySentMessage(opened, outbound.messageText, outbound.messageType, "Team", outbound.id, undefined, "Wait for reply", "2026-09-08");
   const retried = applySentMessage(sent, outbound.messageText, outbound.messageType, "Team", outbound.id);
@@ -45,4 +45,6 @@ test("execution preserves an exact outbound ID and is idempotent", () => {
   assert.equal(sent.conversationLog.length, 1);
   assert.equal(retried.conversationLog.length, 1);
   assert.equal(sent.nextActionDate, "2026-09-08");
+  assert.equal(sent.awaitingReplySince, "");
+  assert.equal(sent.completedFollowUps.length, 1);
 });
