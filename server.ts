@@ -4,7 +4,8 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
-import { runSalesPipeline } from "./aiEngine";
+import { SYSTEM_PROMPT } from "./aiEngine";
+import { runSalesBrainWithGenerator } from "./salesBrain";
 import { stripAttachmentContent } from "./lib/attachments";
 import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
@@ -168,7 +169,7 @@ async function callGeminiRaw(
 }
 
 // Retry logic with exponential backoff for transient errors (429, 503, network)
-async function callGemini(
+export async function callGemini(
   systemPrompt: string | undefined,
   userPrompt: string,
   model: string,
@@ -608,14 +609,19 @@ FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holi
 
   try {
     const fullTask = pipelineTask + knowledgeBlock + repetitionNote;
-    const result = await runSalesPipeline(leadWithAttachments, fullTask, styleInstructions, 600);
-    const sepIdx = result.indexOf("---STRATEGY---");
-    const message  = sepIdx !== -1 ? result.slice(0, sepIdx).trim() : result.trim();
-    const strategy = sepIdx !== -1 ? result.slice(sepIdx + "---STRATEGY---".length).trim() : "";
+    // This route is already on the server: use its Gemini provider directly.
+    // Calling runSalesBrain (the browser wrapper) here used fetch("/api/ai")
+    // in Node and caused the production "Failed to parse URL" failure.
+    const brain = await runSalesBrainWithGenerator(
+      leadWithAttachments,
+      { task: fullTask, requestedMessageType: type as any },
+      (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
+    );
     res.json({
-      text: message,
-      strategy,
-      messageType: type,
+      text: brain.message,
+      strategy: brain.reasoningSummary,
+      messageType: brain.messageType,
+      brain,
       knowledgeUsed: knowledge.map(k => k.title),
     });
   } catch (err: any) {

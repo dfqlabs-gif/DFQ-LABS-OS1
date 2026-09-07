@@ -8,7 +8,10 @@ import {
   getInternActivities, getInternActivitiesRange, nowISO,
 } from "../constants";
 import { stripMarkdown } from "../aiEngine";
-import { runSalesBrain } from "../salesBrain";
+import { runSalesBrain, SalesBrainResult } from "../salesBrain";
+import { newOutboundMessage } from "../lib/outbound";
+import { applySentMessage, applyWhatsAppOpened } from "../lib/execution";
+import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,6 +20,8 @@ interface AiMessage {
   text: string;
   dm?: string;
   strategy?: string;
+  brain?: SalesBrainResult;
+  outboundId?: string;
   mentionedLeads?: Lead[];   // leads detected in this AI response
 }
 
@@ -25,6 +30,7 @@ interface AskAIProps {
   onFollowUp: (lead: Lead) => void;  // globally save a followed-up lead
   onOpenLead?: (lead: Lead) => void; // open lead profile modal (optional)
   onMessageSent?: (lead: Lead, message: string, messageType: string) => void; // confirm message sent → update CRM
+  onSaveLead?: (lead: Lead) => void;
 }
 
 // ─── Pipeline + Activity context builder ─────────────────────────────────────
@@ -328,7 +334,7 @@ function FollowUpChip({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIProps) {
+export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead }: AskAIProps) {
   const [open, setOpen]       = useState(false);
   const [input, setInput]     = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
@@ -460,14 +466,27 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIPro
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      const brain = data.brain as SalesBrainResult | undefined;
+      const outbound = newOutboundMessage({
+        leadId: lead.id, userId: lead.assignedTo || "DFQ Labs team",
+        messageType: brain?.messageType || data.messageType || "VALUE_DM",
+        messageText: brain?.message || data.text || "", source: "ask_ai",
+        strategy: brain?.reasoningSummary || data.strategy,
+        knowledgeUsed: data.knowledgeUsed,
+        salesBrain: brain ? { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel } : undefined,
+      });
+      const executionLead = { ...lead, outboundMessages: [...(lead.outboundMessages || []), outbound] };
+      onSaveLead?.(executionLead);
       setMessages(prev => [
         ...prev,
         {
           role: "ai" as const,
           text: data.text || "",
-          dm: data.text || undefined,
+          dm: brain?.message || data.text || undefined,
           strategy: data.strategy || undefined,
-          mentionedLeads: [lead],
+          brain,
+          outboundId: outbound.id,
+          mentionedLeads: [executionLead],
           messageType: data.messageType || "VALUE_DM",
           knowledgeUsed: data.knowledgeUsed || [],
         },
@@ -476,7 +495,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIPro
       setMessages(prev => [...prev, { role: "ai" as const, text: "Error generating value DM: " + err.message }]);
     }
     setLoading(false);
-  }, []);
+  }, [onSaveLead]);
 
   // ── Send ────────────────────────────────────────────────────────────────────
   const send = async () => {
@@ -529,6 +548,21 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIPro
     const ctxLead = mentionedLead ?? (textMatches.length === 1 ? textMatches[0] : null);
 
     try {
+      // A lead-specific request to write a message is an execution request, not
+      // a general chat answer. Go straight to the canonical Sales Brain.
+      if (ctxLead && /\b(write|draft|generate|create|send|reply)\b/i.test(q) && /\b(dm|message|reply|follow[- ]?up)\b/i.test(q)) {
+        const brain = await runSalesBrain(ctxLead, { task: q });
+        const outbound = newOutboundMessage({
+          leadId: ctxLead.id, userId: ctxLead.assignedTo || "DFQ Labs team", messageType: brain.messageType,
+          messageText: brain.message, source: "ask_ai", strategy: brain.reasoningSummary,
+          salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel },
+        });
+        const executionLead = { ...ctxLead, outboundMessages: [...(ctxLead.outboundMessages || []), outbound] };
+        onSaveLead?.(executionLead);
+        setMessages(prev => [...prev, { role: "ai", text: brain.reasoningSummary, dm: brain.message, strategy: brain.reasoningSummary, brain, outboundId: outbound.id, mentionedLeads: [executionLead] }]);
+        setLoading(false);
+        return;
+      }
       const pipelineCtx = buildFullPipelineContext(leads);
       const leadCtx = ctxLead ? `\n\n${buildLeadContext(ctxLead)}` : "";
       const fullSystem = `${SYSTEM_PROMPT}\n\n${pipelineCtx}${leadCtx}`;
@@ -698,12 +732,20 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent }: AskAIPro
                           <div style={{ fontSize: 12, color: "#ddd", lineHeight: 1.78, whiteSpace: "pre-wrap" }}>
                             {msg.dm}
                           </div>
-                          <button
-                            onClick={() => navigator.clipboard.writeText(msg.dm || "")}
-                            style={{ marginTop: 8, background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "4px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}
-                          >
-                            Copy message
-                          </button>
+                          {msg.mentionedLeads?.[0] && msg.outboundId && (
+                            <div style={{ marginTop: 9 }}>
+                              <WhatsAppExecutionButton
+                                lead={msg.mentionedLeads[0]} message={msg.dm} messageType={msg.brain?.messageType || "VALUE_DM"}
+                                source="ask_ai" userId={msg.mentionedLeads[0].assignedTo} outboundId={msg.outboundId} compact
+                                onWhatsAppOpened={(id) => onSaveLead?.(applyWhatsAppOpened(msg.mentionedLeads![0], id))}
+                                onSent={(id) => {
+                                  const lead = msg.mentionedLeads![0]; const brain = msg.brain;
+                                  const saved = applySentMessage(lead, msg.dm || "", brain?.messageType || "VALUE_DM", lead.assignedTo || "DFQ Labs team", id, brain?.reasoningSummary, brain?.recommendedAction, brain?.recommendedFollowUpDate);
+                                  onSaveLead?.(saved); onMessageSent?.(lead, msg.dm || "", brain?.messageType || "VALUE_DM");
+                                }}
+                              />
+                            </div>
+                          )}
                         </div>
                         {msg.strategy && (
                           <div style={{ background: "rgba(139,92,246,0.07)", border: "1px solid rgba(139,92,246,0.22)", borderRadius: 10, padding: "10px 12px" }}>

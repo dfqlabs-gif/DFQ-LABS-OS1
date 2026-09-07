@@ -1591,7 +1591,7 @@ export default function App() {
           classifying={classifying}
           onLogout={logout}
         />
-        <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} />
+        <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} onSaveLead={saveLead} />
       </>
     );
   }
@@ -1852,7 +1852,7 @@ export default function App() {
           onConfirm={handleMergeConfirm}
         />
       )}
-      <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} />
+      <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} onSaveLead={saveLead} />
     </div>
   );
 }
@@ -2256,14 +2256,18 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                       {dm && step === 'idle' && (
                         <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: SURFACE2 }}>
                           {brainResults[lead.id] && <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.6, marginBottom: 10 }}>
-                            <strong style={{ color: G }}>SALES BRAIN</strong> · {brainResults[lead.id].salesStage} · {brainResults[lead.id].buyerIntent}<br />
+                            <strong style={{ color: G }}>SALES BRAIN</strong><br />
+                            Stage: {brainResults[lead.id].salesStage} · Intent: {brainResults[lead.id].buyerIntent}<br />
                             Objective: {brainResults[lead.id].primaryObjective}<br />
-                            Next action: {brainResults[lead.id].recommendedAction}
+                            Reason: {brainResults[lead.id].strategicReason}<br />
+                            Friction: {brainResults[lead.id].detectedFriction}<br />
+                            Recommended action: {brainResults[lead.id].recommendedAction}<br />
+                            Message type: {brainResults[lead.id].messageType} · Follow-up: {brainResults[lead.id].recommendedFollowUpDate}<br />
+                            Confidence: {brainResults[lead.id].confidence}% · Risk: {brainResults[lead.id].riskLevel}
                           </div>}
                           <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>FINAL APPROVED MESSAGE</div>
                           <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 8 }}>{dm}</div>
                           <div style={{ display: "flex", gap: 8 }}>
-                            <CopyBtn text={dm} />
                             <WhatsAppExecutionButton
                               lead={lead}
                               message={dm}
