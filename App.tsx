@@ -838,6 +838,9 @@ export default function App() {
   const [role, setRole] = useState<string | null>(null);
   const [authed, setAuthed] = useState(false);
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
+  const [undoActions, setUndoActions] = useState<any[]>([]);
+  const [undoMessage, setUndoMessage] = useState<string | null>(null);
+  const actorId = role === "founder" ? "Founder" : role === "saadatu" ? "Sa'adatu Mohammed" : null;
 
   // ── Dark mode ──────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState(() => {
@@ -1023,14 +1026,60 @@ export default function App() {
     setTimeout(() => setSaving(false), 600);
   }, []);
 
-  // Save a single lead to the shared database
+  const refreshUndoActions = useCallback(async () => {
+    if (!actorId) { setUndoActions([]); return; }
+    try {
+      const response = await fetch(`/api/actions?actorId=${encodeURIComponent(actorId)}`);
+      if (response.ok) setUndoActions((await response.json()).actions || []);
+    } catch (_) {}
+  }, [actorId]);
+
+  useEffect(() => { if (authed) void refreshUndoActions(); }, [authed, refreshUndoActions]);
+  useEffect(() => {
+    if (!undoMessage) return;
+    const timer = window.setTimeout(() => setUndoMessage(null), 3500);
+    return () => window.clearTimeout(timer);
+  }, [undoMessage]);
+
+  // Save a single lead to the shared database. The server creates the durable,
+  // field-level action record; it never trusts browser history as the source.
   const saveLeadToDB = useCallback((lead: Lead) => {
     fetch("/api/leads", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lead })
-    }).catch(() => {});
-  }, []);
+      body: JSON.stringify({ lead, actorId, source: "crm" })
+    }).then(() => refreshUndoActions()).catch(() => {});
+  }, [actorId, refreshUndoActions]);
+
+  const applyUndoRedo = useCallback(async (direction: "undo" | "redo") => {
+    const action = undoActions.find(item => direction === "undo"
+      ? !item.undoneAt && !item.redoInvalidatedAt
+      : item.undoneAt && !item.redoInvalidatedAt);
+    if (!action || !actorId) return;
+    try {
+      const response = await fetch(`/api/actions/${action.id}/${direction}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actorId }),
+      });
+      const result = await response.json();
+      if (!response.ok) { setUndoMessage(result.error || "Could not apply that action safely."); return; }
+      setLeads(current => current.map(lead => lead.id === result.lead.id ? result.lead : lead));
+      setModal(current => current?.id === result.lead.id ? result.lead : current);
+      setUndoMessage(direction === "undo" ? "Undone" : "Redone");
+      void refreshUndoActions();
+    } catch (_) { setUndoMessage("Could not reach the server."); }
+  }, [actorId, refreshUndoActions, undoActions]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key.toLowerCase() === "z") { event.preventDefault(); void applyUndoRedo(event.shiftKey ? "redo" : "undo"); }
+      if (event.key.toLowerCase() === "y") { event.preventDefault(); void applyUndoRedo("redo"); }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [applyUndoRedo]);
 
   const persistStats = useCallback((s: Stats) => {
     setStats(s);
@@ -1737,6 +1786,8 @@ export default function App() {
           </div>
           
           <div className="dfq-header-right" style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => void applyUndoRedo("undo")} disabled={!undoActions.some(item => !item.undoneAt && !item.redoInvalidatedAt)} title="Undo last safe CRM change (Ctrl/Cmd+Z)" style={{ background: "transparent", color: MUTED, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer", opacity: undoActions.some(item => !item.undoneAt && !item.redoInvalidatedAt) ? 1 : 0.45 }}>↶ Undo</button>
+            <button onClick={() => void applyUndoRedo("redo")} disabled={!undoActions.some(item => item.undoneAt && !item.redoInvalidatedAt)} title="Redo last safe CRM change (Ctrl/Cmd+Shift+Z)" style={{ background: "transparent", color: MUTED, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer", opacity: undoActions.some(item => item.undoneAt && !item.redoInvalidatedAt) ? 1 : 0.45 }}>↷ Redo</button>
             <input ref={importRef} type="file" accept=".json" onChange={importData} style={{ display: "none" }} />
             <button onClick={() => importRef.current?.click()} style={{ background: "transparent", color: MUTED, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Upload size={12} /></button>
             <button onClick={exportData} style={{ background: "transparent", color: G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 9px", fontWeight: 700, fontSize: 10, cursor: "pointer" }}><Download size={12} /></button>
@@ -1784,6 +1835,7 @@ export default function App() {
           </div>
         </div>
       </header>
+      {undoMessage && <div style={{ position: "fixed", right: 18, bottom: 18, zIndex: 200, background: SURFACE, color: TEXT, border: `1px solid ${G_BORDER}`, borderRadius: 8, padding: "9px 12px", fontSize: 11, fontWeight: 700, boxShadow: "0 8px 24px rgba(0,0,0,0.35)" }}>{undoMessage}</div>}
       
       <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "0 14px", display: "flex", overflowX: "auto" }}>
         {TABS.map(t => (

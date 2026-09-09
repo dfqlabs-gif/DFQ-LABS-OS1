@@ -4,12 +4,14 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
+import { randomUUID } from "crypto";
 import { SYSTEM_PROMPT } from "./aiEngine";
 import { runSalesBrainWithGenerator } from "./salesBrain";
 import type { Lead } from "./types";
 import { LEARNING_OUTCOMES, analyzeLearningEvents, buildLearningEvent, relevantInsights, summarizeLearning, type LearningEvent, type LearningInsight } from "./lib/learning";
 import { stripAttachmentContent } from "./lib/attachments";
 import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
+import { actionCanApply, applyActionFields, createLeadAction, type LeadAction } from "./lib/undoRedo";
 
 dotenv.config();
 
@@ -17,6 +19,11 @@ const app = express();
 
 // ── PostgreSQL connection pool ─────────────────────────────────────────────────
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
+const UNDO_ACTORS = new Set(["Founder", "Sa'adatu Mohammed"]);
+
+function requestedActor(value: unknown): string | null {
+  return typeof value === "string" && UNDO_ACTORS.has(value) ? value : null;
+}
 
 // The regular lead form sends complete JSON documents. A Mark-as-Sent request
 // is different: its document may have been composed from an older client copy.
@@ -130,6 +137,8 @@ async function initializeDatabase() {
   // authoritative for CRM data; these tables make cross-lead learning durable.
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_events (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, outbound_id TEXT UNIQUE NOT NULL, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_insights (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
+  await db.query(`CREATE TABLE IF NOT EXISTS crm_action_history (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+  await db.query(`CREATE INDEX IF NOT EXISTS crm_action_history_actor_created_idx ON crm_action_history ((data->>'actorId'), created_at DESC)`);
 
   // 5. Run attachment migration (only after all tables exist)
   try {
@@ -1033,6 +1042,8 @@ app.post("/api/leads", async (req, res) => {
 
   const lead = stripAttachmentContent(body.lead);
   if (!lead?.id) return res.status(400).json({ error: "lead.id is required." });
+  const actorId = requestedActor(body.actorId);
+  const source = typeof body.source === "string" ? body.source.slice(0, 80) : "crm";
   const client = await db.connect();
   try {
     // Lock the current row before read/merge/write. This is intentionally a
@@ -1046,15 +1057,104 @@ app.post("/api/leads", async (req, res) => {
        ON CONFLICT (id) DO UPDATE SET data = $2::jsonb, updated_at = NOW()`,
       [lead.id, JSON.stringify(mergedLead)]
     );
+    const action = actorId && existing.rows[0]?.data
+      ? createLeadAction({
+          id: `action-${randomUUID()}`,
+          leadId: String(lead.id),
+          actorId,
+          source,
+          before: existing.rows[0].data,
+          after: mergedLead,
+          now: new Date().toISOString(),
+        })
+      : null;
+    if (action) {
+      // A fresh change starts a new branch and invalidates the actor's redo
+      // entries without deleting their audit history.
+      await client.query(
+        `UPDATE crm_action_history
+         SET data = jsonb_set(data, '{redoInvalidatedAt}', to_jsonb(NOW()::text), true)
+         WHERE data->>'actorId' = $1 AND data ? 'undoneAt' AND NOT (data ? 'redoInvalidatedAt')`,
+        [actorId]
+      );
+      await client.query(
+        "INSERT INTO crm_action_history (id, lead_id, data, created_at) VALUES ($1, $2, $3::jsonb, NOW())",
+        [action.id, action.leadId, JSON.stringify(action)]
+      );
+    }
     await client.query("COMMIT");
     // CRM persistence is authoritative. Learning is an idempotent, best-effort
     // projection keyed by outbound ID and can never prevent a lead save.
     void syncLearningForLead(mergedLead as Lead).catch(error => console.error("Learning lead sync failed:", error));
-    res.json({ ok: true, lead: mergedLead });
+    res.json({ ok: true, lead: mergedLead, actionId: action?.id });
   } catch (err: any) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("POST /api/leads single:", err);
     res.status(500).json({ error: "Failed to save lead." });
+  } finally {
+    client.release();
+  }
+});
+
+// Durable, actor-scoped action stack.  The client may display this data, but
+// all conflict checks and mutations occur here against locked database rows.
+app.get("/api/actions", async (req, res) => {
+  const actorId = requestedActor(req.query.actorId);
+  if (!actorId) return res.status(403).json({ error: "Unauthorized action history request." });
+  try {
+    const result = await db.query(
+      `SELECT data FROM crm_action_history WHERE data->>'actorId' = $1 ORDER BY created_at DESC LIMIT 100`,
+      [actorId]
+    );
+    res.json({ actions: result.rows.map((row: any) => row.data) });
+  } catch (error) {
+    console.error("GET /api/actions:", error);
+    res.status(500).json({ error: "Could not load action history." });
+  }
+});
+
+app.post("/api/actions/:id/:direction", async (req, res) => {
+  const direction = req.params.direction === "undo" ? "undo" : req.params.direction === "redo" ? "redo" : null;
+  const actorId = requestedActor(req.body?.actorId);
+  if (!direction || !actorId) return res.status(403).json({ error: "Unauthorized action request." });
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const actionResult = await client.query("SELECT data FROM crm_action_history WHERE id = $1 FOR UPDATE", [req.params.id]);
+    const action = actionResult.rows[0]?.data as LeadAction | undefined;
+    if (!action || action.actorId !== actorId) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Action not found." });
+    }
+    if ((direction === "undo" && (action.undoneAt || action.redoInvalidatedAt)) || (direction === "redo" && (!action.undoneAt || action.redoInvalidatedAt))) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "This action is no longer eligible for that operation." });
+    }
+    const leadResult = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [action.leadId]);
+    const current = leadResult.rows[0]?.data;
+    if (!current) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "The lead no longer exists." });
+    }
+    if (!actionCanApply(action, current, direction)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "This change can no longer be safely undone because the lead has changed." });
+    }
+    const now = new Date().toISOString();
+    const updated = applyActionFields(current, action, direction);
+    updated.auditLog = [...(Array.isArray(current.auditLog) ? current.auditLog : []), {
+      ts: now, by: actorId, action: direction === "undo" ? "Undo lead field change" : "Redo lead field change", field: action.affectedFields.join(","),
+    }];
+    const nextAction = { ...action, ...(direction === "undo" ? { undoneAt: now, redoneAt: undefined } : { redoneAt: now, undoneAt: undefined }) };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), action.leadId]);
+    await client.query("UPDATE crm_action_history SET data = $1::jsonb WHERE id = $2", [JSON.stringify(nextAction), action.id]);
+    await client.query("COMMIT");
+    void syncLearningForLead(updated as Lead).catch(error => console.error("Learning undo/redo sync failed:", error));
+    res.json({ ok: true, lead: updated, action: nextAction });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST /api/actions:", error);
+    res.status(500).json({ error: "Could not apply the action safely." });
   } finally {
     client.release();
   }
