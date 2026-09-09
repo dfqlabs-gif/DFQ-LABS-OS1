@@ -12,6 +12,7 @@ import { LEARNING_OUTCOMES, analyzeLearningEvents, buildLearningEvent, relevantI
 import { stripAttachmentContent } from "./lib/attachments";
 import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 import { actionCanApply, applyActionFields, createLeadAction, type LeadAction } from "./lib/undoRedo";
+import { commitOutboundSent } from "./lib/execution";
 
 dotenv.config();
 
@@ -1155,6 +1156,42 @@ app.post("/api/actions/:id/:direction", async (req, res) => {
     await client.query("ROLLBACK").catch(() => {});
     console.error("POST /api/actions:", error);
     res.status(500).json({ error: "Could not apply the action safely." });
+  } finally {
+    client.release();
+  }
+});
+
+// Canonical outbound confirmation.  The browser supplies only stable IDs; the
+// exact message is read from the locked, persisted outbound record.
+app.post("/api/leads/:leadId/outbound/:outboundId/sent", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data as Lead | undefined;
+    if (!lead) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Lead not found." });
+    }
+    const outboundMessages = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    const outbound = outboundMessages.find((item: any) => item.id === req.params.outboundId);
+    if (!outbound || outbound.leadId !== lead.id) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Outbound message not found for this lead." });
+    }
+    if (outbound.status === "SENT") {
+      await client.query("COMMIT");
+      return res.json({ ok: true, lead, idempotent: true });
+    }
+    const updated = commitOutboundSent(lead, outbound.id, new Date().toISOString());
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    void syncLearningForLead(updated as Lead).catch(error => console.error("Learning sent-outbound sync failed:", error));
+    res.json({ ok: true, lead: updated, idempotent: false });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST sent outbound:", error);
+    res.status(500).json({ error: "Could not confirm the outbound message." });
   } finally {
     client.release();
   }

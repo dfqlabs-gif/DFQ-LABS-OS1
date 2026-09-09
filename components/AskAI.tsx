@@ -10,7 +10,7 @@ import {
 import { stripMarkdown } from "../aiEngine";
 import { runSalesBrain, SalesBrainResult } from "../salesBrain";
 import { newOutboundMessage } from "../lib/outbound";
-import { applySentMessage, applyWhatsAppOpened } from "../lib/execution";
+import { applyWhatsAppOpened, confirmOutboundSent } from "../lib/execution";
 import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -31,6 +31,7 @@ interface AskAIProps {
   onOpenLead?: (lead: Lead) => void; // open lead profile modal (optional)
   onMessageSent?: (lead: Lead, message: string, messageType: string) => void; // confirm message sent → update CRM
   onSaveLead?: (lead: Lead) => void;
+  onLeadCommitted?: (lead: Lead) => void;
 }
 
 // ─── Pipeline + Activity context builder ─────────────────────────────────────
@@ -334,7 +335,7 @@ function FollowUpChip({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead }: AskAIProps) {
+export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead, onLeadCommitted }: AskAIProps) {
   const [open, setOpen]       = useState(false);
   const [input, setInput]     = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
@@ -738,10 +739,11 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
                                 lead={msg.mentionedLeads[0]} message={msg.dm} messageType={msg.brain?.messageType || "VALUE_DM"}
                                 source="ask_ai" userId={msg.mentionedLeads[0].assignedTo} outboundId={msg.outboundId} compact
                                 onWhatsAppOpened={(id) => onSaveLead?.(applyWhatsAppOpened(msg.mentionedLeads![0], id))}
-                                onSent={(id) => {
+                                onSent={async (id) => {
                                   const lead = msg.mentionedLeads![0]; const brain = msg.brain;
-                                  const saved = applySentMessage(lead, msg.dm || "", brain?.messageType || "VALUE_DM", lead.assignedTo || "DFQ Labs team", id, brain?.reasoningSummary, brain?.recommendedAction, brain?.recommendedFollowUpDate);
-                                  onSaveLead?.(saved); onMessageSent?.(lead, msg.dm || "", brain?.messageType || "VALUE_DM");
+                                  const committed = await confirmOutboundSent(lead.id, id);
+                                  onLeadCommitted?.(committed);
+                                  onMessageSent?.(committed, committed.outboundMessages?.find(item => item.id === id)?.messageText || "", brain?.messageType || "VALUE_DM");
                                 }}
                               />
                             </div>

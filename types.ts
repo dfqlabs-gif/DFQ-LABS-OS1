@@ -32,8 +32,13 @@ export interface Lead {
   prospectInitialResponse: string;
   prospectLatestResponse: string;
   conversationLog: Array<{
+    id?: string;
     ts: string;
     type: "dm" | "reply" | "note" | "status_change";
+    direction?: "inbound" | "outbound";
+    outboundId?: string;
+    messageType?: string;
+    status?: "sent" | "reversed";
     label: string;
     text: string;
     by: string;

@@ -16,6 +16,64 @@ import { today, addDays, nowISO } from "../constants";
 import type { MessageType } from "./messageTypes";
 
 /**
+ * Confirm an outbound message using only its stable identity. The server reads
+ * the exact text from the persisted outbound record and returns the committed
+ * lead; callers must never reconstruct a sent message locally.
+ */
+export async function confirmOutboundSent(leadId: string, outboundId: string): Promise<Lead> {
+  const response = await fetch(`/api/leads/${encodeURIComponent(leadId)}/outbound/${encodeURIComponent(outboundId)}/sent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.lead) {
+    throw new Error(payload.error || "Could not confirm the outbound message.");
+  }
+  return payload.lead as Lead;
+}
+
+/**
+ * Server-side transaction payload for an outbound confirmation. `lead` must
+ * already have been read under a row lock. The outbound record, not the
+ * browser, is the source of the sent text.
+ */
+export function commitOutboundSent(lead: Lead, outboundId: string, sentAt = nowISO()): Lead {
+  const outboundMessages = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+  const outbound = outboundMessages.find(message => message.id === outboundId);
+  if (!outbound || outbound.leadId !== lead.id) throw new Error("Outbound message not found for this lead.");
+  if (outbound.status === "SENT") return lead;
+
+  const committedOutbound = { ...outbound, status: "SENT" as const, sentAt };
+  const existingLog = Array.isArray(lead.conversationLog) ? lead.conversationLog : [];
+  const logEntry = {
+    id: `outbound-${outbound.id}`,
+    outboundId: outbound.id,
+    direction: "outbound" as const,
+    messageType: outbound.messageType,
+    status: "sent" as const,
+    ts: sentAt,
+    type: "dm" as const,
+    label: `${outbound.messageType || "Outbound"} sent via WhatsApp`,
+    text: outbound.messageText,
+    by: outbound.userId || lead.assignedTo || "Unassigned",
+  };
+  const alreadyRecorded = existingLog.some(entry => entry.outboundId === outbound.id || entry.id === logEntry.id);
+  return {
+    ...lead,
+    conversationLog: alreadyRecorded ? existingLog : [...existingLog, logEntry],
+    outboundMessages: outboundMessages.map(message => message.id === outbound.id ? committedOutbound : message),
+    lastContacted: sentAt.slice(0, 10),
+    lastMeaningfulTouchpoint: sentAt.slice(0, 10),
+    awaitingReplySince: "",
+    followUpCount: alreadyRecorded ? (lead.followUpCount || 0) : (lead.followUpCount || 0) + 1,
+    completedFollowUps: alreadyRecorded ? (lead.completedFollowUps || []) : [...(lead.completedFollowUps || []), sentAt],
+    autoFollowUpDate: ["Closed", "Lost"].includes(lead.status) ? null : addDays(3),
+    autoFollowUpReason: "Recently contacted via WhatsApp outbound.",
+    dmText: outbound.messageText,
+  };
+}
+
+/**
  * Mark a generated outbound message as opened in WhatsApp without treating it as
  * sent. This retains the human approval gate while recording the fact that the
  * rep prepared and opened the message.

@@ -32,7 +32,7 @@ interface Props {
   userId?: string;
   outboundId: string;
   onWhatsAppOpened?: (outboundId: string) => void;
-  onSent?: (outboundId: string) => void;
+  onSent?: (outboundId: string) => void | Promise<void>;
   followUpId?: string;
   compact?: boolean;
   disabled?: boolean;
@@ -55,6 +55,7 @@ export function WhatsAppExecutionButton({
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const handleOpenWhatsApp = () => {
     setError(null);
@@ -67,10 +68,18 @@ export function WhatsAppExecutionButton({
     onWhatsAppOpened?.(outboundId);
   };
 
-  const handleMarkSent = () => {
-    setSent(true);
-    setShowConfirm(false);
-    onSent?.(outboundId);
+  const handleMarkSent = async () => {
+    setConfirming(true);
+    setError(null);
+    try {
+      await onSent?.(outboundId);
+      setSent(true);
+      setShowConfirm(false);
+    } catch (err: any) {
+      setError(err?.message || "Could not confirm the message as sent.");
+    } finally {
+      setConfirming(false);
+    }
   };
 
   const pad = compact ? "5px 10px" : "7px 14px";
@@ -143,7 +152,7 @@ export function WhatsAppExecutionButton({
             Did you actually send the message in WhatsApp? Confirming logs it to the conversation, updates the follow-up, and marks this task complete.
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleMarkSent} style={{ background: "#22C55E", color: "#000", border: "none", borderRadius: 6, padding: "6px 14px", fontSize, fontWeight: 800, cursor: "pointer" }}>✓ Yes, Sent</button>
+            <button disabled={confirming} onClick={handleMarkSent} style={{ background: "#22C55E", color: "#000", border: "none", borderRadius: 6, padding: "6px 14px", fontSize, fontWeight: 800, cursor: confirming ? "wait" : "pointer", opacity: confirming ? 0.7 : 1 }}>{confirming ? "Confirming…" : "✓ Yes, Sent"}</button>
             <button onClick={() => setShowConfirm(false)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "6px 12px", fontSize, cursor: "pointer" }}>Not yet</button>
           </div>
         </div>
