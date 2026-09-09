@@ -246,3 +246,26 @@ test("applySentMessage logs the outbound message and marks the follow-up as comp
   assert.equal(next.conversationLog[0].type, "dm");
   assert.match(next.conversationLog[0].label, /VALUE_DM/i);
 });
+
+test("applySentMessage preserves historical inbound and outbound entries and is idempotent", () => {
+  const outbound = newOutboundMessage({ leadId: "lead-3", userId: "user-1", messageType: "FOLLOW_UP", messageText: "Final follow-up", source: "weekly_focus" });
+  const lead = {
+    id: "lead-3", name: "Ada", company: "Ada Holdings", status: "DM Sent", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "",
+    conversationLog: [
+      { ts: "2026-01-01T10:00:00.000Z", type: "dm", label: "Initial DM", text: "Message A", by: "user-1" },
+      { ts: "2026-01-02T10:00:00.000Z", type: "reply", label: "Reply", text: "Message B", by: "Ada" },
+      { ts: "2026-01-03T10:00:00.000Z", type: "dm", label: "Follow-up", text: "Message C", by: "user-1" },
+    ],
+    completedFollowUps: [], followUpCount: 0, outboundMessages: [outbound],
+  } as any;
+
+  const sent = applySentMessage(lead, "Final follow-up", "FOLLOW_UP", "user-1", outbound.id);
+  const repeated = applySentMessage(sent, "Final follow-up", "FOLLOW_UP", "user-1", outbound.id);
+
+  assert.deepEqual(sent.conversationLog.slice(0, 3), lead.conversationLog);
+  assert.equal(sent.conversationLog[3].text, "Final follow-up");
+  assert.equal(sent.conversationLog[3].ts, sent.outboundMessages[0].sentAt);
+  assert.equal(repeated, sent);
+  assert.equal(repeated.conversationLog.length, 4);
+  assert.equal(repeated.followUpCount, 1);
+});

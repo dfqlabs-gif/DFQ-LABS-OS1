@@ -18,6 +18,64 @@ const app = express();
 // ── PostgreSQL connection pool ─────────────────────────────────────────────────
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 
+// The regular lead form sends complete JSON documents. A Mark-as-Sent request
+// is different: its document may have been composed from an older client copy.
+// Preserve the database thread when an outbound crosses into SENT so a stale
+// client cannot replace newer conversation entries.
+function mergeSentOutboundUpdate(current: any, incoming: any) {
+  if (!current) return incoming;
+
+  const currentOutbound = Array.isArray(current.outboundMessages) ? current.outboundMessages : [];
+  const incomingOutbound = Array.isArray(incoming.outboundMessages) ? incoming.outboundMessages : [];
+  const currentById = new Map<string, any>(currentOutbound.map((message: any): [string, any] => [String(message.id), message]));
+  const sentOutbound = incomingOutbound.filter((message: any) => message?.id && message.status === "SENT");
+  const newlySent = sentOutbound.filter((message: any) =>
+    message?.id && message.status === "SENT" && currentById.get(message.id)?.status !== "SENT"
+  );
+  // Also merge a retry of a previous SENT confirmation: the first request may
+  // have appended newer database history that the retrying client never saw.
+  if (sentOutbound.length === 0) return incoming;
+
+  const currentLog = Array.isArray(current.conversationLog) ? current.conversationLog : [];
+  const incomingLog = Array.isArray(incoming.conversationLog) ? incoming.conversationLog : [];
+  const entryKey = (entry: any) => JSON.stringify([
+    entry?.ts, entry?.type, entry?.label, entry?.text, entry?.by,
+  ]);
+  const knownEntries = new Set(currentLog.map(entryKey));
+  const appendedEntries = incomingLog.filter((entry: any) => {
+    const key = entryKey(entry);
+    if (knownEntries.has(key)) return false;
+    knownEntries.add(key);
+    return true;
+  });
+
+  // A defensive fallback supports older clients that submit the SENT outbound
+  // record without its corresponding conversation entry.
+  for (const outbound of newlySent) {
+    if (appendedEntries.some((entry: any) => entry?.type === "dm" && entry?.text === outbound.messageText)) continue;
+    appendedEntries.push({
+      ts: outbound.sentAt || new Date().toISOString(),
+      type: "dm",
+      label: `${outbound.messageType || "Outbound"} sent via WhatsApp`,
+      text: outbound.messageText,
+      by: outbound.userId || incoming.assignedTo || "Unassigned",
+    });
+  }
+
+  const mergedOutbound = [...currentOutbound];
+  for (const outbound of incomingOutbound) {
+    const index = mergedOutbound.findIndex((message: any) => message.id === outbound.id);
+    if (index >= 0) mergedOutbound[index] = outbound;
+    else mergedOutbound.push(outbound);
+  }
+
+  return {
+    ...incoming,
+    conversationLog: [...currentLog, ...appendedEntries],
+    outboundMessages: mergedOutbound,
+  };
+}
+
 // ── Sequential database initialization ─────────────────────────────────────────
 async function initializeDatabase() {
   // 1. Verify DATABASE_URL is configured
@@ -975,19 +1033,30 @@ app.post("/api/leads", async (req, res) => {
 
   const lead = stripAttachmentContent(body.lead);
   if (!lead?.id) return res.status(400).json({ error: "lead.id is required." });
+  const client = await db.connect();
   try {
-    await db.query(
+    // Lock the current row before read/merge/write. This is intentionally a
+    // narrow transaction used only by a single-lead update; it makes SENT
+    // confirmation append-only even when another browser has updated the lead.
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [lead.id]);
+    const mergedLead = mergeSentOutboundUpdate(existing.rows[0]?.data, lead);
+    await client.query(
       `INSERT INTO leads (id, data, updated_at) VALUES ($1, $2::jsonb, NOW())
        ON CONFLICT (id) DO UPDATE SET data = $2::jsonb, updated_at = NOW()`,
-      [lead.id, JSON.stringify(lead)]
+      [lead.id, JSON.stringify(mergedLead)]
     );
+    await client.query("COMMIT");
     // CRM persistence is authoritative. Learning is an idempotent, best-effort
     // projection keyed by outbound ID and can never prevent a lead save.
-    void syncLearningForLead(lead as Lead).catch(error => console.error("Learning lead sync failed:", error));
-    res.json({ ok: true });
+    void syncLearningForLead(mergedLead as Lead).catch(error => console.error("Learning lead sync failed:", error));
+    res.json({ ok: true, lead: mergedLead });
   } catch (err: any) {
+    await client.query("ROLLBACK").catch(() => {});
     console.error("POST /api/leads single:", err);
     res.status(500).json({ error: "Failed to save lead." });
+  } finally {
+    client.release();
   }
 });
 

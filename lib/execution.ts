@@ -74,10 +74,15 @@ export function applySentMessage(
       ? markOutboundSent({ ...om, originalGeneratedMessage: om.originalGeneratedMessage || om.messageText, messageText })
       : om
   );
+  const sentOutbound = outboundId
+    ? outboundMessages.find(om => om.id === outboundId)
+    : undefined;
 
   // Conversation log entry — ONLY the actual message (Part 11)
   const logEntry = {
-    ts: now,
+    // Keep the conversation timestamp aligned with the outbound record. This
+    // is the authoritative time the message became SENT.
+    ts: sentOutbound?.sentAt || now,
     type: "dm" as const,
     label: `${messageType} sent via WhatsApp`,
     text: messageText,
