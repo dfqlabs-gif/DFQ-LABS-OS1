@@ -20,8 +20,10 @@ import {
   SPECIALIST_COLOR, SPECIALISTS, SERVICE_VALUE, specialistLabel
 } from "./constants";
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
-import { runAI, buildFollowUpPrompt, DraftContext } from "./aiEngine";
-import { runSalesBrain, SalesBrainResult } from "./salesBrain";
+import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspectSummary, DraftContext } from "./aiEngine";
+import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
+import { applyWhatsAppOpened, confirmOutboundSent, createOutboundRecord } from "./lib/execution";
+import { newOutboundMessage, OutboundMessage } from "./lib/outbound";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -35,10 +37,6 @@ import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
-import { applySentMessage, applyWhatsAppOpened } from "./lib/execution";
-import { newOutboundMessage } from "./lib/outbound";
-import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
-import { LearningIntelligence } from "./components/LearningIntelligence";
 
 // Define general global style utility
 const SectionLabel = ({ icon: Icon, children }: any) => (
@@ -46,21 +44,6 @@ const SectionLabel = ({ icon: Icon, children }: any) => (
     {Icon && <Icon size={12} />}{children}
   </div>
 );
-
-/** Shared presentation/execution boundary for every Sales Brain follow-up card. */
-function SalesBrainExecution({ lead, brain, outboundId, onSave, userId }: { lead: Lead; brain: SalesBrainResult; outboundId: string; onSave: (lead: Lead) => void; userId: string }) {
-  const [showStrategy, setShowStrategy] = useState(false);
-  return <div style={{ padding: "12px 14px", background: SURFACE2, borderTop: `1px solid ${BORDER}` }}>
-    <div style={{ fontSize: 9, color: G, fontWeight: 800, letterSpacing: "0.1em", marginBottom: 6 }}>SALES BRAIN RECOMMENDATION</div>
-    <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.6, marginBottom: 10 }}>Stage: {brain.salesStage} · Intent: {brain.buyerIntent}<br />Objective: {brain.primaryObjective}<br />Follow-up: {brain.recommendedFollowUpDate} · {brain.messageType} · {brain.confidence}% confidence</div>
-    {brain.learningInsights?.length ? <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.5, marginBottom: 10, borderLeft: `2px solid ${G}`, paddingLeft: 8 }}><strong style={{ color: G }}>LEARNING SIGNAL</strong><br />{brain.learningInsights[0].pattern}<br />Evidence: {brain.learningInsights[0].evidenceSummary} · {brain.learningInsights[0].confidence}/100</div> : null}
-    <div style={{ fontSize: 9, color: G, fontWeight: 800, letterSpacing: "0.1em", marginBottom: 6 }}>FINAL MESSAGE</div>
-    <div style={{ fontSize: 12, color: "#ddd", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 10 }}>{brain.message}</div>
-    <WhatsAppExecutionButton lead={lead} message={brain.message} messageType={brain.messageType} source="follow_up_queue" userId={userId} outboundId={outboundId} compact onWhatsAppOpened={(id) => onSave(applyWhatsAppOpened(lead, id))} onSent={(id) => onSave(applySentMessage(lead, brain.message, brain.messageType, userId, id, brain.reasoningSummary, brain.recommendedAction, brain.recommendedFollowUpDate))} />
-    <button onClick={() => setShowStrategy(value => !value)} style={{ marginTop: 8, padding: 0, background: "transparent", border: "none", color: MUTED, fontSize: 10, cursor: "pointer" }}>{showStrategy ? "Hide strategy" : "View strategy"}</button>
-    {showStrategy && <div style={{ marginTop: 6, fontSize: 10, color: MUTED2, lineHeight: 1.6 }}>Reason: {brain.strategicReason}<br />Friction: {brain.detectedFriction}<br />Recommended action: {brain.recommendedAction}<br />Risk: {brain.riskLevel}</div>}
-  </div>;
-}
 
 // ----------------------------------------------------
 // RECENT LEADS PANEL
@@ -379,7 +362,7 @@ function RevenueGapSummary({ leads }: { leads: Lead[] }) {
 }
 
 // 24-Hour response guard UI
-function ResponseGuardSummary({ leads, onQuickContact, onEdit, onSave }: { leads: Lead[], onQuickContact: (l: Lead) => void, onEdit: (l: Lead) => void, onSave: (l: Lead) => void }) {
+function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[], onQuickContact: (l: Lead) => void, onEdit: (l: Lead) => void }) {
   const overdue = leads.filter(l => !["Closed", "Lost"].includes(l.status) && l.awaitingReplySince && hoursSince(l.awaitingReplySince) >= RESPONSE_GUARD_HOURS);
   const ranked = [...overdue].sort((a, b) => {
     const va = SERVICE_VALUE[a.service] || 0, vb = SERVICE_VALUE[b.service] || 0;
@@ -389,25 +372,39 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit, onSave }: { leads
     if (vb !== va) return vb - va;
     return hoursSince(b.awaitingReplySince) - hoursSince(a.awaitingReplySince);
   });
-  const [brains, setBrains] = useState<Record<string, SalesBrainResult>>({});
-  const [executionLeads, setExecutionLeads] = useState<Record<string, Lead>>({});
-  const [outboundIds, setOutboundIds] = useState<Record<string, string>>({});
+  const [outputs, setOutputs] = useState<Record<string, string>>({});
   const [steps, setSteps] = useState<Record<string, string>>({});
+  const [summaries, setSummaries] = useState<Record<string, string>>({});
 
+  // Step 1 — read the thread and summarise where the prospect is for the specialist to verify.
   const startGen = async (lead: Lead) => {
+    setSteps(p => ({ ...p, [lead.id]: 'summarizing' }));
+    setSummaries(p => ({ ...p, [lead.id]: '' }));
+    setOutputs(p => ({ ...p, [lead.id]: '' }));
+    try {
+      const summary = await runProspectSummary(lead);
+      setSummaries(p => ({ ...p, [lead.id]: summary }));
+      setSteps(p => ({ ...p, [lead.id]: 'awaiting-confirm' }));
+    } catch {
+      setSteps(p => ({ ...p, [lead.id]: 'idle' }));
+    }
+  };
+
+  // Step 2 — specialist confirmed; generate the actual reply.
+  const confirmGen = async (lead: Lead) => {
     setSteps(p => ({ ...p, [lead.id]: 'generating' }));
     try {
-      const brain = await runSalesBrain(lead, { task: "Prepare the best immediate response to this prospect's latest inbound message using the complete CRM and conversation context." });
-      const outbound = newOutboundMessage({ leadId: lead.id, userId: lead.assignedTo || "DFQ Labs team", messageType: brain.messageType, messageText: brain.message, source: "mission_control", strategy: brain.reasoningSummary, salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel } });
-      const executionLead = { ...lead, outboundMessages: [...(lead.outboundMessages || []), outbound] };
-      setBrains(p => ({ ...p, [lead.id]: brain }));
-      setExecutionLeads(p => ({ ...p, [lead.id]: executionLead }));
-      setOutboundIds(p => ({ ...p, [lead.id]: outbound.id }));
-      onSave(executionLead);
+      const text = await runQuickReply(lead, Math.floor(hoursSince(lead.awaitingReplySince)));
+      setOutputs(p => ({ ...p, [lead.id]: text }));
     } catch (e: any) {
-      console.error("Mission Control Sales Brain generation failed:", e);
+      setOutputs(p => ({ ...p, [lead.id]: "Error: " + e.message }));
     }
     setSteps(p => ({ ...p, [lead.id]: 'idle' }));
+  };
+
+  const cancelGen = (lead: Lead) => {
+    setSteps(p => ({ ...p, [lead.id]: 'idle' }));
+    setSummaries(p => ({ ...p, [lead.id]: '' }));
   };
 
   const [collapsed, setCollapsed] = useState(false);
@@ -429,9 +426,10 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit, onSave }: { leads
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {ranked.map(l => {
           const wait = Math.floor(hoursSince(l.awaitingReplySince));
-          const brain = brains[l.id];
+          const dm = outputs[l.id];
           const step = steps[l.id] || 'idle';
-          const busy = step === 'generating';
+          const summary = summaries[l.id];
+          const busy = step === 'summarizing' || step === 'generating';
           return (
             <div key={l.id} style={{ background: SURFACE2, border: "1px solid rgba(239,68,68,0.25)", borderLeft: "3px solid #EF4444", borderRadius: 10, overflow: "hidden" }}>
               <div style={{ padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -440,15 +438,34 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit, onSave }: { leads
                   <div style={{ fontSize: 10, color: "#EF4444", marginTop: 2 }}>Waiting {wait}h · {fmt(SERVICE_VALUE[l.service] || 0)} value · {l.status}</div>
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
-                  {!brain && <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Log manual reply handled</button>}
-                  <button onClick={() => startGen(l)} disabled={busy || !!brain} style={{ background: busy ? SURFACE : "rgba(239,68,68,0.1)", color: busy ? MUTED : "#EF4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: busy || !!brain ? "not-allowed" : "pointer" }}>
-                    {step === 'generating' ? "Sales Brain analyzing…" : brain ? "Message prepared" : "Suggest Reply →"}
+                  <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Replied — Follow-up Logged</button>
+                  <button onClick={() => startGen(l)} disabled={busy || step === 'awaiting-confirm'} style={{ background: busy ? SURFACE : "rgba(239,68,68,0.1)", color: busy ? MUTED : "#EF4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer" }}>
+                    {step === 'summarizing' ? "Reading thread…" : step === 'generating' ? "Drafting…" : "Suggest Reply →"}
                   </button>
                   <button onClick={() => onEdit(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "6px 9px", fontSize: 11, cursor: "pointer" }}>Edit</button>
                 </div>
               </div>
 
-              {brain && step === 'idle' && outboundIds[l.id] && <SalesBrainExecution lead={executionLeads[l.id] || l} brain={brain} outboundId={outboundIds[l.id]} onSave={onSave} userId={l.assignedTo || "DFQ Labs team"} />}
+              {/* Step 1 — show prospect summary for specialist to confirm */}
+              {step === 'awaiting-confirm' && summary && (
+                <div style={{ padding: "12px 14px", background: "rgba(62,207,220,0.04)", borderTop: `1px solid ${BORDER}` }}>
+                  <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>WHERE IS THIS PROSPECT?</div>
+                  <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 10 }}>{summary}</div>
+                  <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10 }}>Does this match? If yes, the AI will draft a reply that moves them forward.</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => confirmGen(l)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "7px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate Reply</button>
+                    <button onClick={() => cancelGen(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2 — generated reply + QA pipeline */}
+              {dm && step === 'idle' && (
+                <div style={{ padding: "12px 14px", background: SURFACE2, borderTop: `1px solid ${BORDER}` }}>
+                  <div style={{ fontSize: 12, lineHeight: 1.85, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10 }}>{dm}</div>
+                  <CopyBtn text={dm} />
+                </div>
+              )}
             </div>
           );
         })}
@@ -1051,6 +1068,17 @@ export default function App() {
     }).then(() => refreshUndoActions()).catch(() => {});
   }, [actorId, refreshUndoActions]);
 
+  // Sent-outbound confirmation returns the transaction's authoritative lead.
+  // Do not pass it through saveLead, which may hold an older client snapshot.
+  const applyCommittedLead = useCallback((committed: Lead) => {
+    setLeads(current => {
+      const next = current.map(lead => lead.id === committed.id ? committed : lead);
+      persist(next, stats);
+      return next;
+    });
+    setModal(current => current?.id === committed.id ? committed : current);
+  }, [persist, stats]);
+
   const applyUndoRedo = useCallback(async (direction: "undo" | "redo") => {
     const action = undoActions.find(item => direction === "undo"
       ? !item.undoneAt && !item.redoInvalidatedAt
@@ -1227,7 +1255,29 @@ export default function App() {
         finalDatabaseCount: responseBody?.finalDatabaseCount ?? summary.finalDatabaseCount,
       };
 
-      const refreshed = await loadLeadsFromServer();
+      let refreshed: Lead[];
+      try {
+        refreshed = await loadLeadsFromServer();
+      } catch (err: any) {
+        setIsImporting(false);
+        setImportStage("error");
+        const message = `Snapshot replacement was accepted, but the CRM could not verify the final read: ${err?.message || "lead refresh failed"}. Reload before attempting another import.`;
+        setImportError(message);
+        setImportMsg(`✗ ${message}`);
+        setTimeout(() => setImportMsg(null), 8000);
+        return;
+      }
+
+      if (refreshed.length !== finalSummary.finalDatabaseCount) {
+        setIsImporting(false);
+        setImportStage("error");
+        const message = `Snapshot replacement was accepted, but verification returned ${refreshed.length} lead${refreshed.length === 1 ? "" : "s"} instead of the expected ${finalSummary.finalDatabaseCount}. Reload before attempting another import.`;
+        setImportError(message);
+        setImportMsg(`✗ ${message}`);
+        setTimeout(() => setImportMsg(null), 8000);
+        return;
+      }
+
       setLeads(refreshed);
       if (parsed && parsed.stats) {
         setStats(parsed.stats);
@@ -1276,9 +1326,14 @@ export default function App() {
     const replyFieldsChanged = exists && ["prospectInitialResponse", "prospectLatestResponse"].some(f => (exists[f as keyof Lead] || "").toString().trim() !== (lead[f as keyof Lead] || "").toString().trim() && (lead[f as keyof Lead] || "").toString().trim());
     // Detect when WE updated our DM (we sent something) vs prospect replied
     const dmTextChanged = exists && (exists.dmText || "").toString().trim() !== (lead.dmText || "").toString().trim() && !!(lead.dmText || "").toString().trim();
+    const confirmedOutboundWasAdded = !!exists && (lead.outboundMessages || []).some(next =>
+      next.status === "SENT" && !exists.outboundMessages?.some(previous => previous.id === next.id && previous.status === "SENT")
+    );
 
     // Append-only chronological conversation log compilation
-    let conversationLog = exists?.conversationLog || lead.conversationLog || [];
+    let conversationLog = confirmedOutboundWasAdded
+      ? (lead.conversationLog || [])
+      : (exists?.conversationLog || lead.conversationLog || []);
     if (exists) {
       if (exists.status !== lead.status) {
         conversationLog = [...conversationLog, { 
@@ -1297,7 +1352,7 @@ export default function App() {
           conversationLog = [...conversationLog, { ts: nowISO(), type, label, text: after, by: lead.assignedTo || "Unassigned" }];
         }
       };
-      logIfChanged("dmText", "dm", "Our DM");
+      if (!confirmedOutboundWasAdded) logIfChanged("dmText", "dm", "Our DM");
       logIfChanged("prospectInitialResponse", "reply", "Their Initial Reply");
       logIfChanged("prospectLatestResponse", "reply", "Latest Thread");
       logIfChanged("notes", "note", "Note");
@@ -1342,7 +1397,7 @@ export default function App() {
       }
       if (replyFieldsChanged) final.awaitingReplySince = nowISO();
       // When WE send/update a DM: clear awaitingReplySince (we've responded) + auto-log follow-up
-      if (dmTextChanged) {
+      if (dmTextChanged && !confirmedOutboundWasAdded) {
         final.awaitingReplySince = "";
         const fuNow = nowISO();
         final.followUpCount = (final.followUpCount || 0) + 1;
@@ -1590,7 +1645,6 @@ export default function App() {
     { key: "ceo", label: "CEO Dashboard" },
     { key: "duplicates", label: "Duplicates" },
     { key: "gateway", label: "AI Gateway" },
-    { key: "learning", label: "Learning" },
     { key: "knowledge", label: "Knowledge Base" }
   ];
 
@@ -1623,7 +1677,7 @@ export default function App() {
           classifying={classifying}
           onLogout={logout}
         />
-        <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} onSaveLead={saveLead} />
+        <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} onLeadCommitted={applyCommittedLead} />
       </>
     );
   }
@@ -1853,7 +1907,7 @@ export default function App() {
             
             <AuditKPISummary leads={activeLeads} onEdit={setModal} onSave={saveLead} />
             <RevenueGapSummary leads={activeLeads} />
-            <ResponseGuardSummary leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} onSave={saveLead} />
+            <ResponseGuardSummary leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} />
             <MeetingIntelligenceSummary leads={activeLeads} onSave={saveLead} />
             
             <div style={{ height: 1, background: BORDER, margin: "4px 0 14px" }} />
@@ -1865,7 +1919,7 @@ export default function App() {
           </div>
         )}
         
-        {tab === "weekly" && <WeeklyFocusTab leads={activeLeads} onEdit={setModal} onQuickContact={quickContact} onSave={saveLead} />}
+        {tab === "weekly" && <WeeklyFocusTab leads={activeLeads} onEdit={setModal} onQuickContact={quickContact} />}
         {tab === "recent" && <RecentLeadsPanel leads={activeLeads} onEdit={setModal} />}
         {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onQuickContact={quickContact} classifying={classifying} />}
         {tab === "clients" && <ClientDelivery clients={clientsValue} onEdit={setModal} />}
@@ -1876,7 +1930,6 @@ export default function App() {
         {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
         {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
-        {tab === "learning" && <LearningIntelligence />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
@@ -1888,7 +1941,7 @@ export default function App() {
           onConfirm={handleMergeConfirm}
         />
       )}
-      <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} onSaveLead={saveLead} />
+      <AskAI leads={activeLeads} onFollowUp={chatbotFollowUp} onOpenLead={setModal} onLeadCommitted={applyCommittedLead} />
     </div>
   );
 }
@@ -1897,7 +1950,7 @@ export default function App() {
 // WEEKLY FOCUS TAB — shows every lead needing follow-up this week
 // ----------------------------------------------------
 
-function WeeklyFocusTab({ leads, onEdit, onQuickContact, onSave }: { leads: Lead[]; onEdit: (l: Lead) => void; onQuickContact: (l: Lead) => void; onSave: (l: Lead) => void }) {
+function WeeklyFocusTab({ leads, onEdit, onQuickContact }: { leads: Lead[]; onEdit: (l: Lead) => void; onQuickContact: (l: Lead) => void }) {
   const [personFilter, setPersonFilter] = useState<"All" | "Alex" | "Saadatu">("All");
   const weekEnd = addDays(7);
 
@@ -1921,26 +1974,6 @@ function WeeklyFocusTab({ leads, onEdit, onQuickContact, onSave }: { leads: Lead
   const noDate    = active.filter(l => !effectiveDue(l)).sort((a, b) => scoreLead(b) - scoreLead(a));
 
   const total = overdue.length + dueToday.length + dueWeek.length + noDate.length;
-  const [brains, setBrains] = useState<Record<string, SalesBrainResult>>({});
-  const [executionLeads, setExecutionLeads] = useState<Record<string, Lead>>({});
-  const [outboundIds, setOutboundIds] = useState<Record<string, string>>({});
-  const [generating, setGenerating] = useState<Record<string, boolean>>({});
-
-  const suggestReply = async (lead: Lead) => {
-    setGenerating(current => ({ ...current, [lead.id]: true }));
-    try {
-      const brain = await runSalesBrain(lead, { task: "Determine and prepare the best next outbound action from the complete CRM and conversation context." });
-      const outbound = newOutboundMessage({ leadId: lead.id, userId: lead.assignedTo || "DFQ Labs team", messageType: brain.messageType, messageText: brain.message, source: "weekly_focus", strategy: brain.reasoningSummary, salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel } });
-      const executionLead = { ...lead, outboundMessages: [...(lead.outboundMessages || []), outbound] };
-      setBrains(current => ({ ...current, [lead.id]: brain }));
-      setExecutionLeads(current => ({ ...current, [lead.id]: executionLead }));
-      setOutboundIds(current => ({ ...current, [lead.id]: outbound.id }));
-      onSave(executionLead);
-    } catch (error) {
-      console.error("Weekly Focus Sales Brain generation failed:", error);
-    }
-    setGenerating(current => ({ ...current, [lead.id]: false }));
-  };
 
   const Section = ({ title, color, items, emptyMsg }: { title: string; color: string; items: Lead[]; emptyMsg?: string }) => (
     <div style={{ marginBottom: 20 }}>
@@ -1957,8 +1990,7 @@ function WeeklyFocusTab({ leads, onEdit, onQuickContact, onSave }: { leads: Lead
             const due = effectiveDue(l);
             const daysOverdue = due && due < today() ? Math.round((new Date(today()).getTime() - new Date(due).getTime()) / 86400000) : 0;
             return (
-              <div key={l.id} style={{ background: SURFACE, border: `1px solid ${BORDER}`, borderLeft: `3px solid ${STATUS_COLOR[l.status] || G}`, borderRadius: 8, overflow: "hidden" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", flexWrap: "wrap" }}>
+              <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 10, background: SURFACE, border: `1px solid ${BORDER}`, borderLeft: `3px solid ${STATUS_COLOR[l.status] || G}`, borderRadius: 8, padding: "9px 12px", flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 160px", minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 12, color: "#fff" }}>{l.name || "—"} <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}>{l.company}</span></div>
                   <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
@@ -1968,12 +2000,9 @@ function WeeklyFocusTab({ leads, onEdit, onQuickContact, onSave }: { leads: Lead
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  {!brains[l.id] && <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>Log manual follow-up</button>}
-                  <button onClick={() => suggestReply(l)} disabled={generating[l.id] || !!brains[l.id]} style={{ background: generating[l.id] ? SURFACE2 : G_DIM, color: generating[l.id] ? MUTED : G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: generating[l.id] || !!brains[l.id] ? "not-allowed" : "pointer", whiteSpace: "nowrap" }}>{generating[l.id] ? "Sales Brain analyzing…" : brains[l.id] ? "Message prepared" : "Suggest Reply"}</button>
+                  <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>✓ Done</button>
                   <button onClick={() => onEdit(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED2, borderRadius: 6, padding: "5px 9px", fontSize: 10, cursor: "pointer" }}>Edit</button>
                 </div>
-                </div>
-                {brains[l.id] && outboundIds[l.id] && <SalesBrainExecution lead={executionLeads[l.id] || l} brain={brains[l.id]} outboundId={outboundIds[l.id]} onSave={onSave} userId={l.assignedTo || "DFQ Labs team"} />}
               </div>
             );
           })}
@@ -2111,8 +2140,8 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
   }, [darkMode]);
   const [search, setSearch] = useState("");
   const [dmOutputs, setDmOutputs] = useState<Record<string, string>>({});
-  const [brainResults, setBrainResults] = useState<Record<string, SalesBrainResult>>({});
-  const [outboundIds, setOutboundIds] = useState<Record<string, string>>({});
+  const [dmEdits, setDmEdits] = useState<Record<string, string>>({});
+  const [outboundByLead, setOutboundByLead] = useState<Record<string, OutboundMessage>>({});
   // dmStep tracks the two-step DM generation flow per lead:
   // 'idle' | 'summarizing' | 'awaiting-confirm' | 'generating'
   const [dmStep, setDmStep] = useState<Record<string, string>>({});
@@ -2155,36 +2184,105 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
   // Step 1 — read the conversation thread and show the specialist a plain-English
   // summary of where the prospect is. The specialist confirms before the DM is drafted.
   const startDMFlow = async (lead: Lead) => {
-    setDmStep(p => ({ ...p, [lead.id]: 'generating' }));
+    setDmStep(p => ({ ...p, [lead.id]: 'summarizing' }));
+    setDmSummary(p => ({ ...p, [lead.id]: '' }));
     setDmOutputs(p => ({ ...p, [lead.id]: '' }));
     try {
-      const brain = await runSalesBrain(lead, { task: "Determine the best next outbound action from the complete CRM and conversation context." });
-      setBrainResults(p => ({ ...p, [lead.id]: brain }));
-      setDmOutputs(p => ({ ...p, [lead.id]: brain.message }));
+      const summary = await runProspectSummary(lead);
+      setDmSummary(p => ({ ...p, [lead.id]: summary }));
+      setDmStep(p => ({ ...p, [lead.id]: 'awaiting-confirm' }));
+    } catch (e: any) {
+      setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
+    }
+  };
+
+  // Step 2 — specialist confirmed the summary; now generate the actual DM.
+  // priorCtx is populated on regeneration cycles (learning loop): it carries
+  // the original draft + QA-adjusted draft so the next generation can improve on both.
+  const confirmAndGenerateDM = async (lead: Lead, priorCtx?: DraftContext) => {
+    setDmStep(p => ({ ...p, [lead.id]: 'generating' }));
+
+    // Build full context: always include the specialist-confirmed summary from step 1.
+    const summary = dmSummary[lead.id];
+    const context: DraftContext | undefined = (summary || priorCtx) ? {
+      summary: priorCtx?.summary || summary || undefined,
+      originalDraft: priorCtx?.originalDraft,
+      adjustedDraft: priorCtx?.adjustedDraft,
+    } : undefined;
+
+    try {
+      const text = await runFollowUpReply(lead, context);
+      // Save original draft (without strategy block) for the learning loop.
+      // On next "Regenerate", the QA panel passes it back via onRegenerate(ctx).
+      const cleanDraft = text.split('\n\n---STRATEGY---')[0].trim();
+      // Persist the executable draft before WhatsApp is opened. Mark-as-Sent
+      // later uses this outbound ID to retrieve the exact message server-side.
       const outbound = newOutboundMessage({
         leadId: lead.id,
         userId: displayName,
-        messageType: brain.messageType,
-        messageText: brain.message,
+        messageType: "VALUE_DM",
+        messageText: cleanDraft,
         source: "follow_up_queue",
-        strategy: brain.reasoningSummary,
-        salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel },
+        strategy: summary,
       });
-      setOutboundIds(p => ({ ...p, [lead.id]: outbound.id }));
-      onSave({ ...lead, outboundMessages: [...(lead.outboundMessages || []), outbound] });
+      const persisted = await createOutboundRecord(lead.id, outbound);
+      setOutboundByLead(current => ({ ...current, [lead.id]: persisted.outboundMessages?.find(item => item.id === outbound.id) || outbound }));
+      setDmOutputs(p => ({ ...p, [lead.id]: cleanDraft }));
+      setDmEdits(p => ({ ...p, [lead.id]: cleanDraft }));
+      setDmPriorContext(p => ({ ...p, [lead.id]: { summary: summary || undefined, originalDraft: cleanDraft } }));
     } catch (e: any) {
       setDmOutputs(p => ({ ...p, [lead.id]: 'Error: ' + e.message }));
     }
     setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
   };
 
-  const cancelDMFlow = (lead: Lead) => setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
+  const cancelDMFlow = (lead: Lead) => {
+    setDmStep(p => ({ ...p, [lead.id]: 'idle' }));
+    setDmSummary(p => ({ ...p, [lead.id]: '' }));
+  };
 
   const saveReply = (lead: Lead) => {
     const draft = replyDrafts[lead.id];
     if (!draft || !draft.trim()) return;
     onSave({ ...lead, prospectLatestResponse: draft.trim(), prospectInitialResponse: lead.prospectInitialResponse || draft.trim() });
     setReplyDrafts(p => ({ ...p, [lead.id]: "" }));
+  };
+
+  const getOutbound = (lead: Lead, message: string) => {
+    const existing = outboundByLead[lead.id];
+    if (existing && existing.messageText === message) return existing;
+    const outbound = newOutboundMessage({
+      leadId: lead.id,
+      userId: displayName,
+      messageType: "VALUE_DM",
+      messageText: message,
+      source: "follow_up_queue",
+      strategy: dmSummary[lead.id],
+    });
+    setOutboundByLead(current => ({ ...current, [lead.id]: outbound }));
+    return outbound;
+  };
+
+  const recordWhatsAppOpened = async (lead: Lead, message: string) => {
+    const outbound = getOutbound(lead, message);
+    const persisted = await createOutboundRecord(lead.id, outbound);
+    const updated = applyWhatsAppOpened(persisted, outbound.id);
+    const recorded = updated.outboundMessages?.find(item => item.id === outbound.id) || outbound;
+    setOutboundByLead(current => ({ ...current, [lead.id]: recorded }));
+    // Do not send this opened-state snapshot through the generic lead-save
+    // path. It can race a SENT transaction and overwrite its newer document.
+    // The durable generated record above is sufficient for confirmation.
+  };
+
+  const recordMessageSent = async (lead: Lead, message: string) => {
+    const outbound = getOutbound(lead, message);
+    // Covers confirmation from a restored UI state where WhatsApp was opened
+    // before this build. The server keeps this creation idempotent by ID.
+    await createOutboundRecord(lead.id, outbound);
+    const committed = await confirmOutboundSent(lead.id, outbound.id);
+    const recorded = committed.outboundMessages?.find(item => item.id === outbound.id) || outbound;
+    setOutboundByLead(current => ({ ...current, [lead.id]: recorded }));
+    onSave(committed);
   };
 
   return (
@@ -2283,6 +2381,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                 {filtered.map((lead: Lead) => {
                   const dm = dmOutputs[lead.id];
                   const step = dmStep[lead.id] || 'idle';
+                  const summary = dmSummary[lead.id];
                   const due = effectiveDue(lead);
                   const isOverdue = due && due < today();
                   const meetingFlag = detectMeetingRequest(lead) && !meetingQualified(lead);
@@ -2303,6 +2402,12 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                             <BetaBdg text={lead.clientType} color="#a855f7" />
                             {lead.betaCandidate && <BetaBdg />}
                           </div>
+                          {(lead.aiReason || lead.aiNextAction) && (
+                            <div style={{ marginTop: 7, fontSize: 10, color: MUTED2, lineHeight: 1.45 }}>
+                              {lead.aiReason && <div><span style={{ color: G, fontWeight: 700 }}>WHY NOW:</span> {lead.aiReason}</div>}
+                              {lead.aiNextAction && <div><span style={{ color: "#F59E0B", fontWeight: 700 }}>NEXT:</span> {lead.aiNextAction}</div>}
+                            </div>
+                          )}
                         </div>
                         <div style={{ display: "flex", gap: 6 }}>
                           <button onClick={() => startDMFlow(lead)} disabled={!!dmStep[lead.id] && dmStep[lead.id] !== 'idle'} style={{ background: (dmStep[lead.id] && dmStep[lead.id] !== 'idle') ? SURFACE2 : G_DIM, color: (dmStep[lead.id] && dmStep[lead.id] !== 'idle') ? MUTED : G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700 }}>{dmStep[lead.id] === 'summarizing' ? "Reading thread…" : dmStep[lead.id] === 'generating' ? "Writing…" : "Draft DM"}</button>
@@ -2312,39 +2417,43 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                         </div>
                       </div>
 
-                      {/* Sales Brain returns one internally checked, executable result. */}
+                      {/* Step 1 result — show prospect summary and ask specialist to confirm */}
+                      {step === 'awaiting-confirm' && summary && (
+                        <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: "rgba(62,207,220,0.04)" }}>
+                          <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>WHERE IS THIS PROSPECT?</div>
+                          <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 12 }}>{summary}</div>
+                          <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10 }}>Does this match your understanding of where they are?</div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => confirmAndGenerateDM(lead)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "7px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate DM</button>
+                            <button onClick={() => cancelDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Step 2 result — show the generated DM + QA pipeline */}
                       {dm && step === 'idle' && (
                         <div style={{ padding: "12px 14px", borderTop: `1px solid ${BORDER}`, background: SURFACE2 }}>
-                          {brainResults[lead.id] && <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.6, marginBottom: 10 }}>
-                            <strong style={{ color: G }}>SALES BRAIN</strong><br />
-                            Stage: {brainResults[lead.id].salesStage} · Intent: {brainResults[lead.id].buyerIntent}<br />
-                            Objective: {brainResults[lead.id].primaryObjective}<br />
-                            Reason: {brainResults[lead.id].strategicReason}<br />
-                            Friction: {brainResults[lead.id].detectedFriction}<br />
-                            Recommended action: {brainResults[lead.id].recommendedAction}<br />
-                            Message type: {brainResults[lead.id].messageType} · Follow-up: {brainResults[lead.id].recommendedFollowUpDate}<br />
-                            Confidence: {brainResults[lead.id].confidence}% · Risk: {brainResults[lead.id].riskLevel}
-                          </div>}
-                          <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>FINAL APPROVED MESSAGE</div>
-                          <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 8 }}>{dm}</div>
-                          <div style={{ display: "flex", gap: 8 }}>
+                          <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>VALUE DM — REVIEW BEFORE SENDING</div>
+                          <textarea
+                            value={dmEdits[lead.id] ?? dm}
+                            onChange={event => setDmEdits(current => ({ ...current, [lead.id]: event.target.value }))}
+                            rows={4}
+                            style={{ ...iStyle, lineHeight: 1.65, marginBottom: 8 }}
+                            aria-label="Editable value DM"
+                          />
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
                             <WhatsAppExecutionButton
                               lead={lead}
-                              message={dm}
-                              messageType={brainResults[lead.id]?.messageType || "FOLLOW_UP"}
+                              message={dmEdits[lead.id] ?? dm}
+                              messageType="VALUE_DM"
                               source="follow_up_queue"
                               userId={displayName}
-                              outboundId={outboundIds[lead.id] || ""}
-                              compact
-                              disabled={!outboundIds[lead.id]}
-                              onWhatsAppOpened={(outboundId) => {
-                                onSave(applyWhatsAppOpened(lead, outboundId));
-                              }}
-                              onSent={(outboundId) => {
-                                const brain = brainResults[lead.id];
-                                onSave(applySentMessage(lead, dm, brain?.messageType || "FOLLOW_UP", displayName, outboundId, brain?.reasoningSummary, brain?.recommendedAction, brain?.recommendedFollowUpDate));
-                              }}
+                              outboundId={outboundByLead[lead.id]?.id || ""}
+                              disabled={!outboundByLead[lead.id]}
+                              onWhatsAppOpened={() => recordWhatsAppOpened(lead, dmEdits[lead.id] ?? dm)}
+                              onSent={() => recordMessageSent(lead, dmEdits[lead.id] ?? dm)}
                             />
+                            <CopyBtn text={dmEdits[lead.id] ?? dm} />
                             <button onClick={() => startDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
                           </div>
                         </div>

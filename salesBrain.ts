@@ -115,6 +115,20 @@ export async function runSalesBrainWithGenerator(
 }
 
 export async function runSalesBrain(lead: Lead, options: SalesBrainOptions = {}): Promise<SalesBrainResult> {
+  // In the browser, the server is responsible for reloading this lead before
+  // context assembly.  A displayed Lead can be stale; it is never generation
+  // authority.  The server also returns the same canonical implementation used
+  // by every UI surface.
+  if (typeof window !== "undefined") {
+    const response = await fetch("/api/sales-brain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leadId: lead.id, task: options.task, requestedMessageType: options.requestedMessageType }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.brain) throw new Error(payload.error || "Could not generate a Sales Brain recommendation.");
+    return payload.brain as SalesBrainResult;
+  }
   let learningInsights = options.learningInsights;
   // The read is intentionally best-effort: Sales Brain remains available if the
   // learning service is disabled, unavailable, or still collecting evidence.

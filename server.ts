@@ -26,6 +26,12 @@ function requestedActor(value: unknown): string | null {
   return typeof value === "string" && UNDO_ACTORS.has(value) ? value : null;
 }
 
+/** Read the only authoritative representation used for execution and AI work. */
+async function getAuthoritativeLead(leadId: string): Promise<Lead | null> {
+  const result = await db.query("SELECT data FROM leads WHERE id = $1", [leadId]);
+  return (result.rows[0]?.data as Lead | undefined) || null;
+}
+
 // The regular lead form sends complete JSON documents. A Mark-as-Sent request
 // is different: its document may have been composed from an older client copy.
 // Preserve the database thread when an outbound crosses into SENT so a stale
@@ -638,8 +644,13 @@ async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise
 // Supports all message types (Part 18). VALUE_DM enforces strict no-CTA rules.
 app.post("/api/value-dm", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  const { lead, task, messageType } = req.body || {};
-  if (!lead) { res.status(400).json({ error: "lead is required" }); return; }
+  const { leadId, task, messageType } = req.body || {};
+  if (!leadId || typeof leadId !== "string") { res.status(400).json({ error: "leadId is required" }); return; }
+
+  // Generation must never be based on a browser snapshot.  Resolve the lead
+  // immediately before context assembly so every surface sees the same CRM.
+  const lead = await getAuthoritativeLead(leadId);
+  if (!lead) { res.status(404).json({ error: "Lead not found." }); return; }
 
   const type: string = messageType || "VALUE_DM";
 
@@ -743,6 +754,46 @@ FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holi
     console.error("POST /api/value-dm error:", err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Shared authoritative Sales Brain entry point.  Browser components send an
+// identity and intent only; context is always reconstructed from PostgreSQL.
+app.post("/api/sales-brain", async (req, res) => {
+  const { leadId, task, requestedMessageType } = req.body || {};
+  if (!leadId || typeof leadId !== "string") return res.status(400).json({ error: "leadId is required" });
+  try {
+    const stored = await getAuthoritativeLead(leadId);
+    if (!stored) return res.status(404).json({ error: "Lead not found." });
+    const lead = await enrichLeadAttachments(stored);
+    const insights = LEARNING_INFLUENCE_ENABLED
+      ? (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight)
+      : [];
+    const learningInsights = relevantInsights(insights, lead, requestedMessageType || "FOLLOW_UP").map(insight => ({
+      insightId: insight.id,
+      pattern: insight.pattern,
+      relevance: `${insight.segment} / ${insight.strategyType}`,
+      confidence: insight.confidence,
+      evidenceSummary: `${insight.evidenceCount} sent; ${Math.round(insight.positiveResponseRate * 100)}% positive; ${insight.meetingCount} meetings`,
+    }));
+    const brain = await runSalesBrainWithGenerator(
+      lead,
+      { task: typeof task === "string" ? task : undefined, requestedMessageType: requestedMessageType as any, learningInsights },
+      (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
+    );
+    return res.json({ ok: true, lead, brain });
+  } catch (error: any) {
+    console.error("POST /api/sales-brain:", error);
+    return res.status(500).json({ error: error?.message || "Could not generate the Sales Brain recommendation." });
+  }
+});
+
+// Safe deployment evidence for Render; intentionally exposes no configuration
+// values beyond the commit supplied by Render's build environment.
+app.get("/api/runtime/version", (_req, res) => {
+  res.json({
+    service: "dfqlabs-os",
+    commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unknown",
+  });
 });
 
 // ── Sales Brain Learning API ────────────────────────────────────────────────
@@ -1163,6 +1214,41 @@ app.post("/api/actions/:id/:direction", async (req, res) => {
 
 // Canonical outbound confirmation.  The browser supplies only stable IDs; the
 // exact message is read from the locked, persisted outbound record.
+app.post("/api/leads/:leadId/outbound", async (req, res) => {
+  const outbound = req.body?.outbound;
+  if (!outbound?.id || !outbound?.messageText || outbound.leadId !== req.params.leadId) {
+    return res.status(400).json({ error: "A valid outbound record for this lead is required." });
+  }
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data as Lead | undefined;
+    if (!lead) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Lead not found." });
+    }
+    const existing = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    const existingRecord = existing.find((item: any) => item.id === outbound.id);
+    if (existingRecord && (existingRecord.leadId !== lead.id || existingRecord.messageText !== outbound.messageText)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Outbound ID conflicts with an existing message." });
+    }
+    const updated = existingRecord ? lead : { ...lead, outboundMessages: [...existing, outbound] };
+    if (!existingRecord) {
+      await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    }
+    await client.query("COMMIT");
+    return res.json({ ok: true, lead: updated, idempotent: !!existingRecord });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST outbound record:", error);
+    return res.status(500).json({ error: "Could not save the generated outbound message." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/leads/:leadId/outbound/:outboundId/sent", async (req, res) => {
   const client = await db.connect();
   try {

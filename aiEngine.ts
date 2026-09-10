@@ -114,21 +114,21 @@ function relativeTime(ts: string): string {
 }
 
 export function formatConversationLog(lead: Lead): string {
-  // Keep actual two-way history, including executed outbound messages, so a
-  // later Sales Brain run never treats a follow-up as a new conversation.
+  // ConversationLog is the append-only source of truth.  Include its complete
+  // useful chronology (up to a deliberately generous safety cap) so follow-ups
+  // can honour promises, questions, timing, and prior wording.
   const parts: string[] = [];
-  if (lead.dmText) {
-    parts.push(`[ALEX (us) — Initial DM]: ${lead.dmText}`);
-  }
-  if (lead.prospectInitialResponse) {
-    parts.push(`[LEAD — Initial Reply]: ${lead.prospectInitialResponse}`);
-  }
-  if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) {
-    parts.push(`[LEAD — Latest Message]: ${lead.prospectLatestResponse}`);
-  }
-  for (const entry of (lead.conversationLog || []).filter(entry => entry.type === "dm" || entry.type === "reply").slice(-12)) {
-    const speaker = entry.type === "dm" ? "DFQ LABS (us)" : "LEAD";
-    if (!parts.some(part => part.includes(entry.text))) parts.push(`[${speaker} — ${entry.label}]: ${entry.text}`);
+  const recordedMessages = (lead.conversationLog || [])
+    .filter(entry => entry.type === "dm" || entry.type === "reply")
+    .sort((a, b) => a.ts.localeCompare(b.ts))
+    .slice(-60)
+    .map(entry => `[${entry.ts} — ${entry.type === "reply" ? "LEAD" : "DFQ LABS"} — ${entry.label || "Recorded message"}]: ${entry.text}`);
+  if (recordedMessages.length > 0) {
+    parts.push(`=== CHRONOLOGICAL CONVERSATION (oldest to newest) ===\n${recordedMessages.join("\n")}`);
+  } else {
+    if (lead.dmText) parts.push(`[DFQ LABS — legacy initial DM]: ${lead.dmText}`);
+    if (lead.prospectInitialResponse) parts.push(`[LEAD — legacy initial reply]: ${lead.prospectInitialResponse}`);
+    if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) parts.push(`[LEAD — legacy latest message]: ${lead.prospectLatestResponse}`);
   }
   if (parts.length === 0) return "No conversation yet — this is the first outbound touch to this lead.";
   return parts.join("\n");
@@ -490,16 +490,26 @@ ${message}
 // priorContext is passed on regeneration cycles so the DM Writer can improve on
 // previous drafts rather than starting from scratch.
 export async function runSalesPipeline(lead: Lead, task: string, styleInstructions: string, maxTokens = 900, priorContext?: DraftContext): Promise<string> {
-  // Compatibility boundary for older assistant surfaces. Strategic decisions now
-  // come exclusively from Sales Brain; callers which still need text get a
-  // lossless text projection of its structured result.
-  const { runSalesBrain } = await import("./salesBrain");
-  const brain = await runSalesBrain(lead, { task });
-  return `${brain.message}\n\n---STRATEGY---\nCurrent Stage: ${brain.salesStage}
-Next Objective: ${brain.primaryObjective}
-Reasoning: ${brain.reasoningSummary}
-Risk: ${brain.riskLevel}
-Confidence: ${brain.confidence}%`;
+  const strategy = await runStrategyGenerator(lead, task);
+
+  const draft = (fix?: string) => runAI(
+    buildDMWriterPrompt(lead, strategy, fix ? `${styleInstructions}\n\nIMPORTANT FIX (a quality check flagged the previous draft): ${fix}` : styleInstructions, priorContext),
+    maxTokens
+  );
+
+  let message = await draft();
+  const check = await runQualityChecker(message, strategy);
+  if (!check.pass) {
+    message = await draft(check.reason);
+  }
+
+  const strategyBlock = `Current Stage: ${strategy.currentStage || lead.status}
+Next Objective: ${strategy.nextObjective}
+Reasoning: ${strategy.reasoning}
+Risk: ${strategy.risk}
+Confidence: ${strategy.confidence}`;
+
+  return `${message}\n\n---STRATEGY---\n${strategyBlock}`;
 }
 
 export function followUpWriteInstructions(): string {
@@ -528,6 +538,18 @@ HOW TO WRITE (this is the most important part — read every word):
 - Output ONLY the message. Nothing else. No labels, no quotes around it, no explanation.`;
 }
 
+/** Browser adapter for the server-owned Sales Brain. */
+async function runAuthoritativeSalesBrain(leadId: string, task: string, requestedMessageType = "FOLLOW_UP") {
+  const response = await fetch("/api/sales-brain", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ leadId, task, requestedMessageType }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.brain) throw new Error(payload.error || "Could not generate a Sales Brain recommendation.");
+  return payload.brain;
+}
+
 export async function runFollowUpReply(lead: Lead, priorContext?: DraftContext): Promise<string> {
   // If a prospect summary was confirmed by the specialist, prepend it to the task
   // description so the Strategy Generator and DM Writer are both aligned with what
@@ -535,6 +557,10 @@ export async function runFollowUpReply(lead: Lead, priorContext?: DraftContext):
   let task = "Draft the next outbound follow-up message to this lead.";
   if (priorContext?.summary) {
     task = `Draft the next outbound follow-up message to this lead. The outreach specialist reviewed the conversation and confirmed this summary of the prospect's current position: "${priorContext.summary}" — treat this as ground truth for where the prospect is right now.`;
+  }
+  if (typeof window !== "undefined") {
+    const brain = await runAuthoritativeSalesBrain(lead.id, task, "FOLLOW_UP");
+    return `${brain.message}\n\n---STRATEGY---\nCurrent Stage: ${brain.salesStage}\nNext Objective: ${brain.primaryObjective}\nReasoning: ${brain.strategicReason}\nRisk: ${brain.riskLevel}\nConfidence: ${brain.confidence}`;
   }
   return runSalesPipeline(lead, task, followUpWriteInstructions(), 900, priorContext);
 }
@@ -583,7 +609,12 @@ export async function runQuickReply(lead: Lead, waitHours: number): Promise<stri
   // Kept short in the prompt instructions ("max 3 sentences"), but the token
   // budget itself needs headroom for hidden reasoning tokens (see
   // runStrategyGenerator) or short replies truncate mid-sentence too.
-  return runSalesPipeline(lead, `Reply to this waiting prospect who has been waiting ${waitHours} hours.`, quickReplyWriteInstructions(waitHours), 600);
+  const task = `Reply to this waiting prospect who has been waiting ${waitHours} hours.`;
+  if (typeof window !== "undefined") {
+    const brain = await runAuthoritativeSalesBrain(lead.id, task, "RESPONSE_DM");
+    return `${brain.message}\n\n---STRATEGY---\nCurrent Stage: ${brain.salesStage}\nNext Objective: ${brain.primaryObjective}\nReasoning: ${brain.strategicReason}`;
+  }
+  return runSalesPipeline(lead, task, quickReplyWriteInstructions(waitHours), 600);
 }
 
 // ─── Funnel path shared by every DM/follow-up prompt ───────────────────────

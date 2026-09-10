@@ -31,7 +31,7 @@ interface Props {
   source?: string;
   userId?: string;
   outboundId: string;
-  onWhatsAppOpened?: (outboundId: string) => void;
+  onWhatsAppOpened?: (outboundId: string) => void | Promise<void>;
   onSent?: (outboundId: string) => void | Promise<void>;
   followUpId?: string;
   compact?: boolean;
@@ -57,15 +57,22 @@ export function WhatsAppExecutionButton({
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
-  const handleOpenWhatsApp = () => {
+  const handleOpenWhatsApp = async () => {
     setError(null);
+    try {
+      // Persist first. A WhatsApp window must never be opened for an outbound
+      // that the canonical confirmation endpoint cannot subsequently find.
+      await onWhatsAppOpened?.(outboundId);
+    } catch (err: any) {
+      setError(err?.message || "Could not prepare the outbound message.");
+      return;
+    }
     const result = openWhatsAppWithMessage(lead, message);
     if (!result.ok) {
       setError(result.error || "Could not open WhatsApp.");
       return;
     }
     setOpened(true);
-    onWhatsAppOpened?.(outboundId);
   };
 
   const handleMarkSent = async () => {

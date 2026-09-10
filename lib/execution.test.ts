@@ -52,3 +52,27 @@ test("a sent confirmation uses the outbound record, never browser-supplied text"
   assert.equal(committed.dmText, lead.outboundMessages[0].messageText);
   assert.equal(committed.conversationLog[0].text, lead.outboundMessages[0].messageText);
 });
+
+test("a confirmation preserves a long persisted thread and keeps server sentAt separate from generatedAt", () => {
+  const history = Array.from({ length: 25 }, (_, index) => ({
+    id: `history-${index}`,
+    ts: `2026-09-${String(index + 1).padStart(2, "0")}T09:00:00.000Z`,
+    type: index % 2 ? "reply" : "dm",
+    label: "Existing conversation",
+    text: `Existing message ${index + 1}`,
+    by: index % 2 ? "Prospect" : "Amina",
+  }));
+  const lead = leadWithHistory(history);
+  lead.outboundMessages[0].messageText = "TEST FOLLOW-UP MESSAGE";
+  lead.outboundMessages[0].generatedAt = "2026-09-10T08:00:00.000Z";
+  const sentAt = "2026-09-10T10:10:00.000Z";
+
+  const committed = commitOutboundSent(lead, lead.outboundMessages[0].id, sentAt);
+
+  assert.deepEqual(committed.conversationLog.slice(0, 25), history);
+  assert.equal(committed.conversationLog.length, 26);
+  assert.equal(committed.conversationLog[25].text, "TEST FOLLOW-UP MESSAGE");
+  assert.equal(committed.conversationLog[25].ts, sentAt);
+  assert.notEqual(committed.outboundMessages[0].generatedAt, committed.outboundMessages[0].sentAt);
+  assert.equal(commitOutboundSent(committed, lead.outboundMessages[0].id, "2026-09-10T12:00:00.000Z").conversationLog.length, 26);
+});
