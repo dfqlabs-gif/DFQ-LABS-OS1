@@ -2461,9 +2461,8 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
 
                       {expanded && (
                         <div style={{ borderTop: `1px solid ${BORDER}`, background: SURFACE2, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-                          {lead.dmText && <div><div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>OUR DM</div><p style={{ fontSize: 11, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{lead.dmText}</p></div>}
-                          {lead.prospectInitialResponse && <div><div style={{ fontSize: 9, color: "#F59E0B", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>THEIR REPLY</div><p style={{ fontSize: 11, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{lead.prospectInitialResponse}</p></div>}
-                          {lead.prospectLatestResponse && <div><div style={{ fontSize: 9, color: "#8B5CF6", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>LATEST</div><p style={{ fontSize: 11, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{lead.prospectLatestResponse}</p></div>}
+                          {lead.dmText && <div><div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>YOUR DM — ORIGINAL</div><p style={{ fontSize: 11, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{lead.dmText}</p></div>}
+                          {lead.prospectInitialResponse && <div><div style={{ fontSize: 9, color: "#F59E0B", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>THEIR INITIAL RESPONSE</div><p style={{ fontSize: 11, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{lead.prospectInitialResponse}</p></div>}
                           <ConversationHistoryPanel log={lead.conversationLog} />
                           <div>
                             <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>LOG A NEW REPLY FROM THEM</div>
@@ -2651,8 +2650,8 @@ function LeadRow({ lead, onEdit, onDelete, onSave, onQuickContact, classifying }
       </div>
       {exp && (
         <div style={{ borderTop: `1px solid ${BORDER}`, background: SURFACE2, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-          {lead.dmText && <div><div style={{ fontSize: 9, color: G, fontWeight: 700 }}>OUR DM</div><p style={{ fontSize: 11, color: "#aaa" }}>{lead.dmText}</p></div>}
-          {lead.prospectLatestResponse && <div><div style={{ fontSize: 9, color: "#8B5CF6", fontWeight: 700 }}>LATEST</div><p style={{ fontSize: 11, color: "#aaa" }}>{lead.prospectLatestResponse}</p></div>}
+          {lead.dmText && <div><div style={{ fontSize: 9, color: G, fontWeight: 700 }}>YOUR DM — ORIGINAL</div><p style={{ fontSize: 11, color: "#aaa" }}>{lead.dmText}</p></div>}
+          {lead.prospectInitialResponse && <div><div style={{ fontSize: 9, color: "#F59E0B", fontWeight: 700 }}>THEIR INITIAL RESPONSE</div><p style={{ fontSize: 11, color: "#aaa" }}>{lead.prospectInitialResponse}</p></div>}
           <ConversationHistoryPanel log={lead.conversationLog} />
         </div>
       )}

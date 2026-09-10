@@ -87,7 +87,10 @@ export function commitOutboundSent(lead: Lead, outboundId: string, sentAt = nowI
     completedFollowUps: alreadyRecorded ? (lead.completedFollowUps || []) : [...(lead.completedFollowUps || []), sentAt],
     autoFollowUpDate: ["Closed", "Lost"].includes(lead.status) ? null : addDays(3),
     autoFollowUpReason: "Recently contacted via WhatsApp outbound.",
-    dmText: outbound.messageText,
+    // dmText is the immutable opening outbound.  A confirmed outbound may
+    // establish it only for a lead with no opening DM; every later outbound
+    // lives exclusively in the append-only conversationLog above.
+    dmText: lead.dmText || outbound.messageText,
   };
 }
 
@@ -177,8 +180,10 @@ export function applySentMessage(
     autoFollowUpReason: "Recently contacted via WhatsApp outbound.",
     nextAction: nextAction || "Wait for reply and review the response.",
     nextActionDate: nextActionDate || addDays(3),
-    // Update quick-reference DM field for DM-type messages
-    ...(isDm ? { dmText: messageText } : {}),
+    // Only the first outbound establishes the immutable opening DM.  This
+    // legacy client helper is deliberately kept consistent with the canonical
+    // server transaction above.
+    ...(isDm && !lead.dmText ? { dmText: messageText } : {}),
     outboundMessages,
   };
 }

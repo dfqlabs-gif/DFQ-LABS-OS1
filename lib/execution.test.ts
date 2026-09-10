@@ -53,6 +53,20 @@ test("a sent confirmation uses the outbound record, never browser-supplied text"
   assert.equal(committed.conversationLog[0].text, lead.outboundMessages[0].messageText);
 });
 
+test("a later outbound cannot replace the original DM or initial reply", () => {
+  const lead = leadWithHistory();
+  lead.dmText = "Original DM";
+  lead.prospectInitialResponse = "Initial response";
+  lead.prospectLatestResponse = "Initial response";
+  const committed = commitOutboundSent(lead, lead.outboundMessages[0].id, "2026-09-10T20:04:00.000Z");
+
+  assert.equal(committed.dmText, "Original DM");
+  assert.equal(committed.prospectInitialResponse, "Initial response");
+  assert.equal(committed.conversationLog.at(-1)?.text, "Exact generated message");
+  assert.equal(committed.conversationLog.at(-1)?.direction, "outbound");
+  assert.equal(committed.conversationLog.at(-1)?.ts, "2026-09-10T20:04:00.000Z");
+});
+
 test("a confirmation preserves a long persisted thread and keeps server sentAt separate from generatedAt", () => {
   const history = Array.from({ length: 25 }, (_, index) => ({
     id: `history-${index}`,

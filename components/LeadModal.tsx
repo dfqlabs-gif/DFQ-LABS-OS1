@@ -47,7 +47,7 @@ export function ConversationHistoryPanel({ log }: { log: any[] }) {
     <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 14px" }}>
       <div onClick={() => setOpen(!open)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 9, color: MUTED2, fontWeight: 700, letterSpacing: "0.08em" }}>
-          FULL CONVERSATION HISTORY — {sorted.length} entr{sorted.length !== 1 ? "ies" : "y"} (never overwritten)
+          LATEST THREAD — {sorted.length} entr{sorted.length !== 1 ? "ies" : "y"} (append-only)
         </span>
         <span style={{ fontSize: 11, color: MUTED }}>{open ? "Hide ▲" : "Show ▼"}</span>
       </div>

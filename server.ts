@@ -46,23 +46,37 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
   const newlySent = sentOutbound.filter((message: any) =>
     message?.id && message.status === "SENT" && currentById.get(message.id)?.status !== "SENT"
   );
-  // Also merge a retry of a previous SENT confirmation: the first request may
-  // have appended newer database history that the retrying client never saw.
-  const currentSent = currentOutbound.filter((message: any) => message?.id && message.status === "SENT");
-  // A delayed generic browser save must never downgrade a committed outbound
-  // or replace the append-only thread it created.
-  if (sentOutbound.length === 0 && currentSent.length === 0) return incoming;
+  // This merge is used for every ordinary CRM save, not just sent-outbound
+  // retries.  That keeps the database, rather than a browser snapshot, the
+  // authority for anchors and append-only chronology.
 
   const currentLog = Array.isArray(current.conversationLog) ? current.conversationLog : [];
   const incomingLog = Array.isArray(incoming.conversationLog) ? incoming.conversationLog : [];
   const entryKey = (entry: any) => JSON.stringify([
-    entry?.ts, entry?.type, entry?.label, entry?.text, entry?.by,
+    entry?.outboundId || entry?.id || "", entry?.type, entry?.label, entry?.text, entry?.by,
   ]);
   const knownEntries = new Set(currentLog.map(entryKey));
+  const openingDm = current.dmText || incoming.dmText || "";
+  const initialResponse = current.prospectInitialResponse || incoming.prospectInitialResponse || "";
   const appendedEntries = incomingLog.filter((entry: any) => {
+    // These two historical anchors are stored in their own fields, never as
+    // part of Latest Thread.  Excluding them also prevents the first inbound
+    // save from creating duplicate "initial" and "latest" entries.
+    if ((entry?.type === "dm" && entry?.text === openingDm) ||
+        (entry?.type === "reply" && entry?.text === initialResponse)) return false;
+    // Subsequent outbound messages are admitted only by the durable outbound
+    // confirmation transaction, where they have an outboundId and server
+    // sentAt.  A browser's changed dmText must never smuggle a replacement in.
+    if (entry?.type === "dm") return false;
     const key = entryKey(entry);
     if (knownEntries.has(key)) return false;
     knownEntries.add(key);
+    // The database owns chronology: browser timestamps are never persisted
+    // for newly received/sent thread messages submitted through this fallback.
+    if (entry?.type === "dm" || entry?.type === "reply") {
+      entry.ts = new Date().toISOString();
+      entry.direction = entry.direction || (entry.type === "reply" ? "inbound" : "outbound");
+    }
     return true;
   });
 
@@ -91,6 +105,8 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
 
   return {
     ...incoming,
+    dmText: openingDm,
+    prospectInitialResponse: initialResponse,
     conversationLog: [...currentLog, ...appendedEntries],
     outboundMessages: mergedOutbound,
   };

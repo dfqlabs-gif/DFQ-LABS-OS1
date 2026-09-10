@@ -114,21 +114,24 @@ function relativeTime(ts: string): string {
 }
 
 export function formatConversationLog(lead: Lead): string {
-  // ConversationLog is the append-only source of truth.  Include its complete
-  // useful chronology (up to a deliberately generous safety cap) so follow-ups
-  // can honour promises, questions, timing, and prior wording.
+  // Keep the historical anchors distinct from the subsequent append-only
+  // thread.  Sales Brain needs to know what opened the conversation, what the
+  // lead first said, and what happened after that.
   const parts: string[] = [];
+  if (lead.dmText) parts.push(`=== ORIGINAL YOUR DM ===\n${lead.dmText}`);
+  if (lead.prospectInitialResponse) parts.push(`=== THEIR INITIAL RESPONSE ===\n${lead.prospectInitialResponse}`);
+  const anchorTexts = new Set([lead.dmText, lead.prospectInitialResponse].filter(Boolean));
   const recordedMessages = (lead.conversationLog || [])
     .filter(entry => entry.type === "dm" || entry.type === "reply")
+    .filter(entry => !anchorTexts.has(entry.text))
     .sort((a, b) => a.ts.localeCompare(b.ts))
     .slice(-60)
     .map(entry => `[${entry.ts} — ${entry.direction || (entry.type === "reply" ? "inbound / LEAD" : "outbound / DFQ LABS")} — ${entry.label || "Recorded message"}]: ${entry.text}`);
   if (recordedMessages.length > 0) {
-    parts.push(`=== CHRONOLOGICAL CONVERSATION (oldest to newest) ===\n${recordedMessages.join("\n")}`);
-  } else {
-    if (lead.dmText) parts.push(`[DFQ LABS — legacy initial DM]: ${lead.dmText}`);
-    if (lead.prospectInitialResponse) parts.push(`[LEAD — legacy initial reply]: ${lead.prospectInitialResponse}`);
-    if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) parts.push(`[LEAD — legacy latest message]: ${lead.prospectLatestResponse}`);
+    parts.push(`=== LATEST THREAD: SUBSEQUENT MESSAGES (oldest to newest) ===\n${recordedMessages.join("\n")}`);
+  } else if (!lead.prospectInitialResponse && lead.prospectLatestResponse) {
+    // Compatibility for records created before the append-only thread existed.
+    parts.push(`=== LATEST THREAD: LEGACY MESSAGE ===\n${lead.prospectLatestResponse}`);
   }
   if (parts.length === 0) return "No conversation yet — this is the first outbound touch to this lead.";
   return parts.join("\n");
