@@ -48,7 +48,10 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
   );
   // Also merge a retry of a previous SENT confirmation: the first request may
   // have appended newer database history that the retrying client never saw.
-  if (sentOutbound.length === 0) return incoming;
+  const currentSent = currentOutbound.filter((message: any) => message?.id && message.status === "SENT");
+  // A delayed generic browser save must never downgrade a committed outbound
+  // or replace the append-only thread it created.
+  if (sentOutbound.length === 0 && currentSent.length === 0) return incoming;
 
   const currentLog = Array.isArray(current.conversationLog) ? current.conversationLog : [];
   const incomingLog = Array.isArray(incoming.conversationLog) ? incoming.conversationLog : [];
@@ -79,7 +82,10 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
   const mergedOutbound = [...currentOutbound];
   for (const outbound of incomingOutbound) {
     const index = mergedOutbound.findIndex((message: any) => message.id === outbound.id);
-    if (index >= 0) mergedOutbound[index] = outbound;
+    if (index >= 0) {
+      if (mergedOutbound[index].status === "SENT" && outbound.status !== "SENT") continue;
+      mergedOutbound[index] = outbound;
+    }
     else mergedOutbound.push(outbound);
   }
 

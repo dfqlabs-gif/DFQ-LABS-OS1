@@ -122,7 +122,7 @@ export function formatConversationLog(lead: Lead): string {
     .filter(entry => entry.type === "dm" || entry.type === "reply")
     .sort((a, b) => a.ts.localeCompare(b.ts))
     .slice(-60)
-    .map(entry => `[${entry.ts} — ${entry.type === "reply" ? "LEAD" : "DFQ LABS"} — ${entry.label || "Recorded message"}]: ${entry.text}`);
+    .map(entry => `[${entry.ts} — ${entry.direction || (entry.type === "reply" ? "inbound / LEAD" : "outbound / DFQ LABS")} — ${entry.label || "Recorded message"}]: ${entry.text}`);
   if (recordedMessages.length > 0) {
     parts.push(`=== CHRONOLOGICAL CONVERSATION (oldest to newest) ===\n${recordedMessages.join("\n")}`);
   } else {
