@@ -16,6 +16,24 @@ import { today, addDays, nowISO } from "../constants";
 import type { MessageType } from "./messageTypes";
 
 /**
+ * Durably register a generated outbound before it can be opened or confirmed.
+ * This deliberately precedes the WhatsApp handoff: confirmation is allowed to
+ * use only the stable IDs because the exact text is already in PostgreSQL.
+ */
+export async function createOutboundRecord(leadId: string, outbound: OutboundMessage): Promise<Lead> {
+  const response = await fetch(`/api/leads/${encodeURIComponent(leadId)}/outbound`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ outbound }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.lead) {
+    throw new Error(payload.error || "Could not save the generated outbound message.");
+  }
+  return payload.lead as Lead;
+}
+
+/**
  * Confirm an outbound message using only its stable identity. The server reads
  * the exact text from the persisted outbound record and returns the committed
  * lead; callers must never reconstruct a sent message locally.

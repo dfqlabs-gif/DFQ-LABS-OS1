@@ -35,7 +35,7 @@ import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
-import { applySentMessage, applyWhatsAppOpened } from "./lib/execution";
+import { confirmOutboundSent, createOutboundRecord } from "./lib/execution";
 import { newOutboundMessage } from "./lib/outbound";
 import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
 import { LearningIntelligence } from "./components/LearningIntelligence";
@@ -56,7 +56,11 @@ function SalesBrainExecution({ lead, brain, outboundId, onSave, userId }: { lead
     {brain.learningInsights?.length ? <div style={{ fontSize: 10, color: MUTED2, lineHeight: 1.5, marginBottom: 10, borderLeft: `2px solid ${G}`, paddingLeft: 8 }}><strong style={{ color: G }}>LEARNING SIGNAL</strong><br />{brain.learningInsights[0].pattern}<br />Evidence: {brain.learningInsights[0].evidenceSummary} · {brain.learningInsights[0].confidence}/100</div> : null}
     <div style={{ fontSize: 9, color: G, fontWeight: 800, letterSpacing: "0.1em", marginBottom: 6 }}>FINAL MESSAGE</div>
     <div style={{ fontSize: 12, color: "#ddd", lineHeight: 1.75, whiteSpace: "pre-wrap", marginBottom: 10 }}>{brain.message}</div>
-    <WhatsAppExecutionButton lead={lead} message={brain.message} messageType={brain.messageType} source="follow_up_queue" userId={userId} outboundId={outboundId} compact onWhatsAppOpened={(id) => onSave(applyWhatsAppOpened(lead, id))} onSent={(id) => onSave(applySentMessage(lead, brain.message, brain.messageType, userId, id, brain.reasoningSummary, brain.recommendedAction, brain.recommendedFollowUpDate))} />
+    <WhatsAppExecutionButton lead={lead} message={brain.message} messageType={brain.messageType} source="follow_up_queue" userId={userId} outboundId={outboundId} compact onWhatsAppOpened={async (id) => {
+      const outbound = lead.outboundMessages?.find(item => item.id === id);
+      if (!outbound) throw new Error("Generated outbound message is unavailable.");
+      await createOutboundRecord(lead.id, outbound);
+    }} onSent={async (id) => onSave(await confirmOutboundSent(lead.id, id))} />
     <button onClick={() => setShowStrategy(value => !value)} style={{ marginTop: 8, padding: 0, background: "transparent", border: "none", color: MUTED, fontSize: 10, cursor: "pointer" }}>{showStrategy ? "Hide strategy" : "View strategy"}</button>
     {showStrategy && <div style={{ marginTop: 6, fontSize: 10, color: MUTED2, lineHeight: 1.6 }}>Reason: {brain.strategicReason}<br />Friction: {brain.detectedFriction}<br />Recommended action: {brain.recommendedAction}<br />Risk: {brain.riskLevel}</div>}
   </div>;
@@ -2337,13 +2341,12 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                               outboundId={outboundIds[lead.id] || ""}
                               compact
                               disabled={!outboundIds[lead.id]}
-                              onWhatsAppOpened={(outboundId) => {
-                                onSave(applyWhatsAppOpened(lead, outboundId));
+                              onWhatsAppOpened={async (outboundId) => {
+                                const outbound = lead.outboundMessages?.find(item => item.id === outboundId);
+                                if (!outbound) throw new Error("Generated outbound message is unavailable.");
+                                await createOutboundRecord(lead.id, outbound);
                               }}
-                              onSent={(outboundId) => {
-                                const brain = brainResults[lead.id];
-                                onSave(applySentMessage(lead, dm, brain?.messageType || "FOLLOW_UP", displayName, outboundId, brain?.reasoningSummary, brain?.recommendedAction, brain?.recommendedFollowUpDate));
-                              }}
+                              onSent={async (outboundId) => onSave(await confirmOutboundSent(lead.id, outboundId))}
                             />
                             <button onClick={() => startDMFlow(lead)} style={{ background: "transparent", border: `1px solid ${G_BORDER}`, color: G, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700 }}>↺ Redo</button>
                           </div>

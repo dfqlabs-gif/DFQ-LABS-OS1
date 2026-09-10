@@ -10,7 +10,7 @@ import {
 import { stripMarkdown } from "../aiEngine";
 import { runSalesBrain, SalesBrainResult } from "../salesBrain";
 import { newOutboundMessage } from "../lib/outbound";
-import { applyWhatsAppOpened, confirmOutboundSent } from "../lib/execution";
+import { confirmOutboundSent, createOutboundRecord } from "../lib/execution";
 import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -30,6 +30,8 @@ interface AskAIProps {
   onFollowUp: (lead: Lead) => void;  // globally save a followed-up lead
   onOpenLead?: (lead: Lead) => void; // open lead profile modal (optional)
   onMessageSent?: (lead: Lead, message: string, messageType: string) => void; // confirm message sent → update CRM
+  // Retained for callers on the existing app surface. Outbound execution now
+  // uses onLeadCommitted so a stale generic save cannot race SENT.
   onSaveLead?: (lead: Lead) => void;
   onLeadCommitted?: (lead: Lead) => void;
 }
@@ -335,7 +337,7 @@ function FollowUpChip({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead, onLeadCommitted }: AskAIProps) {
+export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead: _onSaveLead, onLeadCommitted }: AskAIProps) {
   const [open, setOpen]       = useState(false);
   const [input, setInput]     = useState("");
   const [messages, setMessages] = useState<AiMessage[]>([]);
@@ -476,8 +478,8 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
         knowledgeUsed: data.knowledgeUsed,
         salesBrain: brain ? { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel } : undefined,
       });
-      const executionLead = { ...lead, outboundMessages: [...(lead.outboundMessages || []), outbound] };
-      onSaveLead?.(executionLead);
+      const persistedLead = await createOutboundRecord(lead.id, outbound);
+      onLeadCommitted?.(persistedLead);
       setMessages(prev => [
         ...prev,
         {
@@ -487,7 +489,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
           strategy: data.strategy || undefined,
           brain,
           outboundId: outbound.id,
-          mentionedLeads: [executionLead],
+          mentionedLeads: [persistedLead],
           messageType: data.messageType || "VALUE_DM",
           knowledgeUsed: data.knowledgeUsed || [],
         },
@@ -496,7 +498,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
       setMessages(prev => [...prev, { role: "ai" as const, text: "Error generating value DM: " + err.message }]);
     }
     setLoading(false);
-  }, [onSaveLead]);
+  }, [onLeadCommitted]);
 
   // ── Send ────────────────────────────────────────────────────────────────────
   const send = async () => {
@@ -558,9 +560,9 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
           messageText: brain.message, source: "ask_ai", strategy: brain.reasoningSummary,
           salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel },
         });
-        const executionLead = { ...ctxLead, outboundMessages: [...(ctxLead.outboundMessages || []), outbound] };
-        onSaveLead?.(executionLead);
-        setMessages(prev => [...prev, { role: "ai", text: brain.reasoningSummary, dm: brain.message, strategy: brain.reasoningSummary, brain, outboundId: outbound.id, mentionedLeads: [executionLead] }]);
+        const persistedLead = await createOutboundRecord(ctxLead.id, outbound);
+        onLeadCommitted?.(persistedLead);
+        setMessages(prev => [...prev, { role: "ai", text: brain.reasoningSummary, dm: brain.message, strategy: brain.reasoningSummary, brain, outboundId: outbound.id, mentionedLeads: [persistedLead] }]);
         setLoading(false);
         return;
       }
@@ -738,7 +740,10 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
                               <WhatsAppExecutionButton
                                 lead={msg.mentionedLeads[0]} message={msg.dm} messageType={msg.brain?.messageType || "VALUE_DM"}
                                 source="ask_ai" userId={msg.mentionedLeads[0].assignedTo} outboundId={msg.outboundId} compact
-                                onWhatsAppOpened={(id) => onSaveLead?.(applyWhatsAppOpened(msg.mentionedLeads![0], id))}
+                                onWhatsAppOpened={async (id) => {
+                                  const committed = await createOutboundRecord(msg.mentionedLeads![0].id, msg.mentionedLeads![0].outboundMessages!.find(item => item.id === id)!);
+                                  onLeadCommitted?.(committed);
+                                }}
                                 onSent={async (id) => {
                                   const lead = msg.mentionedLeads![0]; const brain = msg.brain;
                                   const committed = await confirmOutboundSent(lead.id, id);

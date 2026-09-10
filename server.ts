@@ -42,7 +42,10 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
   );
   // Also merge a retry of a previous SENT confirmation: the first request may
   // have appended newer database history that the retrying client never saw.
-  if (sentOutbound.length === 0) return incoming;
+  const currentSent = currentOutbound.filter((message: any) => message?.id && message.status === "SENT");
+  // A delayed generic browser save must never downgrade a committed outbound
+  // or replace the append-only thread it created.
+  if (sentOutbound.length === 0 && currentSent.length === 0) return incoming;
 
   const currentLog = Array.isArray(current.conversationLog) ? current.conversationLog : [];
   const incomingLog = Array.isArray(incoming.conversationLog) ? incoming.conversationLog : [];
@@ -73,7 +76,10 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
   const mergedOutbound = [...currentOutbound];
   for (const outbound of incomingOutbound) {
     const index = mergedOutbound.findIndex((message: any) => message.id === outbound.id);
-    if (index >= 0) mergedOutbound[index] = outbound;
+    if (index >= 0) {
+      if (mergedOutbound[index].status === "SENT" && outbound.status !== "SENT") continue;
+      mergedOutbound[index] = outbound;
+    }
     else mergedOutbound.push(outbound);
   }
 
@@ -1163,6 +1169,41 @@ app.post("/api/actions/:id/:direction", async (req, res) => {
 
 // Canonical outbound confirmation.  The browser supplies only stable IDs; the
 // exact message is read from the locked, persisted outbound record.
+app.post("/api/leads/:leadId/outbound", async (req, res) => {
+  const outbound = req.body?.outbound;
+  if (!outbound?.id || !outbound?.messageText || outbound.leadId !== req.params.leadId) {
+    return res.status(400).json({ error: "A valid outbound record for this lead is required." });
+  }
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data as Lead | undefined;
+    if (!lead) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Lead not found." });
+    }
+    const existing = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    const existingRecord = existing.find((item: any) => item.id === outbound.id);
+    if (existingRecord && (existingRecord.leadId !== lead.id || existingRecord.messageText !== outbound.messageText)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Outbound ID conflicts with an existing message." });
+    }
+    const updated = existingRecord ? lead : { ...lead, outboundMessages: [...existing, outbound] };
+    if (!existingRecord) {
+      await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    }
+    await client.query("COMMIT");
+    return res.json({ ok: true, lead: updated, idempotent: !!existingRecord });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST outbound record:", error);
+    return res.status(500).json({ error: "Could not save the generated outbound message." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/leads/:leadId/outbound/:outboundId/sent", async (req, res) => {
   const client = await db.connect();
   try {

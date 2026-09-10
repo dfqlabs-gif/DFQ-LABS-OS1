@@ -114,21 +114,21 @@ function relativeTime(ts: string): string {
 }
 
 export function formatConversationLog(lead: Lead): string {
-  // Keep actual two-way history, including executed outbound messages, so a
-  // later Sales Brain run never treats a follow-up as a new conversation.
+  // ConversationLog is the append-only source of truth. Include its complete
+  // useful chronology so follow-ups can honour promises, questions, timing,
+  // and prior wording without treating an existing relationship as new.
   const parts: string[] = [];
-  if (lead.dmText) {
-    parts.push(`[ALEX (us) — Initial DM]: ${lead.dmText}`);
-  }
-  if (lead.prospectInitialResponse) {
-    parts.push(`[LEAD — Initial Reply]: ${lead.prospectInitialResponse}`);
-  }
-  if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) {
-    parts.push(`[LEAD — Latest Message]: ${lead.prospectLatestResponse}`);
-  }
-  for (const entry of (lead.conversationLog || []).filter(entry => entry.type === "dm" || entry.type === "reply").slice(-12)) {
-    const speaker = entry.type === "dm" ? "DFQ LABS (us)" : "LEAD";
-    if (!parts.some(part => part.includes(entry.text))) parts.push(`[${speaker} — ${entry.label}]: ${entry.text}`);
+  const recordedMessages = (lead.conversationLog || [])
+    .filter(entry => entry.type === "dm" || entry.type === "reply")
+    .sort((a, b) => a.ts.localeCompare(b.ts))
+    .slice(-60)
+    .map(entry => `[${entry.ts} — ${entry.direction || (entry.type === "reply" ? "inbound / LEAD" : "outbound / DFQ LABS")} — ${entry.label || "Recorded message"}]: ${entry.text}`);
+  if (recordedMessages.length > 0) {
+    parts.push(`=== CHRONOLOGICAL CONVERSATION (oldest to newest) ===\n${recordedMessages.join("\n")}`);
+  } else {
+    if (lead.dmText) parts.push(`[DFQ LABS — legacy initial DM]: ${lead.dmText}`);
+    if (lead.prospectInitialResponse) parts.push(`[LEAD — legacy initial reply]: ${lead.prospectInitialResponse}`);
+    if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) parts.push(`[LEAD — legacy latest message]: ${lead.prospectLatestResponse}`);
   }
   if (parts.length === 0) return "No conversation yet — this is the first outbound touch to this lead.";
   return parts.join("\n");
