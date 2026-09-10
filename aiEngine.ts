@@ -219,16 +219,34 @@ export function buildLeadContext(lead: Lead): string {
   return `${intelligenceContext}
 
 === CRM CONTEXT ===
-Lead: ${lead.name || "Unknown"} — ${lead.company || "Unknown company"}
+Lead ID: ${lead.id}
+Contact name: ${lead.name || "Unknown"}
+Company: ${lead.company || "Unknown company"}
+Phone: ${lead.phone || "not recorded"}
+WhatsApp: ${lead.whatsapp || "not recorded"}
+Instagram: ${lead.instagram || "not recorded"}
+Email: ${lead.email || "not recorded"}
 Client archetype: ${lead.clientType || "Real Estate Developer"}
 Service under discussion: ${lead.service} (value ${value ? "₦" + value.toLocaleString() : "unknown"}/mo)
 Assigned specialist: ${lead.assignedTo || "Unassigned"}
+Lead source: ${lead.source || "not recorded"}
+Priority: ${lead.priority || "not recorded"}
+Meeting scheduled: ${lead.meetingScheduledAt || "none"}
+Meeting preparation: ${lead.meetingPrepNote || "none"}
+Last meaningful touchpoint: ${lead.lastMeaningfulTouchpoint || "none"}
+Beta candidate: ${lead.betaCandidate ? "yes" : "no"}
+AI classification: ${lead.aiBucket || "unclassified"}${lead.aiReason ? ` — ${lead.aiReason}` : ""}
+AI next action / schedule: ${lead.aiNextAction || lead.autoFollowUpReason || "none"}${lead.autoFollowUpDate ? ` (date: ${lead.autoFollowUpDate})` : ""}
 Days since we last contacted them: ${daysSinceContact ?? "n/a"}
 Hours currently awaiting their reply: ${hoursAwaitingReply !== null && !Number.isNaN(hoursAwaitingReply) ? Math.round(hoursAwaitingReply) : "n/a"}
 Internal notes: ${lead.notes || "none"}
 
 === CONVERSATION THREAD ===
 ${formatConversationLog(lead)}
+=== PREVIOUS OUTBOUND RECORDS ===
+${(lead.outboundMessages || []).length
+  ? lead.outboundMessages.map(message => `[${message.status}] ${message.sentAt || message.generatedAt} — ${message.messageType} via ${message.source}: ${message.messageText}`).join("\n")
+  : "No persisted outbound records."}
 ${attachmentBlock ? "\n" + attachmentBlock + "\n" : ""}=== END CONTEXT ===`;
 }
 

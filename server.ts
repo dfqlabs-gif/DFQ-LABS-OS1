@@ -716,7 +716,11 @@ FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holi
 
 Output ONLY the actual message. No labels. No quotes. No explanation. No strategy in the message.`;
 
-    pipelineTask = "Generate a VALUE_DM: one specific, genuinely useful, immediately actionable insight for this prospect. No selling. No CTA. No ask. Just value.";
+    pipelineTask = `CURRENT USER INSTRUCTION (highest-priority direction for this draft):
+${typeof task === "string" && task.trim() ? task.trim() : "Write a useful, prospect-specific value DM."}
+
+TASK:
+Generate a VALUE_DM that follows the user's requested strategy while remaining factually grounded in this lead's CRM context, complete chronology, prior outbounds, notes, and available attachments. Do not repeat an earlier message. No selling, CTA, or ask unless the user explicitly selected a different message type.`;
   } else {
     // Other message types — use per-type rules (Part 18)
     const typeRules: Record<string, string> = {

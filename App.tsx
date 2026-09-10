@@ -1073,11 +1073,10 @@ export default function App() {
   const applyCommittedLead = useCallback((committed: Lead) => {
     setLeads(current => {
       const next = current.map(lead => lead.id === committed.id ? committed : lead);
-      persist(next, stats);
       return next;
     });
     setModal(current => current?.id === committed.id ? committed : current);
-  }, [persist, stats]);
+  }, []);
 
   const applyUndoRedo = useCallback(async (direction: "undo" | "redo") => {
     const action = undoActions.find(item => direction === "undo"

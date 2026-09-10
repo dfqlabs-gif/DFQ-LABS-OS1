@@ -737,6 +737,9 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
                           </div>
                           {msg.mentionedLeads?.[0] && msg.outboundId && (
                             <div style={{ marginTop: 9 }}>
+                              <div style={{ fontSize: 9, color: MUTED, marginBottom: 6 }}>
+                                Draft safely stored. It will join Latest Thread only after you confirm Mark as Sent.
+                              </div>
                               <WhatsAppExecutionButton
                                 lead={msg.mentionedLeads[0]} message={msg.dm} messageType={msg.brain?.messageType || "VALUE_DM"}
                                 source="ask_ai" userId={msg.mentionedLeads[0].assignedTo} outboundId={msg.outboundId} compact

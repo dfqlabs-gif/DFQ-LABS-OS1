@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runSalesBrainWithGenerator, validateSalesBrainMessage } from "../salesBrain";
+import { buildLeadContext } from "../aiEngine";
 import { applySentMessage, applyWhatsAppOpened } from "./execution";
 import { newOutboundMessage } from "./outbound";
 import type { Lead } from "../types";
@@ -47,4 +48,26 @@ test("execution preserves an exact outbound ID and is idempotent", () => {
   assert.equal(sent.nextActionDate, "2026-09-08");
   assert.equal(sent.awaitingReplySince, "");
   assert.equal(sent.completedFollowUps.length, 1);
+});
+
+test("prospect context keeps profile, anchors, chronology, and previous outbounds distinct", () => {
+  const contextual = {
+    ...lead,
+    phone: "08000000000", whatsapp: "2348000000000", instagram: "48propertymarketing",
+    email: "team@48.example", source: "Instagram", priority: "High", betaCandidate: true,
+    meetingScheduledAt: "2026-09-12T10:00:00.000Z", meetingPrepNote: "Discuss website concept.",
+    lastMeaningfulTouchpoint: "2026-09-10", aiBucket: "Warm", aiReason: "Engaged with concept.",
+    aiNextAction: "Send the requested value DM.", autoFollowUpDate: "2026-09-14",
+    conversationLog: [{ ts: "2026-09-10T09:00:00.000Z", type: "dm" as const, direction: "outbound" as const, label: "Follow-up", text: "Specific earlier outbound", by: "Team" }],
+    outboundMessages: [{ ...newOutboundMessage({ leadId: lead.id, userId: "Team", messageType: "FOLLOW_UP", messageText: "Specific earlier outbound", source: "ask_ai" }), status: "SENT" as const, sentAt: "2026-09-10T09:00:00.000Z" }],
+  };
+  const context = buildLeadContext(contextual);
+
+  assert.match(context, /Lead ID: resmo/);
+  assert.match(context, /WhatsApp: 2348000000000/);
+  assert.match(context, /=== ORIGINAL YOUR DM ===/);
+  assert.match(context, /=== THEIR INITIAL RESPONSE ===/);
+  assert.match(context, /=== LATEST THREAD: SUBSEQUENT MESSAGES/);
+  assert.match(context, /=== PREVIOUS OUTBOUND RECORDS ===/);
+  assert.match(context, /Specific earlier outbound/);
 });
