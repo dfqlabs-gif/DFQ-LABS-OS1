@@ -1919,7 +1919,7 @@ export default function App() {
           </div>
         )}
         
-        {tab === "weekly" && <WeeklyFocusTab leads={activeLeads} onEdit={setModal} onQuickContact={quickContact} />}
+        {tab === "weekly" && <WeeklyFocusTab leads={activeLeads} onEdit={setModal} onQuickContact={quickContact} onLeadCommitted={applyCommittedLead} />}
         {tab === "recent" && <RecentLeadsPanel leads={activeLeads} onEdit={setModal} />}
         {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onLeadCommitted={applyCommittedLead} onQuickContact={quickContact} classifying={classifying} />}
         {tab === "clients" && <ClientDelivery clients={clientsValue} onEdit={setModal} />}
@@ -1950,9 +1950,51 @@ export default function App() {
 // WEEKLY FOCUS TAB — shows every lead needing follow-up this week
 // ----------------------------------------------------
 
-function WeeklyFocusTab({ leads, onEdit, onQuickContact }: { leads: Lead[]; onEdit: (l: Lead) => void; onQuickContact: (l: Lead) => void }) {
+function WeeklyFocusTab({ leads, onEdit, onQuickContact, onLeadCommitted }: { leads: Lead[]; onEdit: (l: Lead) => void; onQuickContact: (l: Lead) => void; onLeadCommitted: (lead: Lead) => void }) {
   const [personFilter, setPersonFilter] = useState<"All" | "Alex" | "Saadatu">("All");
+  const [steps, setSteps] = useState<Record<string, "idle" | "summarizing" | "awaiting-confirm" | "generating">>({});
+  const [summaries, setSummaries] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [outboundByLead, setOutboundByLead] = useState<Record<string, OutboundMessage>>({});
   const weekEnd = addDays(7);
+
+  const startFollowUp = async (lead: Lead) => {
+    setSteps(current => ({ ...current, [lead.id]: "summarizing" }));
+    setSummaries(current => ({ ...current, [lead.id]: "" }));
+    setDrafts(current => ({ ...current, [lead.id]: "" }));
+    try {
+      const summary = await runProspectSummary(lead);
+      setSummaries(current => ({ ...current, [lead.id]: summary }));
+      setSteps(current => ({ ...current, [lead.id]: "awaiting-confirm" }));
+    } catch {
+      setSteps(current => ({ ...current, [lead.id]: "idle" }));
+    }
+  };
+
+  const generateFollowUp = async (lead: Lead) => {
+    setSteps(current => ({ ...current, [lead.id]: "generating" }));
+    try {
+      const summary = summaries[lead.id];
+      const text = await runFollowUpReply(lead, summary ? { summary } : undefined);
+      const messageText = text.split("\n\n---STRATEGY---")[0].trim();
+      const outbound = newOutboundMessage({ leadId: lead.id, userId: lead.assignedTo || "DFQ Labs team", messageType: "FOLLOW_UP", messageText, source: "weekly_focus", strategy: summary });
+      const persisted = await createOutboundRecord(lead.id, outbound);
+      setOutboundByLead(current => ({ ...current, [lead.id]: persisted.outboundMessages?.find(item => item.id === outbound.id) || outbound }));
+      setDrafts(current => ({ ...current, [lead.id]: messageText }));
+    } catch (error: any) {
+      setDrafts(current => ({ ...current, [lead.id]: `Error: ${error.message}` }));
+    } finally {
+      setSteps(current => ({ ...current, [lead.id]: "idle" }));
+    }
+  };
+
+  const confirmSent = async (lead: Lead) => {
+    const outbound = outboundByLead[lead.id];
+    if (!outbound) throw new Error("The draft is not available for confirmation.");
+    const committed = await confirmOutboundSent(lead.id, outbound.id);
+    setOutboundByLead(current => ({ ...current, [lead.id]: committed.outboundMessages?.find(item => item.id === outbound.id) || outbound }));
+    onLeadCommitted(committed);
+  };
 
   // Hide leads already followed up within the last 24 hours
   const followedUpRecently = (l: Lead) => {
@@ -2001,8 +2043,11 @@ function WeeklyFocusTab({ leads, onEdit, onQuickContact }: { leads: Lead[]; onEd
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>✓ Done</button>
+                  <button onClick={() => startFollowUp(l)} disabled={steps[l.id] === "summarizing" || steps[l.id] === "generating" || steps[l.id] === "awaiting-confirm"} style={{ background: "rgba(62,207,220,0.1)", color: G, border: `1px solid ${G_BORDER}`, borderRadius: 6, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{steps[l.id] === "summarizing" ? "Reading thread…" : steps[l.id] === "generating" ? "Drafting…" : "Suggest Follow-Up"}</button>
                   <button onClick={() => onEdit(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED2, borderRadius: 6, padding: "5px 9px", fontSize: 10, cursor: "pointer" }}>Edit</button>
                 </div>
+                {steps[l.id] === "awaiting-confirm" && summaries[l.id] && <div style={{ width: "100%", borderTop: `1px solid ${BORDER}`, paddingTop: 9, fontSize: 11, color: "#ccc", lineHeight: 1.6 }}><div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.08em", marginBottom: 5 }}>WHERE IS THIS PROSPECT?</div>{summaries[l.id]}<div style={{ display: "flex", gap: 7, marginTop: 8 }}><button onClick={() => generateFollowUp(l)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "5px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>Generate Follow-Up</button><button onClick={() => setSteps(current => ({ ...current, [l.id]: "idle" }))} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "5px 10px", fontSize: 10, cursor: "pointer" }}>Cancel</button></div></div>}
+                {drafts[l.id] && steps[l.id] === "idle" && <div style={{ width: "100%", borderTop: `1px solid ${BORDER}`, paddingTop: 9 }}><div style={{ fontSize: 11, color: "#ccc", lineHeight: 1.6, whiteSpace: "pre-wrap", marginBottom: 7 }}>{drafts[l.id]}</div>{outboundByLead[l.id] && !drafts[l.id].startsWith("Error:") && <WhatsAppExecutionButton lead={l} message={drafts[l.id]} messageType="FOLLOW_UP" source="weekly_focus" userId={l.assignedTo} outboundId={outboundByLead[l.id].id} onWhatsAppOpened={() => Promise.resolve()} onSent={() => confirmSent(l)} compact />}</div>}
               </div>
             );
           })}
@@ -2282,7 +2327,10 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
     const committed = await confirmOutboundSent(lead.id, outbound.id);
     const recorded = committed.outboundMessages?.find(item => item.id === outbound.id) || outbound;
     setOutboundByLead(current => ({ ...current, [lead.id]: recorded }));
-    onSave(committed);
+    // The confirmation endpoint returns the locked, authoritative lead. Do
+    // not route it through the generic browser-save path, which may hold an
+    // older thread snapshot.
+    onLeadCommitted(committed);
   };
 
   return (
