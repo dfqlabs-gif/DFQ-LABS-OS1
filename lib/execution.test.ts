@@ -67,6 +67,25 @@ test("a later outbound cannot replace the original DM or initial reply", () => {
   assert.equal(committed.conversationLog.at(-1)?.ts, "2026-09-10T20:04:00.000Z");
 });
 
+test("two sent outbounds append once each after immutable anchors", () => {
+  const first = newOutboundMessage({ leadId: "lead-1", userId: "Amina", messageType: "FOLLOW_UP", messageText: "Here is the follow-up message.", source: "ask_ai" });
+  const second = newOutboundMessage({ leadId: "lead-1", userId: "Amina", messageType: "FOLLOW_UP", messageText: "Here is another follow-up.", source: "ask_ai" });
+  const lead = {
+    ...leadWithHistory(), dmText: "Original first DM", prospectInitialResponse: "Thanks, tell me more.",
+    conversationLog: [], outboundMessages: [first, second],
+  };
+  const once = commitOutboundSent(lead, first.id, "2026-09-11T09:00:00.000Z");
+  const retried = commitOutboundSent(once, first.id, "2026-09-11T09:01:00.000Z");
+  const twice = commitOutboundSent(retried, second.id, "2026-09-11T09:02:00.000Z");
+
+  assert.equal(twice.dmText, "Original first DM");
+  assert.equal(twice.prospectInitialResponse, "Thanks, tell me more.");
+  assert.deepEqual(twice.conversationLog.map(entry => entry.text), ["Here is the follow-up message.", "Here is another follow-up."]);
+  assert.deepEqual(twice.conversationLog.map(entry => entry.ts), ["2026-09-11T09:00:00.000Z", "2026-09-11T09:02:00.000Z"]);
+  assert.deepEqual(twice.conversationLog.map(entry => entry.direction), ["outbound", "outbound"]);
+  assert.equal(twice.conversationLog.filter(entry => entry.outboundId === first.id).length, 1);
+});
+
 test("a confirmation preserves a long persisted thread and keeps server sentAt separate from generatedAt", () => {
   const history = Array.from({ length: 25 }, (_, index) => ({
     id: `history-${index}`,

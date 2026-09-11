@@ -71,3 +71,22 @@ test("prospect context keeps profile, anchors, chronology, and previous outbound
   assert.match(context, /=== PREVIOUS OUTBOUND RECORDS ===/);
   assert.match(context, /Specific earlier outbound/);
 });
+
+test("Sales Brain receives the exact user instruction alongside one prospect's context", async () => {
+  const sarah = {
+    ...lead, id: "sarah", name: "Sarah", company: "Plot 42 Homes",
+    notes: "Sarah already inspected Plot 42 and is concerned about title documentation.",
+    prospectLatestResponse: "Does the property have a registered C of O?",
+  };
+  let receivedPrompt = "";
+  await runSalesBrainWithGenerator(sarah, {
+    requestedMessageType: "RESPONSE_DM",
+    task: "Do not sell her anything. Answer her concern about documentation and ask whether she wants the title documents sent.",
+  }, async prompt => {
+    receivedPrompt = prompt;
+    return JSON.stringify({ messageType: "RESPONSE_DM", message: "Sarah, the registered C of O is part of the title documentation for Plot 42. Would you like the title documents sent through?" });
+  });
+  assert.match(receivedPrompt, /Sarah already inspected Plot 42/);
+  assert.match(receivedPrompt, /registered C of O/);
+  assert.match(receivedPrompt, /Do not sell her anything/);
+});

@@ -38,9 +38,13 @@ import {
 
 // Subcomponent: Append-only full conversation history view
 export function ConversationHistoryPanel({ log }: { log: any[] }) {
-  const [open, setOpen] = useState(false);
-  if (!log || !log.length) return null;
-  const sorted = [...log].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+  const [open, setOpen] = useState(true);
+  // Latest Thread is deliberately narrower than the general activity log:
+  // only actual inbound/outbound messages belong here.  This lets a committed
+  // outbound be visible immediately instead of being obscured by status notes.
+  const thread = (log || []).filter(e => e.type === "dm" || e.type === "reply");
+  if (!thread.length) return null;
+  const sorted = [...thread].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
   const typeColor: Record<string, string> = { dm: G, reply: "#8B5CF6", status_change: "#a855f7", note: "#F59E0B" };
 
   return (
