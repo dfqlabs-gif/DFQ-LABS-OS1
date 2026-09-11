@@ -422,7 +422,7 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
         </button>
       </div>
       {!collapsed && <>
-      <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>Prospects that replied to us — we need to respond. Generate a reply below.</div>
+      <div style={{ fontSize: 11, color: MUTED, marginBottom: 10 }}>Prospects that replied to us — generate the next follow-up below.</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {ranked.map(l => {
           const wait = Math.floor(hoursSince(l.awaitingReplySince));
@@ -440,7 +440,7 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
                 <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap" }}>
                   <button onClick={() => onQuickContact(l)} style={{ background: "rgba(34,197,94,0.1)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 6, padding: "6px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Replied — Follow-up Logged</button>
                   <button onClick={() => startGen(l)} disabled={busy || step === 'awaiting-confirm'} style={{ background: busy ? SURFACE : "rgba(239,68,68,0.1)", color: busy ? MUTED : "#EF4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: busy ? "not-allowed" : "pointer" }}>
-                    {step === 'summarizing' ? "Reading thread…" : step === 'generating' ? "Drafting…" : "Suggest Reply →"}
+                    {step === 'summarizing' ? "Reading thread…" : step === 'generating' ? "Drafting…" : "Suggest Follow-Up"}
                   </button>
                   <button onClick={() => onEdit(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "6px 9px", fontSize: 11, cursor: "pointer" }}>Edit</button>
                 </div>
@@ -451,9 +451,9 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
                 <div style={{ padding: "12px 14px", background: "rgba(62,207,220,0.04)", borderTop: `1px solid ${BORDER}` }}>
                   <div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>WHERE IS THIS PROSPECT?</div>
                   <div style={{ fontSize: 12, color: "#ccc", lineHeight: 1.78, whiteSpace: "pre-wrap", marginBottom: 10 }}>{summary}</div>
-                  <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10 }}>Does this match? If yes, the AI will draft a reply that moves them forward.</div>
+                  <div style={{ fontSize: 11, color: MUTED2, marginBottom: 10 }}>Does this match? If yes, the AI will draft the next follow-up that moves them forward.</div>
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => confirmGen(l)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "7px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate Reply</button>
+                    <button onClick={() => confirmGen(l)} style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.35)", borderRadius: 6, padding: "7px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Yes — Generate Follow-Up</button>
                     <button onClick={() => cancelGen(l)} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 12px", fontSize: 11, cursor: "pointer" }}>Cancel</button>
                   </div>
                 </div>
