@@ -1,5 +1,6 @@
 export type { OutboundMessage } from "./lib/outbound";
 import type { OutboundMessage } from "./lib/outbound";
+import type { RemovedConversationEvent } from "./lib/conversationEvents";
 
 export interface LeadAttachment {
   id: string;
@@ -76,6 +77,9 @@ export interface Lead {
   }>;
   attachments?: LeadAttachment[];
   outboundMessages?: OutboundMessage[];
+  // Server-only reversible deletion tombstones. They are excluded from AI
+  // conversation context and preserve an exact event for an immediate Undo.
+  removedConversationEvents?: RemovedConversationEvent[];
 }
 
 export interface Stats {

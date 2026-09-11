@@ -2,6 +2,7 @@ import { useState, useMemo, useRef } from "react";
 import { X, UserCheck, AlertTriangle, Calendar, Sprout, Ticket, Lock, CheckCircle2, Brain, GitMerge, ExternalLink, Search, ShieldAlert, Paperclip, Trash2, FileText, Image } from "lucide-react";
 import React from "react";
 import { Lead, LeadAttachment } from "../types";
+import { conversationEventId, isProtectedConversationAnchor } from "../lib/conversationEvents";
 import { AttachmentImage } from "./AttachmentImage";
 import { 
   CLIENT_TYPES, 
@@ -37,15 +38,50 @@ import {
 } from "../constants";
 
 // Subcomponent: Append-only full conversation history view
-export function ConversationHistoryPanel({ log }: { log: any[] }) {
+export function ConversationHistoryPanel({ lead, onCommitted }: { lead: Lead; onCommitted: (lead: Lead) => void }) {
   const [open, setOpen] = useState(true);
+  const [pendingRemoval, setPendingRemoval] = useState<any | null>(null);
+  const [undoEventId, setUndoEventId] = useState<string | null>(null);
+  const [undoError, setUndoError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   // Latest Thread is deliberately narrower than the general activity log:
   // only actual inbound/outbound messages belong here.  This lets a committed
   // outbound be visible immediately instead of being obscured by status notes.
-  const thread = (log || []).filter(e => e.type === "dm" || e.type === "reply");
-  if (!thread.length) return null;
+  const thread = (lead.conversationLog || []).filter(e =>
+    (e.type === "dm" || e.type === "reply") && !isProtectedConversationAnchor(e, lead.dmText, lead.prospectInitialResponse)
+  );
+  if (!thread.length && !undoEventId && !pendingRemoval) return null;
   const sorted = [...thread].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
   const typeColor: Record<string, string> = { dm: G, reply: "#8B5CF6", status_change: "#a855f7", note: "#F59E0B" };
+  const remove = async () => {
+    if (!pendingRemoval) return;
+    setBusy(true);
+    try {
+      const eventId = conversationEventId(pendingRemoval);
+      const response = await fetch(`/api/leads/${encodeURIComponent(lead.id)}/conversation/${encodeURIComponent(eventId)}`, { method: "DELETE" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.lead) throw new Error(payload.error || "Could not remove this message.");
+      onCommitted(payload.lead);
+      setUndoEventId(eventId);
+      setUndoError(null);
+      setPendingRemoval(null);
+    } catch (error: any) { setPendingRemoval({ ...pendingRemoval, error: error.message }); }
+    finally { setBusy(false); }
+  };
+  const undo = async () => {
+    if (!undoEventId) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/leads/${encodeURIComponent(lead.id)}/conversation/${encodeURIComponent(undoEventId)}/restore`, { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.lead) throw new Error(payload.error || "Could not restore this message.");
+      onCommitted(payload.lead);
+      setUndoEventId(null);
+      setUndoError(null);
+    } catch (error: any) {
+      setUndoError(error.message || "Could not restore this message.");
+    } finally { setBusy(false); }
+  };
 
   return (
     <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 14px" }}>
@@ -57,16 +93,24 @@ export function ConversationHistoryPanel({ log }: { log: any[] }) {
       </div>
       {open && (
         <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 9, maxHeight: 340, overflowY: "auto" }}>
-          {sorted.map((e, i) => (
-            <div key={i} style={{ borderLeft: `2px solid ${typeColor[e.type] || MUTED}`, paddingLeft: 9 }}>
-              <div style={{ fontSize: 9, color: typeColor[e.type] || MUTED, fontWeight: 700 }}>
-                {e.label || e.type} · {new Date(e.ts).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+          {sorted.map(e => (
+            <div key={conversationEventId(e)} style={{ borderLeft: `2px solid ${typeColor[e.type] || MUTED}`, paddingLeft: 9 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ fontSize: 9, color: typeColor[e.type] || MUTED, fontWeight: 700 }}>
+                  {e.label || e.type} · {new Date(e.ts).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </div>
+                {!isProtectedConversationAnchor(e, lead.dmText, lead.prospectInitialResponse) && <button onClick={() => setPendingRemoval(e)} title="Remove from Latest Thread" style={{ padding: 0, background: "transparent", border: "none", color: MUTED, cursor: "pointer" }}><Trash2 size={12} /></button>}
               </div>
               <div style={{ fontSize: 11, color: "#ccc", lineHeight: 1.6, whiteSpace: "pre-wrap", marginTop: 2 }}>{e.text}</div>
             </div>
           ))}
         </div>
       )}
+      {pendingRemoval && <div style={{ marginTop: 10, padding: 9, background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.28)", borderRadius: 6, fontSize: 10, color: TEXT }}>
+        Remove this message from Latest Thread? {pendingRemoval.error && <span style={{ color: "#F87171" }}>{pendingRemoval.error}</span>}
+        <div style={{ display: "flex", gap: 7, marginTop: 7 }}><button onClick={() => setPendingRemoval(null)} disabled={busy}>Cancel</button><button onClick={remove} disabled={busy} style={{ color: "#F87171" }}>{busy ? "Removing…" : "Remove"}</button></div>
+      </div>}
+      {undoEventId && <div style={{ marginTop: 10, fontSize: 10, color: MUTED2 }}>Message removed. <button onClick={undo} disabled={busy} style={{ color: G, background: "transparent", border: "none", padding: 0, cursor: "pointer", fontWeight: 700 }}>{busy ? "Restoring…" : "Undo"}</button>{undoError && <span style={{ color: "#F87171" }}> {undoError}</span>}</div>}
     </div>
   );
 }
@@ -79,9 +123,10 @@ interface LeadModalProps {
   role?: "founder" | "intern";
   onOpenExisting?: (l: Lead) => void;
   onMerge?: (existing: Lead, draft: Lead) => void;
+  onLeadCommitted?: (lead: Lead) => void;
 }
 
-export function LeadModal({ lead: initial, leads, onSave, onClose, role = "founder", onOpenExisting, onMerge }: LeadModalProps) {
+export function LeadModal({ lead: initial, leads, onSave, onClose, role = "founder", onOpenExisting, onMerge, onLeadCommitted }: LeadModalProps) {
   const [lead, setLead] = useState<Lead>(initial);
   const set = (k: keyof Lead, v: any) => setLead(p => ({ ...p, [k]: v }));
 
@@ -356,7 +401,7 @@ export function LeadModal({ lead: initial, leads, onSave, onClose, role = "found
             {lead.awaitingReplySince && <div style={{ fontSize: 10, color: "#EF4444" }}>Marked as awaiting our reply since {new Date(lead.awaitingReplySince).toLocaleString("en-GB")} — clears automatically when you mark contacted.</div>}
           </div>
           
-          <ConversationHistoryPanel log={lead.conversationLog} />
+          <ConversationHistoryPanel lead={lead} onCommitted={updated => { setLead(updated); onLeadCommitted?.(updated); }} />
           
           <div style={{ fontSize: 10, color: MUTED, marginTop: -4 }}>The moment you save or mark contacted, AI reads the full thread above and schedules the next follow-up automatically — no date required from you.</div>
           

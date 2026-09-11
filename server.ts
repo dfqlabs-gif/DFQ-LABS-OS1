@@ -13,6 +13,7 @@ import { stripAttachmentContent } from "./lib/attachments";
 import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 import { actionCanApply, applyActionFields, createLeadAction, type LeadAction } from "./lib/undoRedo";
 import { commitOutboundSent } from "./lib/execution";
+import { conversationEventId, removeConversationEvent, restoreConversationEvent, type ConversationEvent, type RemovedConversationEvent } from "./lib/conversationEvents";
 
 dotenv.config();
 
@@ -52,6 +53,8 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
 
   const currentLog = Array.isArray(current.conversationLog) ? current.conversationLog : [];
   const incomingLog = Array.isArray(incoming.conversationLog) ? incoming.conversationLog : [];
+  const removedConversationEvents = Array.isArray(current.removedConversationEvents) ? current.removedConversationEvents as RemovedConversationEvent[] : [];
+  const removedIds = new Set(removedConversationEvents.map(event => event.eventId));
   const entryKey = (entry: any) => JSON.stringify([
     entry?.outboundId || entry?.id || "", entry?.type, entry?.label, entry?.text, entry?.by,
   ]);
@@ -59,6 +62,9 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
   const openingDm = current.dmText || incoming.dmText || "";
   const initialResponse = current.prospectInitialResponse || incoming.prospectInitialResponse || "";
   const appendedEntries = incomingLog.filter((entry: any) => {
+    // A stale browser copy must never resurrect an event that the server has
+    // already removed from Latest Thread.
+    if (removedIds.has(conversationEventId(entry as ConversationEvent))) return false;
     // These two historical anchors are stored in their own fields, never as
     // part of Latest Thread.  Excluding them also prevents the first inbound
     // save from creating duplicate "initial" and "latest" entries.
@@ -76,6 +82,10 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
     if (entry?.type === "dm" || entry?.type === "reply") {
       entry.ts = new Date().toISOString();
       entry.direction = entry.direction || (entry.type === "reply" ? "inbound" : "outbound");
+      // New inbound thread events did not historically have an ID.  Assign one
+      // only as they enter the authoritative log so future operations address
+      // the exact event rather than text, timestamp, or browser position.
+      entry.id = entry.id || randomUUID();
     }
     return true;
   });
@@ -85,6 +95,7 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
   for (const outbound of newlySent) {
     if (appendedEntries.some((entry: any) => entry?.type === "dm" && entry?.text === outbound.messageText)) continue;
     appendedEntries.push({
+      id: `outbound-${outbound.id}`,
       ts: outbound.sentAt || new Date().toISOString(),
       type: "dm",
       label: `${outbound.messageType || "Outbound"} sent via WhatsApp`,
@@ -109,6 +120,7 @@ function mergeSentOutboundUpdate(current: any, incoming: any) {
     prospectInitialResponse: initialResponse,
     conversationLog: [...currentLog, ...appendedEntries],
     outboundMessages: mergedOutbound,
+    removedConversationEvents,
   };
 }
 
@@ -1307,6 +1319,67 @@ app.post("/api/leads/:leadId/outbound/:outboundId/sent", async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+// Reversible, server-authoritative removal of one Latest Thread event.  The
+// durable outbound record is deliberately retained for execution/audit/learning;
+// only the canonical AI-visible conversation event is removed.
+app.delete("/api/leads/:leadId/conversation/:eventId", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data as Lead | undefined;
+    if (!lead) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Lead not found." }); }
+    const existingRemoved = Array.isArray(lead.removedConversationEvents) ? lead.removedConversationEvents : [];
+    if (existingRemoved.some(item => item.eventId === req.params.eventId)) {
+      await client.query("COMMIT");
+      return res.json({ ok: true, lead, idempotent: true });
+    }
+    let changed;
+    try {
+      changed = removeConversationEvent(Array.isArray(lead.conversationLog) ? lead.conversationLog : [], req.params.eventId, lead.dmText || "", lead.prospectInitialResponse || "", new Date().toISOString());
+    } catch (error: any) {
+      await client.query("ROLLBACK");
+      return res.status(error?.message?.includes("anchors") || error?.message?.includes("Only Latest") ? 400 : 404).json({ error: error?.message || "Could not remove conversation event." });
+    }
+    const updated = { ...lead, conversationLog: changed.log, removedConversationEvents: [...existingRemoved, changed.removed] };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    return res.json({ ok: true, lead: updated, removedEventId: changed.removed.eventId });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("DELETE conversation event:", error);
+    return res.status(500).json({ error: "Could not remove conversation event." });
+  } finally { client.release(); }
+});
+
+app.post("/api/leads/:leadId/conversation/:eventId/restore", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data as Lead | undefined;
+    if (!lead) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Lead not found." }); }
+    const removed = Array.isArray(lead.removedConversationEvents) ? lead.removedConversationEvents as RemovedConversationEvent[] : [];
+    const target = removed.find(item => item.eventId === req.params.eventId);
+    if (!target) {
+      const exists = (Array.isArray(lead.conversationLog) ? lead.conversationLog : []).some(event => conversationEventId(event as ConversationEvent) === req.params.eventId);
+      await client.query("COMMIT");
+      return exists
+        ? res.json({ ok: true, lead, idempotent: true })
+        : res.status(404).json({ error: "Removed conversation event not found." });
+    }
+    const updatedLog = restoreConversationEvent(Array.isArray(lead.conversationLog) ? lead.conversationLog : [], target);
+    const updated = { ...lead, conversationLog: updatedLog, removedConversationEvents: removed.filter(item => item.eventId !== target.eventId) };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    return res.json({ ok: true, lead: updated, idempotent: updatedLog === lead.conversationLog });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST restore conversation event:", error);
+    return res.status(500).json({ error: "Could not restore conversation event." });
+  } finally { client.release(); }
 });
 
 // DELETE with id in body (works on both Express and Vercel)

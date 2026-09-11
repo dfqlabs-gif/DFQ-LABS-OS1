@@ -1672,6 +1672,7 @@ export default function App() {
           displayName={staffName}
           leads={activeLeads}
           onSave={saveLead}
+          onLeadCommitted={applyCommittedLead}
           onQuickContact={quickContact}
           classifying={classifying}
           onLogout={logout}
@@ -1920,7 +1921,7 @@ export default function App() {
         
         {tab === "weekly" && <WeeklyFocusTab leads={activeLeads} onEdit={setModal} onQuickContact={quickContact} />}
         {tab === "recent" && <RecentLeadsPanel leads={activeLeads} onEdit={setModal} />}
-        {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onQuickContact={quickContact} classifying={classifying} />}
+        {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onLeadCommitted={applyCommittedLead} onQuickContact={quickContact} classifying={classifying} />}
         {tab === "clients" && <ClientDelivery clients={clientsValue} onEdit={setModal} />}
         {tab === "team" && <TeamTab leads={activeLeads} onSave={setModal} onBulkSave={bulkSaveLeads} />}
         {tab === "strategy" && <><GrowthStrategySummary leads={activeLeads} /><StrategicPathsSummary leads={activeLeads} /></>}
@@ -1931,7 +1932,7 @@ export default function App() {
         {tab === "gateway" && <AIGateway />}
       </div>
       
-      {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
+      {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onLeadCommitted={applyCommittedLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
       {mergeCandidates && (
         <MergeLeadModal
           leadA={mergeCandidates[0]}
@@ -2125,7 +2126,7 @@ function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess
 // ENHANCED INTERN DASHBOARD (WITH AI COACH ACCESS)
 // ----------------------------------------------------
 
-function InternDashboard({ internNames, displayName, leads, onSave, onQuickContact, classifying, onLogout }: any) {
+function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommitted, onQuickContact, classifying, onLogout }: any) {
   const [internTab, setInternTab] = useState<"queue" | "coach">("queue");
   const [range, setRange] = useState("today");
 
@@ -2462,7 +2463,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
                         <div style={{ borderTop: `1px solid ${BORDER}`, background: SURFACE2, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
                           {lead.dmText && <div><div style={{ fontSize: 9, color: G, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>YOUR DM — ORIGINAL</div><p style={{ fontSize: 11, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{lead.dmText}</p></div>}
                           {lead.prospectInitialResponse && <div><div style={{ fontSize: 9, color: "#F59E0B", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>THEIR INITIAL RESPONSE</div><p style={{ fontSize: 11, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{lead.prospectInitialResponse}</p></div>}
-                          <ConversationHistoryPanel log={lead.conversationLog} />
+                          <ConversationHistoryPanel lead={lead} onCommitted={onLeadCommitted} />
                           <div>
                             <div style={{ fontSize: 9, color: MUTED, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 4 }}>LOG A NEW REPLY FROM THEM</div>
                             <textarea value={replyDrafts[lead.id] || ""} onChange={e => setReplyDrafts(p => ({ ...p, [lead.id]: e.target.value }))} placeholder="Paste what they just said in WhatsApp…" rows={2} style={{ ...iStyle, lineHeight: 1.5 }} />
@@ -2478,7 +2479,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onQuickConta
           </div>
         )}
       </div>
-      {modal && <LeadModal lead={modal} leads={leads} onSave={onSave} onClose={() => setModal(null)} role="intern" onOpenExisting={l => setModal(l)} />}
+      {modal && <LeadModal lead={modal} leads={leads} onSave={onSave} onLeadCommitted={onLeadCommitted} onClose={() => setModal(null)} role="intern" onOpenExisting={l => setModal(l)} />}
     </div>
   );
 }
@@ -2491,7 +2492,7 @@ function InternDashboardWrapper(props: any) {
 // PIPELINE TAB & ROW SUB-COMPONENTS
 // ----------------------------------------------------
 
-function PipelineTab({ leads, onEdit, onDelete, onSave, onQuickContact, classifying }: any) {
+function PipelineTab({ leads, onEdit, onDelete, onSave, onLeadCommitted, onQuickContact, classifying }: any) {
   const [search, setSearch] = useState("");
   const [fStatus, setFStatus] = useState("All");
   const [fBucket, setFBucket] = useState("All");
@@ -2593,7 +2594,7 @@ function PipelineTab({ leads, onEdit, onDelete, onSave, onQuickContact, classify
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {sorted.slice(0, visibleCount).map((l: Lead) => (
-          <LeadRow key={l.id} lead={l} onEdit={onEdit} onDelete={onDelete} onSave={onSave} onQuickContact={onQuickContact} classifying={classifying?.has(l.id)} />
+          <LeadRow key={l.id} lead={l} onEdit={onEdit} onDelete={onDelete} onSave={onSave} onLeadCommitted={onLeadCommitted} onQuickContact={onQuickContact} classifying={classifying?.has(l.id)} />
         ))}
       </div>
       {sorted.length > visibleCount && (
@@ -2610,7 +2611,7 @@ function PipelineTab({ leads, onEdit, onDelete, onSave, onQuickContact, classify
   );
 }
 
-function LeadRow({ lead, onEdit, onDelete, onSave, onQuickContact, classifying }: any) {
+function LeadRow({ lead, onEdit, onDelete, onSave, onLeadCommitted, onQuickContact, classifying }: any) {
   const [exp, setExp] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const due = effectiveDue(lead);
@@ -2651,7 +2652,7 @@ function LeadRow({ lead, onEdit, onDelete, onSave, onQuickContact, classifying }
         <div style={{ borderTop: `1px solid ${BORDER}`, background: SURFACE2, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
           {lead.dmText && <div><div style={{ fontSize: 9, color: G, fontWeight: 700 }}>YOUR DM — ORIGINAL</div><p style={{ fontSize: 11, color: "#aaa" }}>{lead.dmText}</p></div>}
           {lead.prospectInitialResponse && <div><div style={{ fontSize: 9, color: "#F59E0B", fontWeight: 700 }}>THEIR INITIAL RESPONSE</div><p style={{ fontSize: 11, color: "#aaa" }}>{lead.prospectInitialResponse}</p></div>}
-          <ConversationHistoryPanel log={lead.conversationLog} />
+          <ConversationHistoryPanel lead={lead} onCommitted={onLeadCommitted} />
         </div>
       )}
     </div>
