@@ -1254,6 +1254,10 @@ app.post("/api/auth/login", async (req, res) => {
     if (!verifyPassword(password, user.password_hash)) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
+    if (!user.password_hash.includes(":")) {
+      const newScryptHash = hashPassword(password);
+      await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [newScryptHash, user.id]);
+    }
     if (user.status !== "ACTIVE") {
       return res.status(403).json({ error: "User account is inactive" });
     }

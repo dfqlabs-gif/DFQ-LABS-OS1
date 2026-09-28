@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeLearningEvents, buildLearningEvent, isControlledOutcome, relevantInsights } from "./learning.js";
+import { analyzeLearningEvents, buildLearningEvent, classifyOutcome, deriveEditSignals, isControlledOutcome, relevantInsights, responseTimeSeconds } from "./learning.js";
 import { newOutboundMessage } from "./outbound.js";
 import type { Lead } from "../types";
 
