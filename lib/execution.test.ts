@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commitOutboundSent } from "./execution";
-import { newOutboundMessage } from "./outbound";
+import { commitOutboundSent } from "./execution.js";
+import { newOutboundMessage } from "./outbound.js";
 
 function leadWithHistory(history: any[] = []) {
   const outbound = newOutboundMessage({

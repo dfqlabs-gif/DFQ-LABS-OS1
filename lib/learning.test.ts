@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeLearningEvents, buildLearningEvent, classifyOutcome, deriveEditSignals, relevantInsights, responseTimeSeconds } from "./learning";
-import { newOutboundMessage } from "./outbound";
+import { analyzeLearningEvents, buildLearningEvent, classifyOutcome, deriveEditSignals, isControlledOutcome, relevantInsights, responseTimeSeconds } from "./learning.js";
+import { newOutboundMessage } from "./outbound.js";
 import type { Lead } from "../types";
 
 const lead: Lead = { id: "learning-lead", name: "Ada", company: "Ada Holdings", source: "Referral", clientType: "Developer", service: "Growth", status: "Replied", priority: "High", assignedTo: "Team", notes: "", dmText: "", prospectInitialResponse: "", prospectLatestResponse: "", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: "2026-09-01", lastContacted: "", lastMeaningfulTouchpoint: "", awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: "2026-W36", completedFollowUps: [], betaCandidate: false, autoFollowUpDate: null, autoFollowUpReason: "" };

@@ -4,7 +4,7 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
-import { randomUUID } from "crypto";
+import { randomBytes, createHash, randomUUID } from "crypto";
 import { SYSTEM_PROMPT } from "./aiEngine";
 import { runSalesBrainWithGenerator } from "./salesBrain";
 import type { Lead } from "./types";
@@ -21,10 +21,44 @@ const app = express();
 
 // ── PostgreSQL connection pool ─────────────────────────────────────────────────
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
-const UNDO_ACTORS = new Set(["Founder", "Sa'adatu Mohammed"]);
+
+// ── Password & Session Utilities ────────────────────────────────────────────────
+import { scryptSync } from "crypto";
+
+function hashPassword(password: string, saltHex?: string): string {
+  const salt = saltHex ? Buffer.from(saltHex, "hex") : randomBytes(16);
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return `${salt.toString("hex")}:${hash}`;
+}
+
+function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash) return false;
+  if (!storedHash.includes(":")) {
+    // Legacy simple SHA256 fallback for initial transition
+    const legacy = createHash("sha256").update(password + (process.env.SESSION_SECRET || "dfqlabs-secret-salt")).digest("hex");
+    return legacy === storedHash;
+  }
+  const [saltHex, originalHash] = storedHash.split(":");
+  const computedHash = hashPassword(password, saltHex).split(":")[1];
+  return computedHash === originalHash;
+}
+
+function generateTempPassword(): string {
+  return "dfq-" + randomBytes(4).toString("hex");
+}
+
+const activeSessions = new Map<string, { userId: string; role: string; username: string; displayName: string; seatId?: string }>();
+
+function getAuthUserFromReq(req: express.Request) {
+  const token = req.headers.authorization?.replace("Bearer ", "") || (req.query.token as string);
+  if (!token) return null;
+  return activeSessions.get(token) || null;
+}
+
+const UNDO_ACTORS = new Set(["Founder", "Alex (Founder)", "Sa'adatu Mohammed", "Blessing Mudi"]);
 
 function requestedActor(value: unknown): string | null {
-  return typeof value === "string" && UNDO_ACTORS.has(value) ? value : null;
+  return typeof value === "string" ? value : null;
 }
 
 /** Read the only authoritative representation used for execution and AI work. */
@@ -174,10 +208,65 @@ async function initializeDatabase() {
     throw new Error(`Failed to create lead_attachments table: ${err}`);
   }
 
+  // 5. Create users and outreach_seats tables
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'ACTIVE',
+        seat_id TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS outreach_seats (
+        seat_id TEXT PRIMARY KEY,
+        seat_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'VACANT',
+        current_user_id TEXT
+      )
+    `);
+    console.log("✓ users and outreach_seats tables initialized");
+  } catch (err) {
+    throw new Error(`Failed to create users/outreach_seats tables: ${err}`);
+  }
+
   // Append-only-ish organizational learning evidence. Existing lead JSON stays
   // authoritative for CRM data; these tables make cross-lead learning durable.
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_events (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, outbound_id TEXT UNIQUE NOT NULL, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_insights (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
+
+  // Seed default seats and Founder user if empty
+  const userCountRes = await db.query("SELECT COUNT(*) FROM users");
+  if (parseInt(userCountRes.rows[0].count) === 0) {
+    const founderId = "user-founder";
+    const specialistId = "user-blessing";
+    const founderPass = hashPassword("dfq2026!");
+    const specialistPass = hashPassword("specialist2026!");
+
+    await db.query(
+      `INSERT INTO outreach_seats (seat_id, seat_name, status, current_user_id) VALUES
+       ('seat-outreach-a', 'Outreach Seat A', 'OCCUPIED', $1),
+       ('seat-outreach-b', 'Outreach Seat B', 'VACANT', NULL),
+       ('seat-outreach-c', 'Outreach Seat C', 'VACANT', NULL),
+       ('seat-outreach-d', 'Outreach Seat D', 'VACANT', NULL)
+       ON CONFLICT DO NOTHING`,
+      [specialistId]
+    );
+
+    await db.query(
+      `INSERT INTO users (id, display_name, username, password_hash, role, status, seat_id) VALUES
+       ($1, 'Alex (Founder)', 'alex@dfqlabs.com', $2, 'FOUNDER', 'ACTIVE', NULL),
+       ($3, 'Blessing Mudi', 'blessing@dfqlabs.com', $4, 'OUTREACH_SPECIALIST', 'ACTIVE', 'seat-outreach-a')
+       ON CONFLICT DO NOTHING`,
+      [founderId, founderPass, specialistId, specialistPass]
+    );
+    console.log("✓ Seeded default Founder and Outreach Specialist accounts");
+  }
   await db.query(`CREATE TABLE IF NOT EXISTS crm_action_history (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE INDEX IF NOT EXISTS crm_action_history_actor_created_idx ON crm_action_history ((data->>'actorId'), created_at DESC)`);
 
@@ -285,6 +374,144 @@ async function refreshLearningInsights(): Promise<void> {
 
 // 25mb limit — bulk lead imports/exports can be large JSON payloads
 app.use(express.json({ limit: "25mb" }));
+
+// ── Auth & User Management Endpoints ──────────────────────────────────────────
+app.post("/api/auth/login", async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: "Username and password required" });
+
+  try {
+    const userRes = await db.query(
+      "SELECT id, display_name, username, password_hash, role, status, seat_id FROM users WHERE username = $1",
+      [username.trim().toLowerCase()]
+    );
+
+    if (userRes.rows.length === 0) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const user = userRes.rows[0];
+    if (!verifyPassword(password, user.password_hash)) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    // Transparently upgrade legacy SHA-256 hashes to scrypt upon successful login
+    if (!user.password_hash.includes(":")) {
+      const newScryptHash = hashPassword(password);
+      await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [newScryptHash, user.id]);
+    }
+
+    if (user.status !== "ACTIVE") {
+      return res.status(403).json({ error: "User account is inactive" });
+    }
+
+    const token = `session-${randomUUID()}`;
+    const sessionData = {
+      userId: user.id,
+      role: user.role,
+      username: user.username,
+      displayName: user.display_name,
+      seatId: user.seat_id,
+    };
+    activeSessions.set(token, sessionData);
+
+    res.json({ ok: true, token, user: sessionData });
+  } catch (err: any) {
+    console.error("POST /api/auth/login error:", err);
+    res.status(500).json({ error: "Authentication failed" });
+  }
+});
+
+app.get("/api/auth/me", (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+  res.json({ user });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  const token = req.headers.authorization?.replace("Bearer ", "") || (req.query.token as string);
+  if (token) activeSessions.delete(token);
+  res.json({ ok: true });
+});
+
+app.get("/api/auth/users", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(403).json({ error: "Forbidden" });
+
+  try {
+    const result = await db.query(
+      "SELECT id, display_name, username, role, status, seat_id, created_at FROM users ORDER BY created_at DESC"
+    );
+    res.json({ users: result.rows });
+  } catch (err: any) {
+    console.error("GET /api/auth/users error:", err);
+    res.status(500).json({ error: "Failed to fetch users" });
+  }
+});
+
+app.post("/api/auth/users", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(403).json({ error: "Forbidden" });
+
+  const { displayName, username, role, seatId } = req.body || {};
+  if (!displayName || !username || !role) return res.status(400).json({ error: "Required user fields missing" });
+
+  const tempPass = generateTempPassword();
+  const passHash = hashPassword(tempPass);
+  const userId = `user-${randomUUID()}`;
+
+  try {
+    await db.query(
+      "INSERT INTO users (id, display_name, username, password_hash, role, status, seat_id) VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6)",
+      [userId, displayName, username.trim().toLowerCase(), passHash, role, seatId || null]
+    );
+
+    if (seatId) {
+      await db.query("UPDATE outreach_seats SET current_user_id = $1, status = 'OCCUPIED' WHERE seat_id = $2", [userId, seatId]);
+    }
+
+    res.json({
+      ok: true,
+      user: { id: userId, displayName, username, role, status: "ACTIVE", seatId },
+      tempPassword: tempPass,
+    });
+  } catch (err: any) {
+    console.error("POST /api/auth/users error:", err);
+    res.status(500).json({ error: err.message?.includes("unique") ? "Username already exists" : "Failed to create user" });
+  }
+});
+
+app.post("/api/auth/users/:id/status", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(403).json({ error: "Forbidden" });
+
+  const { status } = req.body || {};
+  if (!["ACTIVE", "INACTIVE"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+
+  try {
+    await db.query("UPDATE users SET status = $1 WHERE id = $2", [status, req.params.id]);
+    if (status === "INACTIVE") {
+      await db.query("UPDATE outreach_seats SET current_user_id = NULL, status = 'VACANT' WHERE current_user_id = $1", [req.params.id]);
+    }
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update user status" });
+  }
+});
+
+app.get("/api/auth/seats", async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT s.seat_id, s.seat_name, s.status, s.current_user_id, u.display_name, u.username
+       FROM outreach_seats s
+       LEFT JOIN users u ON s.current_user_id = u.id
+       ORDER BY s.seat_id ASC`
+    );
+    res.json({ seats: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch seats" });
+  }
+});
 
 // ── Centralized Gemini client ─────────────────────────────────────────────────
 async function callGeminiRaw(
@@ -998,6 +1225,27 @@ app.delete("/api/attachments/:id", async (req, res) => {
   }
 });
 
+// ── Server Permission Middleware & Authorization Helpers ─────────────────────
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = getAuthUserFromReq(req);
+  if (!user) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+  (req as any).authUser = user;
+  next();
+}
+
+function requireFounder(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") {
+    res.status(403).json({ error: "Forbidden: Founder access required" });
+    return;
+  }
+  (req as any).authUser = user;
+  next();
+}
+
 // ── Leads API — unified (mirrors api/leads.ts for Vercel) ─────────────────────
 
 app.get("/api/leads", async (_req, res) => {
@@ -1016,7 +1264,13 @@ app.get("/api/leads", async (_req, res) => {
 app.post("/api/leads", async (req, res) => {
   const body = req.body || {};
 
+  const authUser = getAuthUserFromReq(req);
+
   if (Array.isArray(body.leads)) {
+    // Only Founder can import or bulk-replace leads
+    if (authUser && authUser.role !== "FOUNDER") {
+      return res.status(403).json({ error: "Forbidden: Specialists cannot import or bulk update leads" });
+    }
     const rawLeads = Array.isArray(body.leads) ? body.leads : [];
     const isSnapshot = body.snapshot === true || body.replace === true || body.mode === "snapshot";
 
@@ -1132,6 +1386,16 @@ app.post("/api/leads", async (req, res) => {
 
   const lead = stripAttachmentContent(body.lead);
   if (!lead?.id) return res.status(400).json({ error: "lead.id is required." });
+
+  // Auto-assign owner and creator to authenticated user for new leads
+  if (authUser) {
+    if (!lead.assignedTo || lead.assignedTo === "Unassigned") {
+      lead.assignedTo = authUser.displayName;
+    }
+    lead.ownerUserId = authUser.userId;
+    lead.createdByUserId = authUser.userId;
+  }
+
   const actorId = requestedActor(body.actorId);
   const source = typeof body.source === "string" ? body.source.slice(0, 80) : "crm";
   const client = await db.connect();
@@ -1380,6 +1644,90 @@ app.post("/api/leads/:leadId/conversation/:eventId/restore", async (req, res) =>
     console.error("POST restore conversation event:", error);
     return res.status(500).json({ error: "Could not restore conversation event." });
   } finally { client.release(); }
+});
+
+// ── Duplicate Check Endpoint ──────────────────────────────────────────────────
+app.post("/api/leads/check-duplicate", async (req, res) => {
+  const { phone, instagram, email, company, website } = req.body || {};
+
+  const normalizePhone = (p?: string) => {
+    if (!p) return "";
+    let digits = p.replace(/\D/g, "");
+    if (digits.startsWith("234")) digits = digits.slice(3);
+    else if (digits.startsWith("0") && digits.length >= 11) digits = digits.slice(1);
+    return digits.slice(-10);
+  };
+
+  const normalizeHandle = (h?: string) => {
+    if (!h) return "";
+    return h.trim().toLowerCase().replace(/^@/, "").replace(/https?:\/\/(www\.)?instagram\.com\//, "").replace(/\/$/, "");
+  };
+
+  const normPhone = normalizePhone(phone);
+  const normIg = normalizeHandle(instagram);
+  const normEmail = email ? email.trim().toLowerCase() : "";
+  const normCompany = company ? company.trim().toLowerCase() : "";
+
+  if (!normPhone && !normIg && !normEmail && !normCompany) {
+    return res.status(400).json({ error: "At least one search field (phone, instagram, email, company) is required." });
+  }
+
+  try {
+    const result = await db.query("SELECT id, data FROM leads");
+    const matches: Array<{
+      leadId: string;
+      company: string;
+      instagram?: string;
+      status: string;
+      assignedTo: string;
+      lastContacted?: string;
+      matchReason: string;
+      confidence: "Exact Match" | "Potential Match";
+    }> = [];
+
+    for (const row of result.rows) {
+      const lead = row.data as Lead;
+      let matchedReason = "";
+      let isExact = false;
+
+      if (normPhone && normalizePhone(lead.phone || lead.whatsapp) === normPhone) {
+        matchedReason = "Phone number matches existing lead";
+        isExact = true;
+      } else if (normIg && normalizeHandle(lead.instagram) === normIg) {
+        matchedReason = "Instagram handle matches existing lead";
+        isExact = true;
+      } else if (normEmail && lead.email && lead.email.trim().toLowerCase() === normEmail) {
+        matchedReason = "Email address matches existing lead";
+        isExact = true;
+      } else if (normCompany && lead.company && lead.company.trim().toLowerCase() === normCompany) {
+        matchedReason = "Company/Brand name matches existing lead";
+        isExact = false;
+      }
+
+      if (matchedReason) {
+        matches.push({
+          leadId: lead.id,
+          company: lead.company || "Unknown Company",
+          instagram: lead.instagram,
+          status: lead.status || "New",
+          assignedTo: lead.assignedTo || "Unassigned",
+          lastContacted: lead.lastContacted,
+          matchReason: matchedReason,
+          confidence: isExact ? "Exact Match" : "Potential Match",
+        });
+      }
+    }
+
+    res.json({
+      hasDuplicates: matches.length > 0,
+      matchCount: matches.length,
+      highestConfidence: matches.some(m => m.confidence === "Exact Match") ? "Exact Match" : matches.length > 0 ? "Potential Match" : "No Match",
+      matches,
+    });
+  } catch (err: any) {
+    console.error("POST /api/leads/check-duplicate error:", err);
+    res.status(500).json({ error: "Failed to perform database duplicate check." });
+  }
 });
 
 // DELETE with id in body (works on both Express and Vercel)
