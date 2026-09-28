@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runSalesBrainWithGenerator, validateSalesBrainMessage } from "../salesBrain";
-import { buildLeadContext } from "../aiEngine";
-import { applySentMessage, applyWhatsAppOpened } from "./execution";
-import { newOutboundMessage } from "./outbound";
-import type { Lead } from "../types";
+import { validateSalesBrainMessage, runSalesBrainWithGenerator } from "../salesBrain.js";
+import { buildLeadContext } from "../aiEngine.js";
+import { applySentMessage, applyWhatsAppOpened } from "./execution.js";
+import { newOutboundMessage } from "./outbound.js";
+import type { Lead } from "../types.js";
 
 const lead: Lead = {
   id: "resmo", name: "", company: "Resmo Properties", phone: "08000000000", source: "Instagram", clientType: "Real Estate Developer", service: "Growth — ₦500K/mo", status: "Audit Delivered", priority: "High", assignedTo: "Team", notes: "Audit delivered; no reply since.", dmText: "I have sent the audit.", prospectInitialResponse: "Please send it.", prospectLatestResponse: "Please send it.", conversationLog: [], nextAction: "", nextActionDate: "", dateAdded: "2026-09-01", lastContacted: "2026-09-01", lastMeaningfulTouchpoint: "2026-09-01", awaitingReplySince: "", meetingScheduledAt: "", meetingPrepNote: "", followUpCount: 0, weekAdded: "2026-W36", completedFollowUps: [], betaCandidate: false, autoFollowUpDate: null, autoFollowUpReason: "",

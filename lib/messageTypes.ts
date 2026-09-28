@@ -7,13 +7,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type MessageType =
+  | "FIRST_TOUCH"
   | "VALUE_DM"
   | "SALES_DM"
   | "FOLLOW_UP"
   | "REACTIVATION_DM"
   | "NURTURE_DM"
   | "INTRODUCTION_DM"
-  | "RESPONSE_DM";
+  | "RESPONSE_DM"
+  | "AI_ASSISTED"
+  | "OTHER_OUTBOUND";
 
 export const ALL_MESSAGE_TYPES: MessageType[] = [
   "VALUE_DM",

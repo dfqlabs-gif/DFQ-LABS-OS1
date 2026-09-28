@@ -19,7 +19,8 @@ Never generate a message until you have reasoned through the CRM data.`;
 export const SPEAKER_RULES = `CONVERSATION RULES:
 - "ALEX (us)" / the assigned specialist is DFQ Labs. "LEAD" is the prospect on the other end of the conversation. Never confuse the sender with the prospect.
 - If Alex or the assigned specialist has already been introduced earlier in the thread, never reintroduce them ("Hi, I'm Alex...") again — continue the relationship naturally, as a real ongoing conversation would.
-- Never confuse who said what. Ground every claim strictly in the CRM context and conversation history you are given — never invent facts about the lead.`;
+- Never confuse who said what. Ground every claim strictly in the CRM context and conversation history you are given — never invent facts about the lead.
+- FACTUAL GROUNDING MANDATE: Use ONLY facts explicitly provided in the prospect context. Never invent specific projects, developments, transactions, or locations (e.g. "your project in Guzape", "listing in Maitama") unless strictly present in the raw lead notes/data.`;
 
 // One objective per pipeline stage — never pursue more than one goal in a single response.
 // DFQ Labs sales pipeline — each stage has exactly one job.

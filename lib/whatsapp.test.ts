@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildWhatsAppLink, normalizePhone } from "./phone";
+import { buildWhatsAppLink, normalizePhone } from "./phone.js";
 
 test("WhatsApp links use normalized digits and encode only the message once", () => {
   const phone = normalizePhone("0801 234 5678");

@@ -169,11 +169,12 @@ export const BUCKET_ICON_CMP: Record<string, any> = {
 export const SILENT_DAYS_TO_NURTURE = 7;
 // Abigail Dick offboarded 2026-07-23 — removed from active specialists.
 // Legacy color key is preserved below so any saved leads still render correctly.
-export const SPECIALISTS = ["Unassigned", "Alex", "Sa'adatu Mohammed"];
+export const SPECIALISTS = ["Unassigned", "Alex", "Blessing Mudi", "Sa'adatu Mohammed"];
 
 export const SPECIALIST_COLOR: Record<string, string> = {
   "Unassigned": "#555",
   "Alex": G,
+  "Blessing Mudi": "#3ECFDC",
   "Sa'adatu Mohammed": "#F59E0B",
   "Abigail Dick": "#8B5CF6",
   // Legacy keys — kept so any old cached data still resolves a colour

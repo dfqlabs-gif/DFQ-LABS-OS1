@@ -4,6 +4,10 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -20,14 +24,21 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // server.ts
+var server_exports = {};
+__export(server_exports, {
+  callGemini: () => callGemini
+});
+module.exports = __toCommonJS(server_exports);
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_dotenv = __toESM(require("dotenv"), 1);
 var import_vite = require("vite");
 var import_genai = require("@google/genai");
 var import_pg = require("pg");
+var import_crypto = require("crypto");
 
 // prompts.ts
 var BUSINESS_CONTEXT = `You are the Chief Revenue Intelligence Officer and Elite Copywriting Strategist for DFQ Labs. 
@@ -67,46 +78,6 @@ STRICT COPYWRITING RULES (ELIMINATE THE AI SIGNATURE):
    - Audit Delivered to Meeting Booked: Transition them to a 10-minute discovery call to discuss the solution.
    - Meeting Booked to Proposal Sent: Clarify partnership terms, pricing, or the Beta program.
    - Proposal Sent to Closed: Address final objections, clear up contract terms, and close the deal.`;
-var AI_MODEL_KEY = "dfqlabs-ai-model";
-var getActiveModel = () => {
-  try {
-    return localStorage.getItem(AI_MODEL_KEY) || void 0;
-  } catch {
-    return void 0;
-  }
-};
-var AI_ERROR_KEY = "dfqlabs-ai-errors";
-var getAIErrors = () => {
-  try {
-    return JSON.parse(localStorage.getItem(AI_ERROR_KEY) || "[]");
-  } catch {
-    return [];
-  }
-};
-var logAIError = (message, model) => {
-  try {
-    const errors = getAIErrors();
-    errors.unshift({ ts: (/* @__PURE__ */ new Date()).toISOString(), message, model });
-    localStorage.setItem(AI_ERROR_KEY, JSON.stringify(errors.slice(0, 50)));
-  } catch {
-  }
-};
-async function callClaude(systemInstruction, prompt, maxTokens) {
-  const model = getActiveModel();
-  const response = await fetch("/api/ai", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ systemPrompt: systemInstruction, userPrompt: prompt, maxTokens, model })
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ error: "AI service temporarily unavailable." }));
-    const message = err.error || "Unable to generate recommendation.";
-    logAIError(message, model);
-    throw new Error(message);
-  }
-  const data = await response.json();
-  return data.text;
-}
 
 // constants.tsx
 var import_lucide_react = require("lucide-react");
@@ -128,6 +99,14 @@ var today = () => {
   const tz = d.getTimezoneOffset() * 6e4;
   return new Date(d.getTime() - tz).toISOString().split("T")[0];
 };
+var addDays = (n) => {
+  const d = /* @__PURE__ */ new Date();
+  const tz = d.getTimezoneOffset() * 6e4;
+  const local = new Date(d.getTime() - tz);
+  local.setDate(local.getDate() + n);
+  return local.toISOString().split("T")[0];
+};
+var nowISO = () => (/* @__PURE__ */ new Date()).toISOString();
 var daysSince = (d) => {
   if (!d) return 999;
   return Math.floor((Date.now() - new Date(d).getTime()) / 864e5);
@@ -206,7 +185,8 @@ Never generate a message until you have reasoned through the CRM data.`;
 var SPEAKER_RULES = `CONVERSATION RULES:
 - "ALEX (us)" / the assigned specialist is DFQ Labs. "LEAD" is the prospect on the other end of the conversation. Never confuse the sender with the prospect.
 - If Alex or the assigned specialist has already been introduced earlier in the thread, never reintroduce them ("Hi, I'm Alex...") again \u2014 continue the relationship naturally, as a real ongoing conversation would.
-- Never confuse who said what. Ground every claim strictly in the CRM context and conversation history you are given \u2014 never invent facts about the lead.`;
+- Never confuse who said what. Ground every claim strictly in the CRM context and conversation history you are given \u2014 never invent facts about the lead.
+- FACTUAL GROUNDING MANDATE: Use ONLY facts explicitly provided in the prospect context. Never invent specific projects, developments, transactions, or locations (e.g. "your project in Guzape", "listing in Maitama") unless strictly present in the raw lead notes/data.`;
 var STAGE_OBJECTIVES = {
   "New": "Send the cold outreach DM. Hook: you spotted a positioning gap on their Instagram/content that's limiting the quality of buyer inquiries they attract. Ask if they'd like you to send the breakdown. Do NOT pitch services. Do NOT mention pricing. Do NOT ask for a call.",
   "DM Sent": "Follow up on the initial DM. You already told them you spotted a positioning gap \u2014 now gently resurface it. Goal: get them to say 'yes, send it' or 'sure, why not'. Do NOT pitch services. Do NOT ask for a call.",
@@ -244,20 +224,20 @@ function stripMarkdown(text) {
   if (!text) return text;
   return text.replace(/#{1,6} ?/g, "").replace(/\*\*(.+?)\*\*/gs, "$1").replace(/\*(.+?)\*/gs, "$1").replace(/_{2}(.+?)_{2}/gs, "$1").replace(/_(.+?)_/gs, "$1").replace(/~~(.+?)~~/gs, "$1").replace(/`{3}[\s\S]*?`{3}/g, "").replace(/`([^`]+)`/g, "$1").replace(/^\s*[-*+] /gm, "").replace(/^\s*\d+\. /gm, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").trim();
 }
-async function runAI(userPrompt, maxTokens = 900) {
-  const raw = await callClaude(SYSTEM_PROMPT, userPrompt, maxTokens);
-  return stripMarkdown(raw);
-}
 function formatConversationLog(lead) {
   const parts = [];
-  if (lead.dmText) {
-    parts.push(`[ALEX (us) \u2014 Initial DM]: ${lead.dmText}`);
-  }
-  if (lead.prospectInitialResponse) {
-    parts.push(`[LEAD \u2014 Initial Reply]: ${lead.prospectInitialResponse}`);
-  }
-  if (lead.prospectLatestResponse && lead.prospectLatestResponse !== lead.prospectInitialResponse) {
-    parts.push(`[LEAD \u2014 Latest Message]: ${lead.prospectLatestResponse}`);
+  if (lead.dmText) parts.push(`=== ORIGINAL YOUR DM ===
+${lead.dmText}`);
+  if (lead.prospectInitialResponse) parts.push(`=== THEIR INITIAL RESPONSE ===
+${lead.prospectInitialResponse}`);
+  const anchorTexts = new Set([lead.dmText, lead.prospectInitialResponse].filter(Boolean));
+  const recordedMessages = (lead.conversationLog || []).filter((entry) => entry.type === "dm" || entry.type === "reply").filter((entry) => !anchorTexts.has(entry.text)).sort((a, b) => a.ts.localeCompare(b.ts)).slice(-60).map((entry) => `[${entry.ts} \u2014 ${entry.direction || (entry.type === "reply" ? "inbound / LEAD" : "outbound / DFQ LABS")} \u2014 ${entry.label || "Recorded message"}]: ${entry.text}`);
+  if (recordedMessages.length > 0) {
+    parts.push(`=== LATEST THREAD: SUBSEQUENT MESSAGES (oldest to newest) ===
+${recordedMessages.join("\n")}`);
+  } else if (!lead.prospectInitialResponse && lead.prospectLatestResponse) {
+    parts.push(`=== LATEST THREAD: LEGACY MESSAGE ===
+${lead.prospectLatestResponse}`);
   }
   if (parts.length === 0) return "No conversation yet \u2014 this is the first outbound touch to this lead.";
   return parts.join("\n");
@@ -323,16 +303,32 @@ ${c.length > 4e3 ? c.slice(0, 4e3) + "\n[truncated]" : c}`;
   return `${intelligenceContext}
 
 === CRM CONTEXT ===
-Lead: ${lead.name || "Unknown"} \u2014 ${lead.company || "Unknown company"}
+Lead ID: ${lead.id}
+Contact name: ${lead.name || "Unknown"}
+Company: ${lead.company || "Unknown company"}
+Phone: ${lead.phone || "not recorded"}
+WhatsApp: ${lead.whatsapp || "not recorded"}
+Instagram: ${lead.instagram || "not recorded"}
+Email: ${lead.email || "not recorded"}
 Client archetype: ${lead.clientType || "Real Estate Developer"}
 Service under discussion: ${lead.service} (value ${value ? "\u20A6" + value.toLocaleString() : "unknown"}/mo)
 Assigned specialist: ${lead.assignedTo || "Unassigned"}
+Lead source: ${lead.source || "not recorded"}
+Priority: ${lead.priority || "not recorded"}
+Meeting scheduled: ${lead.meetingScheduledAt || "none"}
+Meeting preparation: ${lead.meetingPrepNote || "none"}
+Last meaningful touchpoint: ${lead.lastMeaningfulTouchpoint || "none"}
+Beta candidate: ${lead.betaCandidate ? "yes" : "no"}
+AI classification: ${lead.aiBucket || "unclassified"}${lead.aiReason ? ` \u2014 ${lead.aiReason}` : ""}
+AI next action / schedule: ${lead.aiNextAction || lead.autoFollowUpReason || "none"}${lead.autoFollowUpDate ? ` (date: ${lead.autoFollowUpDate})` : ""}
 Days since we last contacted them: ${daysSinceContact ?? "n/a"}
 Hours currently awaiting their reply: ${hoursAwaitingReply !== null && !Number.isNaN(hoursAwaitingReply) ? Math.round(hoursAwaitingReply) : "n/a"}
 Internal notes: ${lead.notes || "none"}
 
 === CONVERSATION THREAD ===
 ${formatConversationLog(lead)}
+=== PREVIOUS OUTBOUND RECORDS ===
+${(lead.outboundMessages || []).length ? lead.outboundMessages.map((message) => `[${message.status}] ${message.sentAt || message.generatedAt} \u2014 ${message.messageType} via ${message.source}: ${message.messageText}`).join("\n") : "No persisted outbound records."}
 ${attachmentBlock ? "\n" + attachmentBlock + "\n" : ""}=== END CONTEXT ===`;
 }
 function buildTimeline(lead) {
@@ -356,191 +352,233 @@ function buildTimeline(lead) {
     { key: "lost", label: "Lead marked lost", occurred: lead.status === "Lost" }
   ];
 }
-function formatTimeline(events) {
-  return events.map((e) => `${e.occurred ? "\u2713" : "\u2717"} ${e.label}`).join("\n");
+
+// lib/messageTypes.ts
+var ALL_MESSAGE_TYPES = [
+  "VALUE_DM",
+  "SALES_DM",
+  "FOLLOW_UP",
+  "REACTIVATION_DM",
+  "NURTURE_DM",
+  "INTRODUCTION_DM",
+  "RESPONSE_DM"
+];
+var VALUE_DM_DEFINITION = `A VALUE_DM is a short message whose sole objective is to provide genuinely useful, immediately applicable insight to the recipient WITHOUT asking for a sale, call, meeting, registration, reply, consultation, beta participation, purchase, or any other conversion action.`;
+var VALUE_DM_PROHIBITIONS = `ABSOLUTE PROHIBITIONS \u2014 a VALUE_DM must NOT:
+- Sell, pitch, or ask for a call, meeting, reply, booking, registration, beta join, purchase, follow, or website visit.
+- Mention DFQ Labs services unless genuinely necessary for the insight itself.
+- Manufacture urgency or manufacture a problem.
+- Continue a sales sequence disguised as value.
+- End with "let me know if...", "would you like me to...", "I can help you...", or ANY call-to-action.
+- Attempt to continue the interaction in any way.
+
+The objective is simply: leave the prospect better off than they were before receiving the message.`;
+var VALUE_DM_QUALITY_CHECK = `Before finalizing, silently evaluate against these questions and regenerate internally if any answer is NO:
+1. Is this genuinely useful?
+2. Is this specific to this prospect?
+3. Could this prospect implement something from this message today?
+4. Is the advice supported by the prospect's context or relevant knowledge?
+5. Does it avoid selling?
+6. Does it avoid asking for anything?
+7. Does it contain a concrete insight rather than generic advice?
+8. Would the message still be valuable if the prospect never became a DFQ Labs client?
+9. Is it short enough to naturally send through WhatsApp?
+10. Does it sound like a knowledgeable human rather than an AI?`;
+var MESSAGE_TYPE_RULES = {
+  VALUE_DM: `${VALUE_DM_DEFINITION}
+
+${VALUE_DM_PROHIBITIONS}
+
+Structure: Problem \u2192 Insight \u2192 Specific action. Avoid generic advice ("post consistently", "know your audience", "use better hooks", "build trust") unless the message explains a specific implementation that makes the advice actionable. Prefer one specific, actionable insight the prospect could implement today.
+
+${VALUE_DM_QUALITY_CHECK}
+
+Output ONLY the actual message. 3-4 sentences max. No emojis. No exclamation marks. No markdown. Plain WhatsApp-friendly text.`,
+  SALES_DM: `A sales outreach DM. Pursue exactly one pipeline-stage objective (provided in the briefing). One low-friction ask per message. Reference something specific to this prospect. 2-4 sentences. No emojis, no buzzwords. Output ONLY the message.`,
+  FOLLOW_UP: `A follow-up in an active conversation. Pick up exactly where the last exchange left off. Pursue ONLY the single correct next objective. Refer to something specific from conversation history. 2-4 sentences. No emojis. Output ONLY the message.`,
+  REACTIVATION_DM: `A re-engagement message for a lead that has gone cold. Bring a genuinely new angle or reference something concrete from the prior conversation. Do not guilt-trip. Do not re-pitch the same thing. 2-3 sentences. Output ONLY the message.`,
+  NURTURE_DM: `A nurture message for a lead in the Nurture bucket. Evaluate what the prospect currently needs and what information would help them. If the best action is to provide value without asking for anything, generate a VALUE_DM-style message (no CTA). Do NOT automatically interpret this as a sales opportunity. 3-4 sentences. Output ONLY the message.`,
+  INTRODUCTION_DM: `A first-touch cold outreach DM. Hook on a positioning gap or specific observation about their brand. Ask only for permission to send a breakdown. Do NOT pitch services or pricing. 2-3 sentences. Output ONLY the message.`,
+  RESPONSE_DM: `A reply to a prospect who just messaged us. Continue the dialog naturally. Pursue ONLY the objective in the briefing. Match their energy. 2-3 sentences. No emojis. Output ONLY the message.`
+};
+
+// salesBrain.ts
+var jsonFromModel = (raw) => {
+  const clean = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("Sales Brain returned an invalid structured response.");
+  return JSON.parse(clean.slice(start, end + 1));
+};
+var messageType = (value, fallback) => typeof value === "string" && ALL_MESSAGE_TYPES.includes(value) ? value : fallback || "FOLLOW_UP";
+var cleanMessage = (value) => stripMarkdown(String(value || "")).replace(/^['"]|['"]$/g, "").trim();
+function validateSalesBrainMessage(message, type) {
+  if (!message || message.length < 12) return "message is empty or too short";
+  if (message.length > 1100) return "message is too long for WhatsApp";
+  if (/\b(just checking in|are you still interested|touching base|circle back)\b/i.test(message)) return "message is a generic follow-up";
+  if (type === "VALUE_DM" && /(would you like|let me know if|book a call|schedule a call|reply if|interested in|let'?s talk|happy to chat)/i.test(message)) return "a Value DM contains a CTA";
+  return null;
 }
-function neverMentionAgain(events) {
-  const has = (k) => events.find((e) => e.key === k)?.occurred;
-  const flags = [];
-  if (has("auditDelivered")) flags.push("Do not offer or re-explain the audit \u2014 it has already been delivered.");
-  if (has("appointmentBooked")) flags.push("Do not ask to book a discovery call again \u2014 one is already booked or has happened.");
-  if (has("proposalSent")) flags.push("Do not re-introduce the offer from scratch \u2014 a proposal has already been sent.");
-  if (has("outreach") && !has("replied")) flags.push("Do not reintroduce yourself or restate the opening pitch verbatim \u2014 this is a follow-up to an existing outreach.");
-  return flags;
+function prompt(lead, options, rewriteReason) {
+  const requested = options.requestedMessageType || "FOLLOW_UP";
+  const timeline = buildTimeline(lead).map((event) => `${event.occurred ? "done" : "not done"}: ${event.label}`).join("; ");
+  const learningBlock = options.learningInsights?.length ? `
+Organizational learning (historical advisory evidence, never rules):
+${options.learningInsights.map((insight) => `- ${insight.pattern} Confidence ${insight.confidence}/100; ${insight.evidenceSummary}`).join("\n")}
+Use this only when genuinely relevant. Current lead history, research, and fact safety take precedence. Do not invent facts or force a historically successful strategy.
+` : "";
+  return `You are the DFQ Labs AI SALES BRAIN. You are the only strategic authority for this lead. Analyze before writing, but do not reveal private chain-of-thought.
+
+Use only verified CRM/conversation information below. Never fabricate a person name: if contact identity is unknown, address the company/team naturally. A company name is not automatically a person's name. A Value DM must provide contextual, actionable value with no CTA or disguised sales ask. Do not write a lazy check-in. If an audit was delivered and the prospect is silent, acknowledge that specific prior interaction and choose a commercially useful, low-pressure next move.
+
+Current stage objective: ${stageObjective(lead.status || "New")}
+Timeline: ${timeline}
+Requested task: ${options.task || "Determine and prepare the best next outbound action."}
+Requested type: ${requested}
+${rewriteReason ? `The first internal self-check failed because: ${rewriteReason}. Rewrite the message and return a stronger result.` : "Perform an internal self-check before returning: stage fit, factual grounding, conversation continuity, repetition, generic language, premature CTA, unsupported claims, useful next move, and WhatsApp length."}
+
+${buildLeadContext(lead)}
+${learningBlock}
+
+Return ONLY valid JSON with exactly these fields:
+{"salesStage":"string","buyerIntent":"string","confidence":0,"primaryObjective":"string","strategicReason":"concise factual reason","detectedFriction":"string","recommendedAction":"string","messageType":"${requested}","message":"final approved WhatsApp message","cta":"string or empty for value DM","recommendedFollowUpDate":"YYYY-MM-DD","recommendedChannel":"WhatsApp","riskLevel":"low|medium|high","reasoningSummary":"one concise user-safe sentence"}
+
+Message rules for the selected type:
+${MESSAGE_TYPE_RULES[requested]}`;
 }
-function buildStrategyPrompt(lead, task, events, neverMention) {
-  return `You are the Head of Sales at DFQ Labs. Do NOT write any outward-facing message \u2014 produce ONLY the internal executive reasoning and strategy for this lead. This briefing will be handed to a separate DM Writer module that has no other access to this CRM data, so be precise and complete.
-
-TASK CONTEXT: ${task}
-
-=== VERIFIED TIMELINE (ground truth \u2014 never contradict this) ===
-${formatTimeline(events)}
-${neverMention.length ? `
-NEVER MENTION AGAIN:
-${neverMention.map((n) => `- ${n}`).join("\n")}` : ""}
-
-Before answering, silently work through: what has happened, what has NOT happened, the biggest opportunity right now, the biggest risk, what should never be mentioned again, what emotion the prospect is likely feeling based on their actual language, and the single highest-probability next move.
-
-Then output in EXACTLY this format, nothing else:
-Current Stage: [the lead's actual current CRM stage]
-Next Objective: [the single correct objective for this stage \u2014 never more than one]
-Reasoning: [2-3 sentences explaining why this is the correct next action]
-Risk: [the biggest concrete risk \u2014 silence, objection, re-pitching something already done, etc.]
-Confidence: [percentage]
-Emotion: [1 short phrase describing the prospect's likely current emotional state]
-KeyFacts: [1-3 short, specific, real facts or quotes from the conversation history below worth grounding the message in, semicolon separated \u2014 never invent facts not present below]
-
-${buildLeadContext(lead)}`;
-}
-function parseStrategy(raw, neverMention) {
-  const grab = (label) => {
-    const m = raw.match(new RegExp(`${label}:\\s*(.+)`, "i"));
-    return m ? m[1].trim() : "";
-  };
+function normalise(lead, data, requested, rewritten = false) {
+  const type = messageType(data.messageType, requested);
+  const confidence = Math.max(0, Math.min(100, Number(data.confidence) || 60));
+  const followUp = /^\d{4}-\d{2}-\d{2}$/.test(String(data.recommendedFollowUpDate || "")) ? String(data.recommendedFollowUpDate) : addDays(3);
+  const channel = ["WhatsApp", "Instagram", "Email", "None"].includes(String(data.recommendedChannel)) ? data.recommendedChannel : "WhatsApp";
+  const risk = ["low", "medium", "high"].includes(String(data.riskLevel)) ? data.riskLevel : "medium";
   return {
-    currentStage: grab("Current Stage"),
-    nextObjective: grab("Next Objective"),
-    reasoning: grab("Reasoning"),
-    risk: grab("Risk"),
-    confidence: grab("Confidence"),
-    emotion: grab("Emotion"),
-    keyFacts: grab("KeyFacts"),
-    neverMention: neverMention.join("; ")
+    leadId: lead.id,
+    salesStage: String(data.salesStage || lead.status || "New"),
+    buyerIntent: String(data.buyerIntent || "unknown"),
+    confidence,
+    primaryObjective: String(data.primaryObjective || stageObjective(lead.status || "New")),
+    strategicReason: String(data.strategicReason || "Based on the recorded lead and conversation context."),
+    detectedFriction: String(data.detectedFriction || "No explicit friction recorded."),
+    recommendedAction: String(data.recommendedAction || "Send the approved message and wait for a response."),
+    messageType: type,
+    message: cleanMessage(data.message),
+    cta: String(data.cta || ""),
+    recommendedFollowUpDate: followUp,
+    recommendedChannel: channel,
+    riskLevel: risk,
+    reasoningSummary: String(data.reasoningSummary || "Context-aware next action selected."),
+    qualityChecked: true,
+    rewritten
   };
 }
-async function runStrategyGenerator(lead, task) {
-  const events = buildTimeline(lead);
-  const neverMention = neverMentionAgain(events);
-  const raw = await runAI(buildStrategyPrompt(lead, task, events, neverMention), 800);
-  return parseStrategy(raw, neverMention);
+async function runSalesBrainWithGenerator(lead, options, generate) {
+  const requested = options.requestedMessageType || "FOLLOW_UP";
+  let result = normalise(lead, jsonFromModel(await generate(prompt(lead, options), 1200)), requested);
+  const failure = validateSalesBrainMessage(result.message, result.messageType);
+  if (failure) result = normalise(lead, jsonFromModel(await generate(prompt(lead, options, failure), 1200)), requested, true);
+  const finalFailure = validateSalesBrainMessage(result.message, result.messageType);
+  if (finalFailure) throw new Error(`Sales Brain could not approve a safe message: ${finalFailure}.`);
+  return result;
 }
-function buildDMWriterPrompt(lead, strategy, styleInstructions, priorContext) {
-  let priorBlock = "";
-  if (priorContext) {
-    const parts = [];
-    if (priorContext.summary) parts.push(`SPECIALIST-CONFIRMED SUMMARY OF PROSPECT'S POSITION:
-${priorContext.summary}`);
-    if (priorContext.originalDraft) parts.push(`ORIGINAL DRAFT (first attempt \u2014 do not repeat its mistakes):
-${priorContext.originalDraft}`);
-    if (priorContext.adjustedDraft) parts.push(`QA-ADJUSTED DRAFT (improved version \u2014 build on its strengths, fix remaining issues):
-${priorContext.adjustedDraft}`);
-    if (parts.length > 0) {
-      priorBlock = `
-=== IMPROVEMENT CONTEXT (use this to write a BETTER version) ===
-${parts.join("\n\n")}
-Write an improved draft that takes the strongest elements of the above and fixes any remaining problems. Do NOT repeat phrases verbatim from either draft.
-=== END IMPROVEMENT CONTEXT ===
-`;
-    }
-  }
-  const conversationThread = formatConversationLog(lead);
-  return `You are Alex, writing directly to this prospect. You have the strategy briefing from your sales strategist AND the actual conversation thread below. Write ONLY the outward-facing message. Do not restate, quote, or reference the briefing itself.
 
-=== STRATEGY BRIEFING ===
-Lead name: ${lead.name || lead.company || "the prospect"}
-Company: ${lead.company || "n/a"}
-Client archetype: ${lead.clientType || "Real Estate Developer"}
-Current Stage: ${strategy.currentStage || lead.status}
-Next Objective (pursue ONLY this): ${strategy.nextObjective || stageObjective(lead.status)}
-Reasoning: ${strategy.reasoning || "n/a"}
-Prospect's likely emotion: ${strategy.emotion || "n/a"}
-Key facts to ground the message in: ${strategy.keyFacts || "none available \u2014 do not invent any"}
-${strategy.neverMention ? `Never mention again: ${strategy.neverMention}` : ""}
-=== END BRIEFING ===${priorBlock}
-
-=== ACTUAL CONVERSATION THREAD (ground your message in this \u2014 never invent facts not present here) ===
-${conversationThread}
-=== END CONVERSATION ===
-
-${styleInstructions}`;
+// lib/learning.ts
+var LEARNING_OUTCOMES = ["NO_RESPONSE", "POSITIVE_REPLY", "NEGATIVE_REPLY", "QUESTION", "INTERESTED", "PRICING_REQUEST", "MEETING_REQUEST", "MEETING_BOOKED", "QUALIFIED", "CONVERTED", "FOLLOW_UP_REQUIRED", "NOT_NOW", "REJECTION", "WRONG_CONTACT", "UNSUBSCRIBE", "INVALID_CONTACT", "UNKNOWN"];
+var LEARNING_CONFIG = { minObservations: 10, validationObservations: 20, minInfluenceConfidence: 55, staleAfterDays: 180 };
+var POSITIVE = /* @__PURE__ */ new Set(["POSITIVE_REPLY", "QUESTION", "INTERESTED", "PRICING_REQUEST", "MEETING_REQUEST", "MEETING_BOOKED", "QUALIFIED", "CONVERTED"]);
+var NEGATIVE = /* @__PURE__ */ new Set(["NEGATIVE_REPLY", "REJECTION", "UNSUBSCRIBE", "WRONG_CONTACT", "INVALID_CONTACT", "NOT_NOW"]);
+var RESPONSES = /* @__PURE__ */ new Set([...POSITIVE, ...NEGATIVE]);
+var words = (value) => value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+var dayAge = (date) => Math.max(0, (Date.now() - new Date(date).getTime()) / 864e5);
+function classifyOutcome(reply, status) {
+  const value = `${reply} ${status || ""}`.toLowerCase();
+  if (/\b(closed|converted|signed|paid)\b/.test(value)) return "CONVERTED";
+  if (/\b(meeting|discovery call booked|booked)\b/.test(value)) return "MEETING_BOOKED";
+  if (/\b(qualified|qualification)\b/.test(value)) return "QUALIFIED";
+  if (/\b(price|pricing|cost|how much)\b/.test(value)) return "PRICING_REQUEST";
+  if (/\b(unsubscribe|stop messaging)\b/.test(value)) return "UNSUBSCRIBE";
+  if (/\b(wrong (person|contact|number)|invalid)\b/.test(value)) return "WRONG_CONTACT";
+  if (/\b(not interested|no thanks|decline|rejection)\b/.test(value)) return "REJECTION";
+  if (/\b(not now|later|busy)\b/.test(value)) return "NOT_NOW";
+  if (/\?|\b(how|what|when|can you)\b/.test(value)) return "QUESTION";
+  if (/\b(yes|interested|let.?s talk|send it|sounds good|keen)\b/.test(value)) return "INTERESTED";
+  return reply.trim() ? "POSITIVE_REPLY" : "UNKNOWN";
 }
-function validateValueDM(message) {
-  const text = message.replace(/\s+/g, " ").trim();
-  if (!text) return { pass: false, reason: "empty value DM" };
-  const noCtaPatterns = [
-    /would you like/i,
-    /let me know if/i,
-    /could we/i,
-    /book a call/i,
-    /schedule a call/i,
-    /reply if/i,
-    /send me a message/i,
-    /drop me a message/i,
-    /visit .*website/i,
-    /check out .*website/i,
-    /i can help you/i,
-    /would love to/i,
-    /interested in/i,
-    /let's talk/i,
-    /happy to chat/i
-  ];
-  const hit = noCtaPatterns.find((pattern) => pattern.test(text));
-  if (hit) {
-    return { pass: false, reason: "value DM contains a call-to-action or sales ask" };
-  }
-  const salesyPatterns = [
-    /we help .*real estate/i,
-    /our service/i,
-    /we specialize in/i,
-    /we can help you grow/i,
-    /book a free consult/i,
-    /let's discuss/i
-  ];
-  if (salesyPatterns.some((pattern) => pattern.test(text))) {
-    return { pass: false, reason: "value DM reads like a sales pitch" };
-  }
-  return { pass: true, reason: "" };
+function responseTimeSeconds(sentAt, replyAt) {
+  if (!sentAt || !replyAt) return void 0;
+  const seconds = Math.round((new Date(replyAt).getTime() - new Date(sentAt).getTime()) / 1e3);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : void 0;
 }
-async function runQualityChecker(message, strategy) {
-  const prompt = `You are a strict sales quality checker. Answer with EXACTLY one line: "PASS" or "FAIL: <one short reason>".
-
-The message FAILS if ANY of these are true:
-- It mentions or offers something listed under "Never mention again" below.
-- It confuses who is DFQ Labs vs. the prospect, or addresses the wrong person.
-- It pursues a different or additional objective than "${strategy.nextObjective}".
-- It sounds generic, robotic, or like AI marketing copy rather than an experienced consultant.
-- It states a fact as true that is not present in "Key facts" below.
-
-Never mention again: ${strategy.neverMention || "none"}
-Key facts: ${strategy.keyFacts || "none"}
-Objective: ${strategy.nextObjective || "none"}
-
-MESSAGE:
-"""
-${message}
-"""`;
-  const verdict = await runAI(prompt, 200);
-  const fail = /^FAIL/i.test(verdict.trim());
-  if (!fail && /value/i.test((strategy.nextObjective || "").toLowerCase()) || /value/i.test((strategy.currentStage || "").toLowerCase())) {
-    const valueCheck = validateValueDM(message);
-    if (!valueCheck.pass) {
-      return { pass: false, reason: valueCheck.reason };
-    }
-  }
-  return { pass: !fail, reason: fail ? verdict.replace(/^FAIL:?\s*/i, "").trim() : "" };
+function deriveEditSignals(original, final) {
+  if (original.trim() === final.trim()) return { edited: false, magnitude: "none", types: [] };
+  const ratio = Math.abs(original.length - final.length) / Math.max(1, original.length);
+  const types = [];
+  if (original.length !== final.length) types.push(final.length < original.length ? "message_shortened" : "message_lengthened");
+  if (words(original).slice(0, 6).join(" ") !== words(final).slice(0, 6).join(" ")) types.push("opening_changed");
+  if (/\?/.test(original) !== /\?/.test(final)) types.push("cta_changed");
+  if (ratio > 0.3) types.push("substantial_rewrite");
+  return { edited: true, magnitude: ratio > 0.3 ? "substantial" : "light", types };
 }
-async function runSalesPipeline(lead, task, styleInstructions, maxTokens = 900, priorContext) {
-  const strategy = await runStrategyGenerator(lead, task);
-  const draft = (fix) => runAI(
-    buildDMWriterPrompt(lead, strategy, fix ? `${styleInstructions}
-
-IMPORTANT FIX (a quality check flagged the previous draft): ${fix}` : styleInstructions, priorContext),
-    maxTokens
-  );
-  let message = await draft();
-  const check = await runQualityChecker(message, strategy);
-  if (!check.pass) {
-    message = await draft(check.reason);
+function messageFingerprint(message, outbound, lead) {
+  const tokens = words(message);
+  const opening = tokens.slice(0, 3).join("-") || "empty";
+  const cta = /\?|would you|let me know|book|call|reply/.test(message.toLowerCase()) ? "cta" : "no-cta";
+  const length = message.length < 180 ? "short" : message.length < 420 ? "medium" : "long";
+  return [outbound.messageType, outbound.strategy || outbound.salesBrain?.recommendedAction || "default", lead.status, lead.clientType || "all", `fu${lead.followUpCount || 0}`, opening, cta, length].join("|");
+}
+function relatedReply(lead, outbound) {
+  return !outbound.sentAt ? void 0 : (lead.conversationLog || []).filter((item) => item.type === "reply" && new Date(item.ts).getTime() >= new Date(outbound.sentAt).getTime()).sort((a, b) => a.ts.localeCompare(b.ts))[0];
+}
+function buildLearningEvent(lead, outbound, existing) {
+  const reply = relatedReply(lead, outbound);
+  const statusOutcome = ["Closed", "Discovery Call Booked"].includes(lead.status) ? classifyOutcome("", lead.status) : "UNKNOWN";
+  const inferredOutcome = reply ? classifyOutcome(reply.text, lead.status) : outbound.status === "SENT" ? statusOutcome : "UNKNOWN";
+  const outcome = existing?.outcomeSource === "manual" ? existing.outcome : inferredOutcome;
+  const original = outbound.originalGeneratedMessage || existing?.originalGeneratedMessage || outbound.messageText;
+  const final = outbound.messageText;
+  const edit = deriveEditSignals(original, final);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  return { id: `learning-${outbound.id}`, leadId: lead.id, outboundId: outbound.id, teamMemberId: outbound.userId, createdAt: existing?.createdAt || outbound.generatedAt || now, updatedAt: now, message: final, originalGeneratedMessage: original, finalMessage: final, messageType: outbound.messageType, strategyType: outbound.strategy || outbound.salesBrain?.recommendedAction || outbound.messageType, funnelStage: outbound.salesBrain?.salesStage || lead.status, leadStatus: lead.status, leadPriority: lead.priority, aiBucket: lead.aiBucket, industry: lead.clientType || "all", source: outbound.source, followUpNumber: lead.followUpCount || 0, fingerprint: messageFingerprint(final, outbound, lead), humanEdited: edit.edited, editType: edit.types, editMagnitude: edit.magnitude, generatedAt: outbound.generatedAt, sentAt: outbound.sentAt, whatsappOpenedAt: outbound.whatsappOpenedAt, outcome, outcomeSource: existing?.outcomeSource === "manual" ? "manual" : reply ? "crm" : outcome !== "UNKNOWN" ? "inferred" : "unknown", outcomeRecordedAt: existing?.outcomeSource === "manual" ? existing.outcomeRecordedAt : reply?.ts, responseTimeSeconds: existing?.outcomeSource === "manual" ? existing.responseTimeSeconds : responseTimeSeconds(outbound.sentAt, reply?.ts), responseMessage: existing?.outcomeSource === "manual" ? existing.responseMessage : reply?.text, outcomeConfidence: existing?.outcomeSource === "manual" ? existing.outcomeConfidence : reply ? 85 : outcome !== "UNKNOWN" ? 60 : 0, attribution: existing?.outcomeSource === "manual" ? existing.attribution : reply ? "last_touch" : outcome !== "UNKNOWN" ? "sequence_associated" : "unknown" };
+}
+function calculateConfidence(events, positive) {
+  if (!events.length) return 0;
+  const sample = Math.min(1, events.length / LEARNING_CONFIG.validationObservations);
+  const consistency = 0.5 + Math.abs(positive / events.length - 0.5);
+  const recency = events.reduce((sum, event) => sum + Math.max(0.25, 1 - dayAge(event.updatedAt) / 365), 0) / events.length;
+  const quality = events.reduce((sum, event) => sum + (event.outcomeSource === "crm" || event.outcomeSource === "manual" ? 1 : 0.65), 0) / events.length;
+  return Math.round(100 * sample * consistency * recency * quality);
+}
+function analyzeLearningEvents(events, priorInsights = []) {
+  const prior = new Map(priorInsights.map((insight) => [insight.id, insight]));
+  const groups = /* @__PURE__ */ new Map();
+  for (const event of events.filter((event2) => !!event2.sentAt)) {
+    const key = `${event.strategyType}|${event.industry || "all"}`;
+    groups.set(key, [...groups.get(key) || [], event]);
   }
-  const strategyBlock = `Current Stage: ${strategy.currentStage || lead.status}
-Next Objective: ${strategy.nextObjective}
-Reasoning: ${strategy.reasoning}
-Risk: ${strategy.risk}
-Confidence: ${strategy.confidence}`;
-  return `${message}
-
----STRATEGY---
-${strategyBlock}`;
+  return [...groups.entries()].map(([key, group]) => {
+    const positive = group.filter((event) => POSITIVE.has(event.outcome)).length;
+    const negative = group.filter((event) => NEGATIVE.has(event.outcome)).length;
+    const responses = group.filter((event) => RESPONSES.has(event.outcome)).length;
+    const meetings = group.filter((event) => event.outcome === "MEETING_BOOKED").length;
+    const conversions = group.filter((event) => event.outcome === "CONVERTED").length;
+    const confidence = calculateConfidence(group, positive);
+    const [strategyType, segment] = key.split("|");
+    const sorted = [...group].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const id = `insight-${key.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`;
+    const old = prior.get(id);
+    const stale = dayAge(sorted.at(-1).updatedAt) > LEARNING_CONFIG.staleAfterDays;
+    const status = old?.status === "DISABLED" || old?.status === "REJECTED" ? old.status : stale ? "STALE" : group.length >= LEARNING_CONFIG.validationObservations && confidence >= LEARNING_CONFIG.minInfluenceConfidence ? "VALIDATED" : group.length >= LEARNING_CONFIG.minObservations ? "EMERGING" : "OBSERVING";
+    return { id, pattern: `${strategyType} messages for ${segment} prospects have a ${Math.round(positive / group.length * 100)}% positive-outcome rate across ${group.length} sent messages.`, segment, strategyType, evidenceCount: group.length, positiveOutcomeCount: positive, negativeOutcomeCount: negative, responseCount: responses, meetingCount: meetings, conversionCount: conversions, responseRate: responses / group.length, positiveResponseRate: positive / group.length, meetingRate: meetings / group.length, conversionRate: conversions / group.length, confidence, status, firstObservedAt: old?.firstObservedAt || sorted[0].createdAt, lastObservedAt: sorted.at(-1).updatedAt, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  });
+}
+function relevantInsights(insights, lead, messageType2) {
+  return insights.filter((insight) => insight.status === "VALIDATED" && insight.confidence >= LEARNING_CONFIG.minInfluenceConfidence && (!messageType2 || insight.strategyType === messageType2 || insight.strategyType.includes(messageType2)) && (insight.segment === "all" || insight.segment === lead.clientType)).sort((a, b) => b.confidence - a.confidence).slice(0, 3);
+}
+function summarizeLearning(events, insights) {
+  const sent = events.filter((event) => !!event.sentAt);
+  const signals = /* @__PURE__ */ new Map();
+  for (const event of events) for (const signal of event.editType || []) signals.set(signal, (signals.get(signal) || 0) + 1);
+  return { totalEvents: events.length, generated: events.filter((event) => !!event.generatedAt).length, sent: sent.length, responses: sent.filter((event) => RESPONSES.has(event.outcome)).length, positiveResponses: sent.filter((event) => POSITIVE.has(event.outcome)).length, meetings: sent.filter((event) => event.outcome === "MEETING_BOOKED").length, conversions: sent.filter((event) => event.outcome === "CONVERTED").length, strategies: insights.map((insight) => ({ strategyType: insight.strategyType, sample: insight.evidenceCount, replyRate: insight.responseRate, meetingRate: insight.meetingRate, conversionRate: insight.conversionRate })).sort((a, b) => b.sample - a.sample), humanEdits: [...signals.entries()].map(([signal, count]) => ({ signal, count })).sort((a, b) => b.count - a.count) };
 }
 
 // lib/attachments.ts
@@ -614,13 +652,13 @@ function deriveCompanyFromContactName(value) {
   return match ? normalizeText(match[1]) : "";
 }
 function sdbHash(value) {
-  let hash = 2166136261;
+  let hash2 = 2166136261;
   for (let i = 0; i < value.length; i++) {
     const byte = value.charCodeAt(i);
-    hash ^= byte;
-    hash = Math.imul(hash, 16777619);
+    hash2 ^= byte;
+    hash2 = Math.imul(hash2, 16777619);
   }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return (hash2 >>> 0).toString(16).padStart(8, "0");
 }
 function normalizeImportedLead(raw, index) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -789,10 +827,235 @@ function summarizeSnapshotImport(rawLeads) {
   };
 }
 
+// lib/undoRedo.ts
+var UNDOABLE_LEAD_FIELDS = [
+  "name",
+  "company",
+  "phone",
+  "instagram",
+  "whatsapp",
+  "email",
+  "source",
+  "clientType",
+  "service",
+  "status",
+  "priority",
+  "assignedTo",
+  "notes",
+  "nextAction",
+  "nextActionDate",
+  "meetingPrepNote",
+  "deliveryStage",
+  "deliveryNote",
+  "betaCandidate",
+  "aiBucket",
+  "autoFollowUpDate",
+  "autoFollowUpReason"
+];
+var equal = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+function createLeadAction(params) {
+  const fields = UNDOABLE_LEAD_FIELDS.filter((field) => !equal(params.before[field], params.after[field]));
+  if (!fields.length) return null;
+  const before = {};
+  const after = {};
+  for (const field of fields) {
+    before[field] = params.before[field] ?? null;
+    after[field] = params.after[field] ?? null;
+  }
+  return { id: params.id, leadId: params.leadId, actorId: params.actorId, source: params.source, actionType: "LEAD_FIELDS_UPDATED", createdAt: params.now, affectedFields: fields, before, after };
+}
+function actionCanApply(action, lead, direction) {
+  const expected = direction === "undo" ? action.after : action.before;
+  return action.affectedFields.every((field) => equal(lead[field], expected[field]));
+}
+function applyActionFields(lead, action, direction) {
+  const values = direction === "undo" ? action.before : action.after;
+  const patch = {};
+  for (const field of action.affectedFields) patch[field] = values[field] ?? null;
+  return { ...lead, ...patch };
+}
+
+// lib/execution.ts
+function commitOutboundSent(lead, outboundId, sentAt = nowISO()) {
+  const outboundMessages = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+  const outbound = outboundMessages.find((message) => message.id === outboundId);
+  if (!outbound || outbound.leadId !== lead.id) throw new Error("Outbound message not found for this lead.");
+  if (outbound.status === "SENT") return lead;
+  const committedOutbound = { ...outbound, status: "SENT", sentAt };
+  const existingLog = Array.isArray(lead.conversationLog) ? lead.conversationLog : [];
+  const logEntry = {
+    id: `outbound-${outbound.id}`,
+    outboundId: outbound.id,
+    direction: "outbound",
+    messageType: outbound.messageType,
+    status: "sent",
+    ts: sentAt,
+    type: "dm",
+    label: `${outbound.messageType || "Outbound"} sent via WhatsApp`,
+    text: outbound.messageText,
+    by: outbound.userId || lead.assignedTo || "Unassigned"
+  };
+  const alreadyRecorded = existingLog.some((entry) => entry.outboundId === outbound.id || entry.id === logEntry.id);
+  return {
+    ...lead,
+    conversationLog: alreadyRecorded ? existingLog : [...existingLog, logEntry],
+    outboundMessages: outboundMessages.map((message) => message.id === outbound.id ? committedOutbound : message),
+    lastContacted: sentAt.slice(0, 10),
+    lastMeaningfulTouchpoint: sentAt.slice(0, 10),
+    awaitingReplySince: "",
+    followUpCount: alreadyRecorded ? lead.followUpCount || 0 : (lead.followUpCount || 0) + 1,
+    completedFollowUps: alreadyRecorded ? lead.completedFollowUps || [] : [...lead.completedFollowUps || [], sentAt],
+    autoFollowUpDate: ["Closed", "Lost"].includes(lead.status) ? null : addDays(3),
+    autoFollowUpReason: "Recently contacted via WhatsApp outbound.",
+    // dmText is the immutable opening outbound.  A confirmed outbound may
+    // establish it only for a lead with no opening DM; every later outbound
+    // lives exclusively in the append-only conversationLog above.
+    dmText: lead.dmText || outbound.messageText
+  };
+}
+
+// lib/conversationEvents.ts
+function hash(value) {
+  let valueHash = 2166136261;
+  for (let i = 0; i < value.length; i++) valueHash = Math.imul(valueHash ^ value.charCodeAt(i), 16777619);
+  return (valueHash >>> 0).toString(36);
+}
+function conversationEventId(event) {
+  if (event.id) return event.id;
+  return `legacy-${hash(JSON.stringify([
+    event.outboundId || "",
+    event.ts,
+    event.type,
+    event.direction || "",
+    event.messageType || "",
+    event.status || "",
+    event.label,
+    event.text,
+    event.by
+  ]))}`;
+}
+function isLatestThreadEvent(event) {
+  return event.type === "dm" || event.type === "reply";
+}
+function isProtectedConversationAnchor(event, dmText, initialResponse) {
+  return event.type === "dm" && !!dmText && event.text === dmText || event.type === "reply" && !!initialResponse && event.text === initialResponse;
+}
+function removeConversationEvent(log, eventId, dmText, initialResponse, removedAt) {
+  const position = log.findIndex((event2) => conversationEventId(event2) === eventId);
+  if (position < 0) throw new Error("Conversation event not found.");
+  const event = log[position];
+  if (!isLatestThreadEvent(event)) throw new Error("Only Latest Thread messages can be removed.");
+  if (isProtectedConversationAnchor(event, dmText, initialResponse)) throw new Error("Historical conversation anchors cannot be removed.");
+  return { log: [...log.slice(0, position), ...log.slice(position + 1)], removed: { eventId, event: { ...event, id: event.id || eventId }, position, removedAt } };
+}
+function restoreConversationEvent(log, removed) {
+  if (log.some((event) => conversationEventId(event) === removed.eventId)) return log;
+  const next = [...log];
+  next.splice(Math.min(Math.max(removed.position, 0), next.length), 0, removed.event);
+  return next;
+}
+
 // server.ts
+var import_crypto2 = require("crypto");
 import_dotenv.default.config();
 var app = (0, import_express.default)();
 var db = new import_pg.Pool({ connectionString: process.env.DATABASE_URL });
+function hashPassword(password, saltHex) {
+  const salt = saltHex ? Buffer.from(saltHex, "hex") : (0, import_crypto.randomBytes)(16);
+  const hash2 = (0, import_crypto2.scryptSync)(password, salt, 64).toString("hex");
+  return `${salt.toString("hex")}:${hash2}`;
+}
+function verifyPassword(password, storedHash) {
+  if (!storedHash) return false;
+  if (!storedHash.includes(":")) {
+    const legacy = (0, import_crypto.createHash)("sha256").update(password + (process.env.SESSION_SECRET || "dfqlabs-secret-salt")).digest("hex");
+    return legacy === storedHash;
+  }
+  const [saltHex, originalHash] = storedHash.split(":");
+  const computedHash = hashPassword(password, saltHex).split(":")[1];
+  return computedHash === originalHash;
+}
+function generateTempPassword() {
+  return "dfq-" + (0, import_crypto.randomBytes)(4).toString("hex");
+}
+var activeSessions = /* @__PURE__ */ new Map();
+function getAuthUserFromReq(req) {
+  const token = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+  if (!token) return null;
+  return activeSessions.get(token) || null;
+}
+function requestedActor(value) {
+  return typeof value === "string" && UNDO_ACTORS.has(value) ? value : null;
+}
+async function getAuthoritativeLead(leadId) {
+  const result = await db.query("SELECT data FROM leads WHERE id = $1", [leadId]);
+  return result.rows[0]?.data || null;
+}
+function mergeSentOutboundUpdate(current, incoming) {
+  if (!current) return incoming;
+  const currentOutbound = Array.isArray(current.outboundMessages) ? current.outboundMessages : [];
+  const incomingOutbound = Array.isArray(incoming.outboundMessages) ? incoming.outboundMessages : [];
+  const currentById = new Map(currentOutbound.map((message) => [String(message.id), message]));
+  const sentOutbound = incomingOutbound.filter((message) => message?.id && message.status === "SENT");
+  const newlySent = sentOutbound.filter(
+    (message) => message?.id && message.status === "SENT" && currentById.get(message.id)?.status !== "SENT"
+  );
+  const currentLog = Array.isArray(current.conversationLog) ? current.conversationLog : [];
+  const incomingLog = Array.isArray(incoming.conversationLog) ? incoming.conversationLog : [];
+  const removedConversationEvents = Array.isArray(current.removedConversationEvents) ? current.removedConversationEvents : [];
+  const removedIds = new Set(removedConversationEvents.map((event) => event.eventId));
+  const entryKey = (entry) => JSON.stringify([
+    entry?.outboundId || entry?.id || "",
+    entry?.type,
+    entry?.label,
+    entry?.text,
+    entry?.by
+  ]);
+  const knownEntries = new Set(currentLog.map(entryKey));
+  const openingDm = current.dmText || incoming.dmText || "";
+  const initialResponse = current.prospectInitialResponse || incoming.prospectInitialResponse || "";
+  const appendedEntries = incomingLog.filter((entry) => {
+    if (removedIds.has(conversationEventId(entry))) return false;
+    if (entry?.type === "dm" && entry?.text === openingDm || entry?.type === "reply" && entry?.text === initialResponse) return false;
+    if (entry?.type === "dm") return false;
+    const key = entryKey(entry);
+    if (knownEntries.has(key)) return false;
+    knownEntries.add(key);
+    if (entry?.type === "dm" || entry?.type === "reply") {
+      entry.ts = (/* @__PURE__ */ new Date()).toISOString();
+      entry.direction = entry.direction || (entry.type === "reply" ? "inbound" : "outbound");
+      entry.id = entry.id || (0, import_crypto.randomUUID)();
+    }
+    return true;
+  });
+  for (const outbound of newlySent) {
+    if (appendedEntries.some((entry) => entry?.type === "dm" && entry?.text === outbound.messageText)) continue;
+    appendedEntries.push({
+      id: `outbound-${outbound.id}`,
+      ts: outbound.sentAt || (/* @__PURE__ */ new Date()).toISOString(),
+      type: "dm",
+      label: `${outbound.messageType || "Outbound"} sent via WhatsApp`,
+      text: outbound.messageText,
+      by: outbound.userId || incoming.assignedTo || "Unassigned"
+    });
+  }
+  const mergedOutbound = [...currentOutbound];
+  for (const outbound of incomingOutbound) {
+    const index = mergedOutbound.findIndex((message) => message.id === outbound.id);
+    if (index >= 0) {
+      if (mergedOutbound[index].status === "SENT" && outbound.status !== "SENT") continue;
+      mergedOutbound[index] = outbound;
+    } else mergedOutbound.push(outbound);
+  }
+  return {
+    ...incoming,
+    dmText: openingDm,
+    prospectInitialResponse: initialResponse,
+    conversationLog: [...currentLog, ...appendedEntries],
+    outboundMessages: mergedOutbound,
+    removedConversationEvents
+  };
+}
 async function initializeDatabase() {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL environment variable is not configured. Cannot connect to PostgreSQL.");
@@ -835,6 +1098,59 @@ async function initializeDatabase() {
     throw new Error(`Failed to create lead_attachments table: ${err}`);
   }
   try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'ACTIVE',
+        seat_id TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS outreach_seats (
+        seat_id TEXT PRIMARY KEY,
+        seat_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'VACANT',
+        current_user_id TEXT
+      )
+    `);
+    console.log("\u2713 users and outreach_seats tables initialized");
+  } catch (err) {
+    throw new Error(`Failed to create users/outreach_seats tables: ${err}`);
+  }
+  await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_events (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, outbound_id TEXT UNIQUE NOT NULL, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
+  await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_insights (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
+  const userCountRes = await db.query("SELECT COUNT(*) FROM users");
+  if (parseInt(userCountRes.rows[0].count) === 0) {
+    const founderId = "user-founder";
+    const specialistId = "user-blessing";
+    const founderPass = hashPassword("dfq2026!");
+    const specialistPass = hashPassword("specialist2026!");
+    await db.query(
+      `INSERT INTO outreach_seats (seat_id, seat_name, status, current_user_id) VALUES
+       ('seat-outreach-a', 'Outreach Seat A', 'OCCUPIED', $1),
+       ('seat-outreach-b', 'Outreach Seat B', 'VACANT', NULL),
+       ('seat-outreach-c', 'Outreach Seat C', 'VACANT', NULL),
+       ('seat-outreach-d', 'Outreach Seat D', 'VACANT', NULL)
+       ON CONFLICT DO NOTHING`,
+      [specialistId]
+    );
+    await db.query(
+      `INSERT INTO users (id, display_name, username, password_hash, role, status, seat_id) VALUES
+       ($1, 'Alex (Founder)', 'alex@dfqlabs.com', $2, 'FOUNDER', 'ACTIVE', NULL),
+       ($3, 'Blessing Mudi', 'blessing@dfqlabs.com', $4, 'OUTREACH_SPECIALIST', 'ACTIVE', 'seat-outreach-a')
+       ON CONFLICT DO NOTHING`,
+      [founderId, founderPass, specialistId, specialistPass]
+    );
+    console.log("\u2713 Seeded default Founder and Outreach Specialist accounts");
+  }
+  await db.query(`CREATE TABLE IF NOT EXISTS crm_action_history (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+  await db.query(`CREATE INDEX IF NOT EXISTS crm_action_history_actor_created_idx ON crm_action_history ((data->>'actorId'), created_at DESC)`);
+  try {
     const { rows } = await db.query(
       "SELECT id, data FROM leads WHERE data ? 'attachments'"
     );
@@ -872,6 +1188,8 @@ async function initializeDatabase() {
   console.log("\u2713 Database initialization successful");
 }
 var PORT = process.env.PORT ? parseInt(process.env.PORT) : 5e3;
+var LEARNING_ENABLED = process.env.SALES_BRAIN_LEARNING_ENABLED !== "false";
+var LEARNING_INFLUENCE_ENABLED = process.env.SALES_BRAIN_LEARNING_INFLUENCE_ENABLED === "true";
 var GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 function getGeminiApiKey() {
   const value = process.env.GEMINI_API_KEY?.trim();
@@ -896,7 +1214,145 @@ function recordFailure(model, message) {
   aiHealth.recentErrors.unshift({ ts: (/* @__PURE__ */ new Date()).toISOString(), message: String(message).slice(0, 200), model });
   aiHealth.recentErrors = aiHealth.recentErrors.slice(0, 20);
 }
+async function syncLearningForLead(lead) {
+  if (!LEARNING_ENABLED || !Array.isArray(lead.outboundMessages)) return;
+  for (const outbound of lead.outboundMessages) {
+    const prior = await db.query("SELECT data FROM sales_learning_events WHERE outbound_id = $1", [outbound.id]);
+    const event = buildLearningEvent(lead, outbound, prior.rows[0]?.data);
+    await db.query(`INSERT INTO sales_learning_events (id, lead_id, outbound_id, data, updated_at) VALUES ($1, $2, $3, $4::jsonb, NOW()) ON CONFLICT (outbound_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`, [event.id, event.leadId, event.outboundId, JSON.stringify(event)]);
+  }
+  scheduleLearningAnalysis();
+}
+var learningAnalysisTimer;
+function scheduleLearningAnalysis() {
+  if (learningAnalysisTimer) return;
+  learningAnalysisTimer = setTimeout(() => {
+    learningAnalysisTimer = void 0;
+    refreshLearningInsights().catch((error) => console.error("Learning analysis failed:", error));
+  }, 500);
+}
+async function refreshLearningInsights() {
+  if (!LEARNING_ENABLED) return;
+  const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row) => row.data);
+  const prior = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row) => row.data);
+  const insights = analyzeLearningEvents(events, prior);
+  for (const insight of insights) await db.query(`INSERT INTO sales_learning_insights (id, data, updated_at) VALUES ($1, $2::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`, [insight.id, JSON.stringify(insight)]);
+}
 app.use(import_express.default.json({ limit: "25mb" }));
+app.post("/api/auth/login", async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: "Username and password required" });
+  try {
+    const userRes = await db.query(
+      "SELECT id, display_name, username, password_hash, role, status, seat_id FROM users WHERE username = $1",
+      [username.trim().toLowerCase()]
+    );
+    if (userRes.rows.length === 0) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+    const user = userRes.rows[0];
+    if (!verifyPassword(password, user.password_hash)) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+    if (!user.password_hash.includes(":")) {
+      const newScryptHash = hashPassword(password);
+      await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [newScryptHash, user.id]);
+    }
+    if (user.status !== "ACTIVE") {
+      return res.status(403).json({ error: "User account is inactive" });
+    }
+    const token = `session-${(0, import_crypto.randomUUID)()}`;
+    const sessionData = {
+      userId: user.id,
+      role: user.role,
+      username: user.username,
+      displayName: user.display_name,
+      seatId: user.seat_id
+    };
+    activeSessions.set(token, sessionData);
+    res.json({ ok: true, token, user: sessionData });
+  } catch (err) {
+    console.error("POST /api/auth/login error:", err);
+    res.status(500).json({ error: "Authentication failed" });
+  }
+});
+app.get("/api/auth/me", (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+  res.json({ user });
+});
+app.post("/api/auth/logout", (req, res) => {
+  const token = req.headers.authorization?.replace("Bearer ", "") || req.query.token;
+  if (token) activeSessions.delete(token);
+  res.json({ ok: true });
+});
+app.get("/api/auth/users", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(403).json({ error: "Forbidden" });
+  try {
+    const result = await db.query(
+      "SELECT id, display_name, username, role, status, seat_id, created_at FROM users ORDER BY created_at DESC"
+    );
+    res.json({ users: result.rows });
+  } catch (err) {
+    console.error("GET /api/auth/users error:", err);
+    res.status(500).json({ error: "Failed to fetch users" });
+  }
+});
+app.post("/api/auth/users", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(403).json({ error: "Forbidden" });
+  const { displayName, username, role, seatId } = req.body || {};
+  if (!displayName || !username || !role) return res.status(400).json({ error: "Required user fields missing" });
+  const tempPass = generateTempPassword();
+  const passHash = hashPassword(tempPass);
+  const userId = `user-${(0, import_crypto.randomUUID)()}`;
+  try {
+    await db.query(
+      "INSERT INTO users (id, display_name, username, password_hash, role, status, seat_id) VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6)",
+      [userId, displayName, username.trim().toLowerCase(), passHash, role, seatId || null]
+    );
+    if (seatId) {
+      await db.query("UPDATE outreach_seats SET current_user_id = $1, status = 'OCCUPIED' WHERE seat_id = $2", [userId, seatId]);
+    }
+    res.json({
+      ok: true,
+      user: { id: userId, displayName, username, role, status: "ACTIVE", seatId },
+      tempPassword: tempPass
+    });
+  } catch (err) {
+    console.error("POST /api/auth/users error:", err);
+    res.status(500).json({ error: err.message?.includes("unique") ? "Username already exists" : "Failed to create user" });
+  }
+});
+app.post("/api/auth/users/:id/status", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(403).json({ error: "Forbidden" });
+  const { status } = req.body || {};
+  if (!["ACTIVE", "INACTIVE"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+  try {
+    await db.query("UPDATE users SET status = $1 WHERE id = $2", [status, req.params.id]);
+    if (status === "INACTIVE") {
+      await db.query("UPDATE outreach_seats SET current_user_id = NULL, status = 'VACANT' WHERE current_user_id = $1", [req.params.id]);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update user status" });
+  }
+});
+app.get("/api/auth/seats", async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT s.seat_id, s.seat_name, s.status, s.current_user_id, u.display_name, u.username
+       FROM outreach_seats s
+       LEFT JOIN users u ON s.current_user_id = u.id
+       ORDER BY s.seat_id ASC`
+    );
+    res.json({ seats: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch seats" });
+  }
+});
 async function callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, temperature) {
   const apiKey = getGeminiApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured on the server.");
@@ -1154,7 +1610,7 @@ async function enrichLeadAttachments(lead) {
     return lead;
   }
 }
-async function retrieveKnowledgeForLead(lead, messageType) {
+async function retrieveKnowledgeForLead(lead, messageType2) {
   try {
     const result = await db.query("SELECT data FROM knowledge_sources");
     const sources = result.rows.map((r) => r.data).filter((s) => s.enabled !== false && s.status === "ready" && s.content);
@@ -1213,7 +1669,7 @@ async function retrieveKnowledgeForLead(lead, messageType) {
       INTRODUCTION_DM: ["outreach", "positioning", "hook", "first touch"],
       RESPONSE_DM: ["objection", "trust", "response", "conversion"]
     };
-    const typeKw = typeKeywords[messageType] || [];
+    const typeKw = typeKeywords[messageType2] || [];
     const scored = sources.map((s) => {
       const contentLower = (s.content || "").toLowerCase();
       const titleLower = (s.title || "").toLowerCase();
@@ -1249,12 +1705,17 @@ async function retrieveKnowledgeForLead(lead, messageType) {
 }
 app.post("/api/value-dm", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  const { lead, task, messageType } = req.body || {};
-  if (!lead) {
-    res.status(400).json({ error: "lead is required" });
+  const { leadId, task, messageType: messageType2 } = req.body || {};
+  if (!leadId || typeof leadId !== "string") {
+    res.status(400).json({ error: "leadId is required" });
     return;
   }
-  const type = messageType || "VALUE_DM";
+  const lead = await getAuthoritativeLead(leadId);
+  if (!lead) {
+    res.status(404).json({ error: "Lead not found." });
+    return;
+  }
+  const type = messageType2 || "VALUE_DM";
   const leadWithAttachments = await enrichLeadAttachments(lead);
   const knowledge = await retrieveKnowledgeForLead(leadWithAttachments, type);
   const knowledgeBlock = knowledge.length > 0 ? `
@@ -1290,7 +1751,11 @@ FORMAT: 3-4 sentences maximum. Zero emojis. Zero exclamation marks. Zero buzzwor
 FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holistic", "elevate", "game-changer", "value-add", "reach out", "touch base", "circle back", "let me know", "would you like", "I can help".
 
 Output ONLY the actual message. No labels. No quotes. No explanation. No strategy in the message.`;
-    pipelineTask = "Generate a VALUE_DM: one specific, genuinely useful, immediately actionable insight for this prospect. No selling. No CTA. No ask. Just value.";
+    pipelineTask = `CURRENT USER INSTRUCTION (highest-priority direction for this draft):
+${typeof task === "string" && task.trim() ? task.trim() : "Write a useful, prospect-specific value DM."}
+
+TASK:
+Generate a VALUE_DM that follows the user's requested strategy while remaining factually grounded in this lead's CRM context, complete chronology, prior outbounds, notes, and available attachments. Do not repeat an earlier message. No selling, CTA, or ask unless the user explicitly selected a different message type.`;
   } else {
     const typeRules = {
       SALES_DM: "A sales outreach DM. Pursue exactly one pipeline-stage objective. One low-friction ask. Reference something specific. 2-4 sentences.",
@@ -1315,19 +1780,116 @@ FORBIDDEN words: "I hope", "I trust", "excited to", "leverage", "synergy", "holi
 REPETITION CHECK: The last ${recentLogs.length} messages are provided in the conversation thread. If they already discuss the same topic, introduce a genuinely NEW angle or recommend changing the follow-up strategy. Do not generate a variation of the same message.` : "";
   try {
     const fullTask = pipelineTask + knowledgeBlock + repetitionNote;
-    const result = await runSalesPipeline(leadWithAttachments, fullTask, styleInstructions, 600);
-    const sepIdx = result.indexOf("---STRATEGY---");
-    const message = sepIdx !== -1 ? result.slice(0, sepIdx).trim() : result.trim();
-    const strategy = sepIdx !== -1 ? result.slice(sepIdx + "---STRATEGY---".length).trim() : "";
+    const storedInsights = LEARNING_INFLUENCE_ENABLED ? (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row) => row.data) : [];
+    const learningInsights = relevantInsights(storedInsights, leadWithAttachments, type).map((insight) => ({
+      insightId: insight.id,
+      pattern: insight.pattern,
+      relevance: `${insight.segment} / ${insight.strategyType}`,
+      confidence: insight.confidence,
+      evidenceSummary: `${insight.evidenceCount} sent; ${Math.round(insight.positiveResponseRate * 100)}% positive; ${insight.meetingCount} meetings`
+    }));
+    const brain = await runSalesBrainWithGenerator(
+      leadWithAttachments,
+      { task: fullTask, requestedMessageType: type, learningInsights },
+      (prompt2, maxTokens) => callGemini(SYSTEM_PROMPT, prompt2, GEMINI_MODEL, maxTokens)
+    );
     res.json({
-      text: message,
-      strategy,
-      messageType: type,
-      knowledgeUsed: knowledge.map((k) => k.title)
+      text: brain.message,
+      strategy: brain.reasoningSummary,
+      messageType: brain.messageType,
+      brain,
+      knowledgeUsed: knowledge.map((k) => k.title),
+      learningInsights
     });
   } catch (err) {
     console.error("POST /api/value-dm error:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+app.post("/api/sales-brain", async (req, res) => {
+  const { leadId, task, requestedMessageType } = req.body || {};
+  if (!leadId || typeof leadId !== "string") return res.status(400).json({ error: "leadId is required" });
+  try {
+    const stored = await getAuthoritativeLead(leadId);
+    if (!stored) return res.status(404).json({ error: "Lead not found." });
+    const lead = await enrichLeadAttachments(stored);
+    const insights = LEARNING_INFLUENCE_ENABLED ? (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row) => row.data) : [];
+    const learningInsights = relevantInsights(insights, lead, requestedMessageType || "FOLLOW_UP").map((insight) => ({
+      insightId: insight.id,
+      pattern: insight.pattern,
+      relevance: `${insight.segment} / ${insight.strategyType}`,
+      confidence: insight.confidence,
+      evidenceSummary: `${insight.evidenceCount} sent; ${Math.round(insight.positiveResponseRate * 100)}% positive; ${insight.meetingCount} meetings`
+    }));
+    const brain = await runSalesBrainWithGenerator(
+      lead,
+      { task: typeof task === "string" ? task : void 0, requestedMessageType, learningInsights },
+      (prompt2, maxTokens) => callGemini(SYSTEM_PROMPT, prompt2, GEMINI_MODEL, maxTokens)
+    );
+    return res.json({ ok: true, lead, brain });
+  } catch (error) {
+    console.error("POST /api/sales-brain:", error);
+    return res.status(500).json({ error: error?.message || "Could not generate the Sales Brain recommendation." });
+  }
+});
+app.get("/api/runtime/version", (_req, res) => {
+  res.json({
+    service: "dfqlabs-os",
+    commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unknown"
+  });
+});
+app.get("/api/learning/summary", async (_req, res) => {
+  try {
+    const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row) => row.data);
+    const insights = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row) => row.data);
+    res.json({ enabled: LEARNING_ENABLED, influenceEnabled: LEARNING_INFLUENCE_ENABLED, summary: summarizeLearning(events, insights), insights: insights.sort((a, b) => b.confidence - a.confidence).slice(0, 20) });
+  } catch (error) {
+    console.error("GET /api/learning/summary:", error);
+    res.status(500).json({ error: "Failed to load learning analytics." });
+  }
+});
+app.get("/api/learning/insights", async (req, res) => {
+  if (!LEARNING_INFLUENCE_ENABLED) return res.json({ insights: [] });
+  try {
+    const leadId = String(req.query.leadId || "");
+    const leadResult = await db.query("SELECT data FROM leads WHERE id = $1", [leadId]);
+    if (!leadResult.rows[0]) return res.json({ insights: [] });
+    const insights = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row) => row.data);
+    const selected = relevantInsights(insights, leadResult.rows[0].data, String(req.query.messageType || "")).map((insight) => ({ insightId: insight.id, pattern: insight.pattern, relevance: `${insight.segment} / ${insight.strategyType}`, confidence: insight.confidence, evidenceSummary: `${insight.evidenceCount} sent; ${Math.round(insight.positiveResponseRate * 100)}% positive; ${insight.meetingCount} meetings` }));
+    res.json({ insights: selected });
+  } catch (error) {
+    console.error("GET /api/learning/insights:", error);
+    res.status(500).json({ error: "Failed to retrieve learning insights." });
+  }
+});
+app.post("/api/learning/insights/:id/disable", async (req, res) => {
+  try {
+    const result = await db.query("SELECT data FROM sales_learning_insights WHERE id = $1", [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Insight not found." });
+    const insight = { ...result.rows[0].data, status: "DISABLED", updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    await db.query("UPDATE sales_learning_insights SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(insight), req.params.id]);
+    res.json({ ok: true, insight });
+  } catch (error) {
+    console.error("POST /api/learning/insights disable:", error);
+    res.status(500).json({ error: "Failed to disable learning insight." });
+  }
+});
+app.post("/api/learning/outcomes", async (req, res) => {
+  const { outboundId, outcome, responseMessage, outcomeRecordedAt } = req.body || {};
+  if (!outboundId || !LEARNING_OUTCOMES.includes(outcome)) return res.status(400).json({ error: "A valid outboundId and controlled outcome are required." });
+  try {
+    const result = await db.query("SELECT data FROM sales_learning_events WHERE outbound_id = $1", [outboundId]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Learning event not found for outbound message." });
+    const event = result.rows[0].data;
+    const recordedAt = outcomeRecordedAt || (/* @__PURE__ */ new Date()).toISOString();
+    if (event.sentAt && new Date(recordedAt).getTime() < new Date(event.sentAt).getTime()) return res.status(400).json({ error: "An outcome cannot precede the sent timestamp." });
+    const updated = { ...event, outcome, outcomeSource: "manual", outcomeRecordedAt: recordedAt, responseMessage: responseMessage || event.responseMessage, outcomeConfidence: 100, responseTimeSeconds: event.sentAt ? Math.round((new Date(recordedAt).getTime() - new Date(event.sentAt).getTime()) / 1e3) : void 0, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    await db.query("UPDATE sales_learning_events SET data = $1::jsonb, updated_at = NOW() WHERE outbound_id = $2", [JSON.stringify(updated), outboundId]);
+    scheduleLearningAnalysis();
+    res.json({ ok: true, event: updated });
+  } catch (error) {
+    console.error("POST /api/learning/outcomes:", error);
+    res.status(500).json({ error: "Failed to record learning outcome." });
   }
 });
 app.get("/api/knowledge", async (_req, res) => {
@@ -1427,7 +1989,11 @@ app.get("/api/leads", async (_req, res) => {
 });
 app.post("/api/leads", async (req, res) => {
   const body = req.body || {};
+  const authUser = getAuthUserFromReq(req);
   if (Array.isArray(body.leads)) {
+    if (authUser && authUser.role !== "FOUNDER") {
+      return res.status(403).json({ error: "Forbidden: Specialists cannot import or bulk update leads" });
+    }
     const rawLeads = Array.isArray(body.leads) ? body.leads : [];
     const isSnapshot = body.snapshot === true || body.replace === true || body.mode === "snapshot";
     if (isSnapshot) {
@@ -1448,6 +2014,7 @@ app.post("/api/leads", async (req, res) => {
       }
       try {
         const transactionResult = await runSnapshotReplaceTransaction(db, valid2);
+        for (const imported of valid2) void syncLearningForLead(imported).catch((error) => console.error("Learning snapshot sync failed:", error));
         return res.json({
           ok: true,
           count: transactionResult.count,
@@ -1516,6 +2083,7 @@ app.post("/api/leads", async (req, res) => {
         updated_at = NOW() RETURNING id`;
       const result = await db.query(query, params);
       const importedIds = result.rows.map((row) => row.id);
+      for (const imported of valid) void syncLearningForLead(imported).catch((error) => console.error("Learning bulk sync failed:", error));
       return res.json({
         ok: true,
         count: importedIds.length,
@@ -1539,16 +2107,319 @@ app.post("/api/leads", async (req, res) => {
   }
   const lead = stripAttachmentContent(body.lead);
   if (!lead?.id) return res.status(400).json({ error: "lead.id is required." });
+  if (authUser) {
+    if (!lead.assignedTo || lead.assignedTo === "Unassigned") {
+      lead.assignedTo = authUser.displayName;
+    }
+    lead.ownerUserId = authUser.userId;
+    lead.createdByUserId = authUser.userId;
+  }
+  const actorId = requestedActor(body.actorId);
+  const source = typeof body.source === "string" ? body.source.slice(0, 80) : "crm";
+  const client = await db.connect();
   try {
-    await db.query(
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [lead.id]);
+    const mergedLead = mergeSentOutboundUpdate(existing.rows[0]?.data, lead);
+    await client.query(
       `INSERT INTO leads (id, data, updated_at) VALUES ($1, $2::jsonb, NOW())
        ON CONFLICT (id) DO UPDATE SET data = $2::jsonb, updated_at = NOW()`,
-      [lead.id, JSON.stringify(lead)]
+      [lead.id, JSON.stringify(mergedLead)]
     );
-    res.json({ ok: true });
+    const action = actorId && existing.rows[0]?.data ? createLeadAction({
+      id: `action-${(0, import_crypto.randomUUID)()}`,
+      leadId: String(lead.id),
+      actorId,
+      source,
+      before: existing.rows[0].data,
+      after: mergedLead,
+      now: (/* @__PURE__ */ new Date()).toISOString()
+    }) : null;
+    if (action) {
+      await client.query(
+        `UPDATE crm_action_history
+         SET data = jsonb_set(data, '{redoInvalidatedAt}', to_jsonb(NOW()::text), true)
+         WHERE data->>'actorId' = $1 AND data ? 'undoneAt' AND NOT (data ? 'redoInvalidatedAt')`,
+        [actorId]
+      );
+      await client.query(
+        "INSERT INTO crm_action_history (id, lead_id, data, created_at) VALUES ($1, $2, $3::jsonb, NOW())",
+        [action.id, action.leadId, JSON.stringify(action)]
+      );
+    }
+    await client.query("COMMIT");
+    void syncLearningForLead(mergedLead).catch((error) => console.error("Learning lead sync failed:", error));
+    res.json({ ok: true, lead: mergedLead, actionId: action?.id });
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => {
+    });
     console.error("POST /api/leads single:", err);
     res.status(500).json({ error: "Failed to save lead." });
+  } finally {
+    client.release();
+  }
+});
+app.get("/api/actions", async (req, res) => {
+  const actorId = requestedActor(req.query.actorId);
+  if (!actorId) return res.status(403).json({ error: "Unauthorized action history request." });
+  try {
+    const result = await db.query(
+      `SELECT data FROM crm_action_history WHERE data->>'actorId' = $1 ORDER BY created_at DESC LIMIT 100`,
+      [actorId]
+    );
+    res.json({ actions: result.rows.map((row) => row.data) });
+  } catch (error) {
+    console.error("GET /api/actions:", error);
+    res.status(500).json({ error: "Could not load action history." });
+  }
+});
+app.post("/api/actions/:id/:direction", async (req, res) => {
+  const direction = req.params.direction === "undo" ? "undo" : req.params.direction === "redo" ? "redo" : null;
+  const actorId = requestedActor(req.body?.actorId);
+  if (!direction || !actorId) return res.status(403).json({ error: "Unauthorized action request." });
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const actionResult = await client.query("SELECT data FROM crm_action_history WHERE id = $1 FOR UPDATE", [req.params.id]);
+    const action = actionResult.rows[0]?.data;
+    if (!action || action.actorId !== actorId) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Action not found." });
+    }
+    if (direction === "undo" && (action.undoneAt || action.redoInvalidatedAt) || direction === "redo" && (!action.undoneAt || action.redoInvalidatedAt)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "This action is no longer eligible for that operation." });
+    }
+    const leadResult = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [action.leadId]);
+    const current = leadResult.rows[0]?.data;
+    if (!current) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "The lead no longer exists." });
+    }
+    if (!actionCanApply(action, current, direction)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "This change can no longer be safely undone because the lead has changed." });
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const updated = applyActionFields(current, action, direction);
+    updated.auditLog = [...Array.isArray(current.auditLog) ? current.auditLog : [], {
+      ts: now,
+      by: actorId,
+      action: direction === "undo" ? "Undo lead field change" : "Redo lead field change",
+      field: action.affectedFields.join(",")
+    }];
+    const nextAction = { ...action, ...direction === "undo" ? { undoneAt: now, redoneAt: void 0 } : { redoneAt: now, undoneAt: void 0 } };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), action.leadId]);
+    await client.query("UPDATE crm_action_history SET data = $1::jsonb WHERE id = $2", [JSON.stringify(nextAction), action.id]);
+    await client.query("COMMIT");
+    void syncLearningForLead(updated).catch((error) => console.error("Learning undo/redo sync failed:", error));
+    res.json({ ok: true, lead: updated, action: nextAction });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {
+    });
+    console.error("POST /api/actions:", error);
+    res.status(500).json({ error: "Could not apply the action safely." });
+  } finally {
+    client.release();
+  }
+});
+app.post("/api/leads/:leadId/outbound", async (req, res) => {
+  const outbound = req.body?.outbound;
+  if (!outbound?.id || !outbound?.messageText || outbound.leadId !== req.params.leadId) {
+    return res.status(400).json({ error: "A valid outbound record for this lead is required." });
+  }
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data;
+    if (!lead) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Lead not found." });
+    }
+    const existing = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    const existingRecord = existing.find((item) => item.id === outbound.id);
+    if (existingRecord && (existingRecord.leadId !== lead.id || existingRecord.messageText !== outbound.messageText)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Outbound ID conflicts with an existing message." });
+    }
+    const updated = existingRecord ? lead : { ...lead, outboundMessages: [...existing, outbound] };
+    if (!existingRecord) {
+      await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    }
+    await client.query("COMMIT");
+    return res.json({ ok: true, lead: updated, idempotent: !!existingRecord });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {
+    });
+    console.error("POST outbound record:", error);
+    return res.status(500).json({ error: "Could not save the generated outbound message." });
+  } finally {
+    client.release();
+  }
+});
+app.post("/api/leads/:leadId/outbound/:outboundId/sent", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data;
+    if (!lead) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Lead not found." });
+    }
+    const outboundMessages = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    const outbound = outboundMessages.find((item) => item.id === req.params.outboundId);
+    if (!outbound || outbound.leadId !== lead.id) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Outbound message not found for this lead." });
+    }
+    if (outbound.status === "SENT") {
+      await client.query("COMMIT");
+      return res.json({ ok: true, lead, idempotent: true });
+    }
+    const updated = commitOutboundSent(lead, outbound.id, (/* @__PURE__ */ new Date()).toISOString());
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    void syncLearningForLead(updated).catch((error) => console.error("Learning sent-outbound sync failed:", error));
+    res.json({ ok: true, lead: updated, idempotent: false });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {
+    });
+    console.error("POST sent outbound:", error);
+    res.status(500).json({ error: "Could not confirm the outbound message." });
+  } finally {
+    client.release();
+  }
+});
+app.delete("/api/leads/:leadId/conversation/:eventId", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data;
+    if (!lead) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Lead not found." });
+    }
+    const existingRemoved = Array.isArray(lead.removedConversationEvents) ? lead.removedConversationEvents : [];
+    if (existingRemoved.some((item) => item.eventId === req.params.eventId)) {
+      await client.query("COMMIT");
+      return res.json({ ok: true, lead, idempotent: true });
+    }
+    let changed;
+    try {
+      changed = removeConversationEvent(Array.isArray(lead.conversationLog) ? lead.conversationLog : [], req.params.eventId, lead.dmText || "", lead.prospectInitialResponse || "", (/* @__PURE__ */ new Date()).toISOString());
+    } catch (error) {
+      await client.query("ROLLBACK");
+      return res.status(error?.message?.includes("anchors") || error?.message?.includes("Only Latest") ? 400 : 404).json({ error: error?.message || "Could not remove conversation event." });
+    }
+    const updated = { ...lead, conversationLog: changed.log, removedConversationEvents: [...existingRemoved, changed.removed] };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    return res.json({ ok: true, lead: updated, removedEventId: changed.removed.eventId });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {
+    });
+    console.error("DELETE conversation event:", error);
+    return res.status(500).json({ error: "Could not remove conversation event." });
+  } finally {
+    client.release();
+  }
+});
+app.post("/api/leads/:leadId/conversation/:eventId/restore", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data;
+    if (!lead) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Lead not found." });
+    }
+    const removed = Array.isArray(lead.removedConversationEvents) ? lead.removedConversationEvents : [];
+    const target = removed.find((item) => item.eventId === req.params.eventId);
+    if (!target) {
+      const exists = (Array.isArray(lead.conversationLog) ? lead.conversationLog : []).some((event) => conversationEventId(event) === req.params.eventId);
+      await client.query("COMMIT");
+      return exists ? res.json({ ok: true, lead, idempotent: true }) : res.status(404).json({ error: "Removed conversation event not found." });
+    }
+    const updatedLog = restoreConversationEvent(Array.isArray(lead.conversationLog) ? lead.conversationLog : [], target);
+    const updated = { ...lead, conversationLog: updatedLog, removedConversationEvents: removed.filter((item) => item.eventId !== target.eventId) };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    return res.json({ ok: true, lead: updated, idempotent: updatedLog === lead.conversationLog });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {
+    });
+    console.error("POST restore conversation event:", error);
+    return res.status(500).json({ error: "Could not restore conversation event." });
+  } finally {
+    client.release();
+  }
+});
+app.post("/api/leads/check-duplicate", async (req, res) => {
+  const { phone, instagram, email, company, website } = req.body || {};
+  const normalizePhone = (p) => {
+    if (!p) return "";
+    let digits = p.replace(/\D/g, "");
+    if (digits.startsWith("234")) digits = digits.slice(3);
+    else if (digits.startsWith("0") && digits.length >= 11) digits = digits.slice(1);
+    return digits.slice(-10);
+  };
+  const normalizeHandle = (h) => {
+    if (!h) return "";
+    return h.trim().toLowerCase().replace(/^@/, "").replace(/https?:\/\/(www\.)?instagram\.com\//, "").replace(/\/$/, "");
+  };
+  const normPhone = normalizePhone(phone);
+  const normIg = normalizeHandle(instagram);
+  const normEmail = email ? email.trim().toLowerCase() : "";
+  const normCompany = company ? company.trim().toLowerCase() : "";
+  if (!normPhone && !normIg && !normEmail && !normCompany) {
+    return res.status(400).json({ error: "At least one search field (phone, instagram, email, company) is required." });
+  }
+  try {
+    const result = await db.query("SELECT id, data FROM leads");
+    const matches = [];
+    for (const row of result.rows) {
+      const lead = row.data;
+      let matchedReason = "";
+      let isExact = false;
+      if (normPhone && normalizePhone(lead.phone || lead.whatsapp) === normPhone) {
+        matchedReason = "Phone number matches existing lead";
+        isExact = true;
+      } else if (normIg && normalizeHandle(lead.instagram) === normIg) {
+        matchedReason = "Instagram handle matches existing lead";
+        isExact = true;
+      } else if (normEmail && lead.email && lead.email.trim().toLowerCase() === normEmail) {
+        matchedReason = "Email address matches existing lead";
+        isExact = true;
+      } else if (normCompany && lead.company && lead.company.trim().toLowerCase() === normCompany) {
+        matchedReason = "Company/Brand name matches existing lead";
+        isExact = false;
+      }
+      if (matchedReason) {
+        matches.push({
+          leadId: lead.id,
+          company: lead.company || "Unknown Company",
+          instagram: lead.instagram,
+          status: lead.status || "New",
+          assignedTo: lead.assignedTo || "Unassigned",
+          lastContacted: lead.lastContacted,
+          matchReason: matchedReason,
+          confidence: isExact ? "Exact Match" : "Potential Match"
+        });
+      }
+    }
+    res.json({
+      hasDuplicates: matches.length > 0,
+      matchCount: matches.length,
+      highestConfidence: matches.some((m) => m.confidence === "Exact Match") ? "Exact Match" : matches.length > 0 ? "Potential Match" : "No Match",
+      matches
+    });
+  } catch (err) {
+    console.error("POST /api/leads/check-duplicate error:", err);
+    res.status(500).json({ error: "Failed to perform database duplicate check." });
   }
 });
 app.delete("/api/leads", async (req, res) => {
@@ -1589,4 +2460,7 @@ async function startServer() {
     process.exit(1);
   }
 })();
-//# sourceMappingURL=server.cjs.map
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  callGemini
+});
