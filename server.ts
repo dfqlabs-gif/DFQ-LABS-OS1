@@ -54,7 +54,6 @@ function getAuthUserFromReq(req: express.Request) {
   if (!token) return null;
   return activeSessions.get(token) || null;
 }
-
 const UNDO_ACTORS = new Set(["Founder", "Alex (Founder)", "Sa'adatu Mohammed", "Blessing Mudi"]);
 
 function requestedActor(value: unknown): string | null {
