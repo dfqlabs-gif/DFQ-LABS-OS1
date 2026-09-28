@@ -1114,13 +1114,26 @@ export default function App() {
   }, [leads, persist]);
 
   const exportData = () => {
-    const dataStr = JSON.stringify({ leads, stats });
-    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    const dataStr = JSON.stringify({ leads, stats }, null, 2);
     const exportFileDefaultName = `dfqlabs-backup-${today()}.json`;
+    const blob = new Blob([dataStr], { type: 'application/json' });
+
+    // For iOS / iPadOS Safari compatibility
+    if ((navigator as any).msSaveBlob) {
+      (navigator as any).msSaveBlob(blob, exportFileDefaultName);
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
     const linkElement = document.createElement('a');
-    linkElement.setAttribute('href', dataUri);
-    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.href = url;
+    linkElement.download = exportFileDefaultName;
+    document.body.appendChild(linkElement);
     linkElement.click();
+    setTimeout(() => {
+      document.body.removeChild(linkElement);
+      URL.revokeObjectURL(url);
+    }, 100);
   };
 
   const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
