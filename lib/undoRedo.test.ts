@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionCanApply, applyActionFields, createLeadAction } from "./undoRedo";
+import { actionCanApply, applyActionFields, createLeadAction } from "./undoRedo.js";
 
 test("field action undoes and redoes without replacing conversation history", () => {
   const before = { id: "lead-1", status: "New", notes: "", conversationLog: [{ text: "Initial DM" }] };

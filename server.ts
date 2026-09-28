@@ -23,8 +23,24 @@ const app = express();
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 
 // ── Password & Session Utilities ────────────────────────────────────────────────
-function hashPassword(password: string): string {
-  return createHash("sha256").update(password + (process.env.SESSION_SECRET || "dfqlabs-secret-salt")).digest("hex");
+import { scryptSync } from "crypto";
+
+function hashPassword(password: string, saltHex?: string): string {
+  const salt = saltHex ? Buffer.from(saltHex, "hex") : randomBytes(16);
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return `${salt.toString("hex")}:${hash}`;
+}
+
+function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash) return false;
+  if (!storedHash.includes(":")) {
+    // Legacy simple SHA256 fallback for initial transition
+    const legacy = createHash("sha256").update(password + (process.env.SESSION_SECRET || "dfqlabs-secret-salt")).digest("hex");
+    return legacy === storedHash;
+  }
+  const [saltHex, originalHash] = storedHash.split(":");
+  const computedHash = hashPassword(password, saltHex).split(":")[1];
+  return computedHash === originalHash;
 }
 
 function generateTempPassword(): string {
@@ -363,17 +379,20 @@ app.post("/api/auth/login", async (req, res) => {
   if (!username || !password) return res.status(400).json({ error: "Username and password required" });
 
   try {
-    const hashed = hashPassword(password);
-    const result = await db.query(
-      "SELECT id, display_name, username, role, status, seat_id FROM users WHERE username = $1 AND password_hash = $2",
-      [username.trim().toLowerCase(), hashed]
+    const userRes = await db.query(
+      "SELECT id, display_name, username, password_hash, role, status, seat_id FROM users WHERE username = $1",
+      [username.trim().toLowerCase()]
     );
 
-    if (result.rows.length === 0) {
+    if (userRes.rows.length === 0) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    const user = result.rows[0];
+    const user = userRes.rows[0];
+    if (!verifyPassword(password, user.password_hash)) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
     if (user.status !== "ACTIVE") {
       return res.status(403).json({ error: "User account is inactive" });
     }
