@@ -689,9 +689,12 @@ export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
     );
     if (existing) return existing.assignedTo;
   }
-  // Only route to Sa'adatu now. Falls back to Alex if Sa'adatu's load is extreme.
-  const saadatuCount = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
-  return saadatuCount < 120 ? "Sa'adatu Mohammed" : "Alex";
+  // Route new outreach leads to the current active team member.
+  const specialistCount = leads.filter(l =>
+    ["Blessing Mudi", "Sa'adatu Mohammed"].includes(l.assignedTo || "") &&
+    !["Closed", "Lost"].includes(l.status)
+  ).length;
+  return specialistCount < 500 ? "Blessing Mudi" : "Alex";
 }
 
 export const ROLE_ACCESS = {
