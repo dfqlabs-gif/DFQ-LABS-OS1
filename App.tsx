@@ -24,6 +24,7 @@ import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspec
 import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
 import { markOutboundWhatsAppOpened, confirmOutboundSent, createOutboundRecord } from "./lib/execution";
 import { newOutboundMessage, OutboundMessage } from "./lib/outbound";
+import { runSalesBrain } from "./salesBrain";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -2266,10 +2267,16 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
     } : undefined;
 
     try {
-      const text = await runFollowUpReply(lead, context);
-      // Save original draft (without strategy block) for the learning loop.
-      // On next "Regenerate", the QA panel passes it back via onRegenerate(ctx).
-      const cleanDraft = text.split('\n\n---STRATEGY---')[0].trim();
+      const brain = await runSalesBrain(lead, {
+        requestedMessageType: "VALUE_DM",
+        task: [
+          "Create a genuinely useful, prospect-specific Value DM for this real-estate business.",
+          "The message must offer one practical content-intelligence insight grounded in verified lead details and relevant Abuja buyer psychology.",
+          "No CTA, no pitch, no meeting request, and no disguised sales ask.",
+          summary ? `Specialist-confirmed conversation context: ${summary}` : "",
+        ].filter(Boolean).join("\n"),
+      });
+      const cleanDraft = brain.message.trim();
       // Persist the executable draft before WhatsApp is opened. Mark-as-Sent
       // later uses this outbound ID to retrieve the exact message server-side.
       const outbound = newOutboundMessage({
@@ -2278,7 +2285,15 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
         messageType: "VALUE_DM",
         messageText: cleanDraft,
         source: "follow_up_queue",
-        strategy: summary,
+        strategy: brain.recommendedAction || summary,
+        salesBrain: {
+          salesStage: brain.salesStage,
+          buyerIntent: brain.buyerIntent,
+          recommendedAction: brain.recommendedAction,
+          recommendedFollowUpDate: brain.recommendedFollowUpDate,
+          reasoningSummary: brain.reasoningSummary,
+          riskLevel: brain.riskLevel,
+        },
       });
       const persisted = await createOutboundRecord(lead.id, outbound);
       setOutboundByLead(current => ({ ...current, [lead.id]: persisted.outboundMessages?.find(item => item.id === outbound.id) || outbound }));
