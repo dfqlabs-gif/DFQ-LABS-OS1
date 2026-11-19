@@ -689,12 +689,9 @@ export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
     );
     if (existing) return existing.assignedTo;
   }
-  // Route new outreach leads to the current active team member.
-  const specialistCount = leads.filter(l =>
-    ["Blessing Mudi", "Sa'adatu Mohammed"].includes(l.assignedTo || "") &&
-    !["Closed", "Lost"].includes(l.status)
-  ).length;
-  return specialistCount < 500 ? "Blessing Mudi" : "Alex";
+  // New, unclaimed outreach leads belong to the current active team member.
+  // Existing company ownership above still takes precedence.
+  return "Blessing Mudi";
 }
 
 export const ROLE_ACCESS = {
