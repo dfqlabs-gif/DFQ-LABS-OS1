@@ -35,6 +35,8 @@ import { AIGateway } from "./components/AIGateway";
 import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
+import { LearningIntelligence } from "./components/LearningIntelligence";
+import { OutboundActivity } from "./components/OutboundActivity";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
@@ -1644,6 +1646,8 @@ export default function App() {
     { key: "ceo", label: "CEO Dashboard" },
     { key: "duplicates", label: "Duplicates" },
     { key: "gateway", label: "AI Gateway" },
+    { key: "activity", label: "DM Activity" },
+    { key: "learning", label: "Learning Intelligence" },
     { key: "knowledge", label: "Knowledge Base" }
   ];
 
@@ -1930,6 +1934,8 @@ export default function App() {
         {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
         {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
+        {tab === "activity" && <OutboundActivity />}
+        {tab === "learning" && <LearningIntelligence />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onLeadCommitted={applyCommittedLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
