@@ -16,13 +16,19 @@ import {
   hoursUntil, touchpointDate, RELATIONSHIP_WARNING_DAYS, RELATIONSHIP_RENEWAL_DAYS,
   RESPONSE_GUARD_HOURS, MEETING_WINDOW_HOURS, scoreLead
 } from "../constants";
-import { buildCEOAdvisorPrompt, runAI, runProspectSummary, runFollowUpReply } from "../aiEngine";
+import { buildCEOAdvisorPrompt, runAI, runProspectSummary } from "../aiEngine";
+import { runSalesBrain } from "../salesBrain";
+import { newOutboundMessage, OutboundMessage } from "../lib/outbound";
+import { createOutboundRecord, confirmOutboundSent, markOutboundWhatsAppOpened } from "../lib/execution";
+import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
 
 interface CEOTabProps {
   leads: Lead[];
   stats: Stats;
   revenue: any;
   onEdit: (l: Lead) => void;
+  onLeadCommitted?: (lead: Lead) => void;
+  userId?: string;
 }
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
@@ -80,7 +86,7 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
   );
 }
 
-export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
+export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId = "Founder" }: CEOTabProps) {
   // ── Focus Mode ─────────────────────────────────────────────────────────────
   const [focusMode, setFocusMode] = useState(false);
 
@@ -108,6 +114,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
   const [draftDMStep, setDraftDMStep] = useState<'idle'|'summarizing'|'awaiting-confirm'|'generating'|'done'>('idle');
   const [draftDMSummary, setDraftDMSummary] = useState('');
   const [draftDMOutput, setDraftDMOutput] = useState('');
+  const [draftDMOutbound, setDraftDMOutbound] = useState<OutboundMessage | null>(null);
   const [draftDMCopied, setDraftDMCopied] = useState(false);
 
   const startDraftDM = async (lead: Lead) => {
@@ -115,6 +122,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     setDraftDMStep('summarizing');
     setDraftDMSummary('');
     setDraftDMOutput('');
+    setDraftDMOutbound(null);
     setDraftDMCopied(false);
     try {
       const summary = await runProspectSummary(lead);
@@ -130,11 +138,19 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     if (!draftDMLead) return;
     setDraftDMStep('generating');
     try {
-      let text = await runFollowUpReply(draftDMLead, { summary: draftDMSummary });
-      // Strip strategy block for display
-      const stratIdx = text.indexOf('---STRATEGY---');
-      if (stratIdx !== -1) text = text.slice(0, stratIdx).trim();
-      setDraftDMOutput(text);
+      const brain = await runSalesBrain(draftDMLead, {
+        requestedMessageType: "VALUE_DM",
+        task: `Create a genuinely useful, no-CTA Value DM with one practical content-intelligence insight. Use only verified lead details and the following confirmed conversation context: ${draftDMSummary}. Do not pitch DFQ Labs or ask the prospect for anything.`,
+      });
+      const record = newOutboundMessage({
+        leadId: draftDMLead.id, userId, messageType: "VALUE_DM", messageText: brain.message,
+        source: "ceo_dashboard", strategy: brain.recommendedAction,
+        salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel },
+      });
+      const persisted = await createOutboundRecord(draftDMLead.id, record);
+      setDraftDMOutbound(persisted.outboundMessages?.find(item => item.id === record.id) || record);
+      onLeadCommitted?.(persisted);
+      setDraftDMOutput(brain.message);
       setDraftDMStep('done');
     } catch (e: any) {
       setDraftDMOutput('Error: ' + e.message);
@@ -147,6 +163,7 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
     setDraftDMStep('idle');
     setDraftDMSummary('');
     setDraftDMOutput('');
+    setDraftDMOutbound(null);
   };
 
   const copyDraftDM = () => {
@@ -846,6 +863,16 @@ export function CEOTab({ leads, stats, revenue, onEdit }: CEOTabProps) {
             {draftDMStep === 'done' && draftDMOutput && (
               <>
                 <div style={{ fontSize: 12, lineHeight: 1.8, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10, background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px" }}>{draftDMOutput}</div>
+                {draftDMOutbound && <div style={{ marginBottom: 10 }}><WhatsAppExecutionButton
+                  lead={draftDMLead}
+                  message={draftDMOutput}
+                  messageType="VALUE_DM"
+                  source="ceo_dashboard"
+                  userId={userId}
+                  outboundId={draftDMOutbound.id}
+                  onWhatsAppOpened={async () => { await markOutboundWhatsAppOpened(draftDMLead.id, draftDMOutbound.id); }}
+                  onSent={async () => { const committed = await confirmOutboundSent(draftDMLead.id, draftDMOutbound.id); onLeadCommitted?.(committed); }}
+                /></div>}
                 <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                   <button onClick={copyDraftDM} style={{ background: draftDMCopied ? "rgba(34,197,94,0.1)" : "transparent", border: `1px solid ${draftDMCopied ? "rgba(34,197,94,0.4)" : BORDER}`, color: draftDMCopied ? "#22C55E" : TEXT, borderRadius: 5, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
                     {draftDMCopied ? "Copied!" : "Copy DM"}
