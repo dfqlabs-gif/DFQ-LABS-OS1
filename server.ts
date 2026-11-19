@@ -13,6 +13,7 @@ import { stripAttachmentContent } from "./lib/attachments";
 import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 import { actionCanApply, applyActionFields, createLeadAction, type LeadAction } from "./lib/undoRedo";
 import { commitOutboundSent } from "./lib/execution";
+import { markWhatsAppOpened } from "./lib/outbound";
 import { conversationEventId, removeConversationEvent, restoreConversationEvent, type ConversationEvent, type RemovedConversationEvent } from "./lib/conversationEvents";
 
 dotenv.config();
@@ -56,7 +57,7 @@ function getAuthUserFromReq(req: express.Request) {
 }
 
 function requestedActor(value: unknown): string | null {
-  return typeof value === "string" && UNDO_ACTORS.has(value) ? value : null;
+  return typeof value === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(value) ? value : null;
 }
 
 /** Read the only authoritative representation used for execution and AI work. */
@@ -1062,8 +1063,42 @@ app.get("/api/runtime/version", (_req, res) => {
 // ── Sales Brain Learning API ────────────────────────────────────────────────
 // These endpoints expose aggregate organizational evidence only; raw private
 // conversations remain in the CRM and are never returned by analytics.
+app.get("/api/outbound/activity", async (req, res) => {
+  try {
+    const rows = (await db.query("SELECT id, data FROM leads WHERE jsonb_typeof(data->'outboundMessages') = 'array'")).rows;
+    const activity = rows.flatMap((row: any) => {
+      const lead = row.data as Lead;
+      return (Array.isArray(lead.outboundMessages) ? lead.outboundMessages : []).map((outbound: any) => ({
+        id: outbound.id,
+        leadId: lead.id,
+        leadName: lead.name || "Unnamed contact",
+        company: lead.company || "",
+        assignedTo: lead.assignedTo || "Unassigned",
+        generatedBy: outbound.userId || "Unknown",
+        messageType: outbound.messageType || "UNKNOWN",
+        messageText: outbound.messageText || "",
+        originalGeneratedMessage: outbound.originalGeneratedMessage || outbound.messageText || "",
+        status: outbound.status || "GENERATED",
+        source: outbound.source || "",
+        generatedAt: outbound.generatedAt || null,
+        whatsappOpenedAt: outbound.whatsappOpenedAt || null,
+        sentAt: outbound.sentAt || null,
+      }));
+    });
+    activity.sort((a: any, b: any) => String(b.generatedAt || "").localeCompare(String(a.generatedAt || "")));
+    res.json({ activity: activity.slice(0, 1000), total: activity.length });
+  } catch (error) {
+    console.error("GET outbound activity:", error);
+    res.status(500).json({ error: "Could not load outbound activity." });
+  }
+});
+
 app.get("/api/learning/summary", async (_req, res) => {
   try {
+    // Reconcile legacy outbound JSONB records into the learning ledger so the
+    // generated count includes saved drafts created before generation sync existed.
+    const leadRows = (await db.query("SELECT data FROM leads WHERE jsonb_typeof(data->'outboundMessages') = 'array'")).rows;
+    for (const row of leadRows) await syncLearningForLead(row.data as Lead);
     const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row: any) => row.data as LearningEvent);
     const insights = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight);
     res.json({ enabled: LEARNING_ENABLED, influenceEnabled: LEARNING_INFLUENCE_ENABLED, summary: summarizeLearning(events, insights), insights: insights.sort((a, b) => b.confidence - a.confidence).slice(0, 20) });
@@ -1539,6 +1574,7 @@ app.post("/api/leads/:leadId/outbound", async (req, res) => {
       await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
     }
     await client.query("COMMIT");
+    if (!existingRecord) void syncLearningForLead(updated as Lead).catch(error => console.error("Learning generated-outbound sync failed:", error));
     return res.json({ ok: true, lead: updated, idempotent: !!existingRecord });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
@@ -1547,6 +1583,30 @@ app.post("/api/leads/:leadId/outbound", async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+app.post("/api/leads/:leadId/outbound/:outboundId/opened", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data as Lead | undefined;
+    if (!lead) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Lead not found." }); }
+    const outboundMessages = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    const outbound = outboundMessages.find((item: any) => item.id === req.params.outboundId);
+    if (!outbound || outbound.leadId !== lead.id) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Outbound message not found for this lead." }); }
+    if (outbound.status === "SENT") { await client.query("COMMIT"); return res.json({ ok: true, lead, idempotent: true }); }
+    const opened = markWhatsAppOpened(outbound);
+    const updated = { ...lead, outboundMessages: outboundMessages.map((item: any) => item.id === outbound.id ? opened : item) };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    void syncLearningForLead(updated as Lead).catch(error => console.error("Learning opened-outbound sync failed:", error));
+    return res.json({ ok: true, lead: updated, idempotent: false });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST opened outbound:", error);
+    return res.status(500).json({ error: "Could not record WhatsApp execution." });
+  } finally { client.release(); }
 });
 
 app.post("/api/leads/:leadId/outbound/:outboundId/sent", async (req, res) => {

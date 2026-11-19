@@ -57,18 +57,25 @@ export function WhatsAppExecutionButton({
   const [showConfirm, setShowConfirm] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
+  const [fallbackLink, setFallbackLink] = useState<string | null>(null);
+
   const handleOpenWhatsApp = async () => {
     setError(null);
+    setFallbackLink(null);
+    // Reserve the popup during the trusted click event, before any await.
+    const reservedWindow = window.open("about:blank", "_blank");
     try {
-      // Persist first. A WhatsApp window must never be opened for an outbound
-      // that the canonical confirmation endpoint cannot subsequently find.
+      // Persist before navigating the reserved window to WhatsApp.
       await onWhatsAppOpened?.(outboundId);
     } catch (err: any) {
+      reservedWindow?.close();
       setError(err?.message || "Could not prepare the outbound message.");
       return;
     }
-    const result = openWhatsAppWithMessage(lead, message);
+    const result = openWhatsAppWithMessage(lead, message, reservedWindow);
     if (!result.ok) {
+      reservedWindow?.close();
+      setFallbackLink(result.link || null);
       setError(result.error || "Could not open WhatsApp.");
       return;
     }
@@ -169,6 +176,11 @@ export function WhatsAppExecutionButton({
         <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "#EF4444", background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 5, padding: "5px 8px" }}>
           <AlertCircle size={11} /> {error}
         </div>
+      )}
+      {fallbackLink && (
+        <a href={fallbackLink} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#25D366", textDecoration: "underline" }}>
+          Open WhatsApp manually
+        </a>
       )}
 
       {opened && !sent && !showConfirm && !error && (

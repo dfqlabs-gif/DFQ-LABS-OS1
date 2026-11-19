@@ -36,6 +36,9 @@ export const MESSAGE_TYPE_LABEL: Record<MessageType, string> = {
   NURTURE_DM: "Nurture DM",
   INTRODUCTION_DM: "Introduction DM",
   RESPONSE_DM: "Response DM",
+  FIRST_TOUCH: "First Touch",
+  AI_ASSISTED: "AI Assisted",
+  OTHER_OUTBOUND: "Other Outbound",
 };
 
 export const MESSAGE_TYPE_COLOR: Record<MessageType, string> = {
@@ -46,6 +49,9 @@ export const MESSAGE_TYPE_COLOR: Record<MessageType, string> = {
   NURTURE_DM: "#8B5CF6",
   INTRODUCTION_DM: "#a855f7",
   RESPONSE_DM: "#ec4899",
+  FIRST_TOUCH: "#14b8a6",
+  AI_ASSISTED: "#6366f1",
+  OTHER_OUTBOUND: "#64748b",
 };
 
 // ── VALUE DM definition (Part 3) ──────────────────────────────────────────────
@@ -98,6 +104,9 @@ Output ONLY the actual message. 3-4 sentences max. No emojis. No exclamation mar
   INTRODUCTION_DM: `A first-touch cold outreach DM. Hook on a positioning gap or specific observation about their brand. Ask only for permission to send a breakdown. Do NOT pitch services or pricing. 2-3 sentences. Output ONLY the message.`,
 
   RESPONSE_DM: `A reply to a prospect who just messaged us. Continue the dialog naturally. Pursue ONLY the objective in the briefing. Match their energy. 2-3 sentences. No emojis. Output ONLY the message.`,
+  FIRST_TOUCH: `A first-touch message to a prospect. Use a verified, specific observation and one respectful low-friction permission ask. Do not fabricate research. Output ONLY the message.`,
+  AI_ASSISTED: `An AI-assisted outbound message. Follow the requested objective and verified lead context. Do not invent facts. Output ONLY the message.`,
+  OTHER_OUTBOUND: `An outbound message whose purpose is specified in the task. Use only verified context and keep the message clear and natural. Output ONLY the message.`,
 };
 
 /**

@@ -6,6 +6,7 @@ import type { MessageType } from "./lib/messageTypes";
 import { ALL_MESSAGE_TYPES, MESSAGE_TYPE_RULES } from "./lib/messageTypes";
 import { addDays } from "./constants";
 import { buildLeadContext, buildTimeline, runAI, stageObjective, stripMarkdown } from "./aiEngine";
+import { ABUJA_BUYER_INTELLIGENCE } from "./lib/abujaBuyerIntelligence";
 
 export interface SalesBrainResult {
   leadId: string;
@@ -49,7 +50,7 @@ export function validateSalesBrainMessage(message: string, type: MessageType): s
   if (!message || message.length < 12) return "message is empty or too short";
   if (message.length > 1100) return "message is too long for WhatsApp";
   if (/\b(just checking in|are you still interested|touching base|circle back)\b/i.test(message)) return "message is a generic follow-up";
-  if (type === "VALUE_DM" && /(would you like|let me know if|book a call|schedule a call|reply if|interested in|let'?s talk|happy to chat)/i.test(message)) return "a Value DM contains a CTA";
+  if (type === "VALUE_DM" && /(would you like|let me know if|book a call|schedule a call|reply if|interested in|let'?s talk|happy to chat|reach out|send me|contact us|dm me|message me|give us a call|we can help|our services|our agency|work with us|partner with us|take this forward|set up a time|arrange a call|schedule a meeting|would you be open|are you open to|can we help|we'd love to|we would love to)/i.test(message)) return "a Value DM contains a CTA or disguised sales ask";
   return null;
 }
 
@@ -60,6 +61,10 @@ function prompt(lead: Lead, options: SalesBrainOptions, rewriteReason?: string):
     ? `\nOrganizational learning (historical advisory evidence, never rules):\n${options.learningInsights.map(insight => `- ${insight.pattern} Confidence ${insight.confidence}/100; ${insight.evidenceSummary}`).join("\n")}\nUse this only when genuinely relevant. Current lead history, research, and fact safety take precedence. Do not invent facts or force a historically successful strategy.\n`
     : "";
   return `You are the DFQ Labs AI SALES BRAIN. You are the only strategic authority for this lead. Analyze before writing, but do not reveal private chain-of-thought.
+
+Use the following DFQLABS Abuja buyer-intelligence playbook as market-level strategic context. It is not evidence about this individual prospect. Apply only the buyer segment and content opportunity relevant to the prospect's verified business and audience. Never convert a market-level pattern into a prospect-specific claim.
+
+${ABUJA_BUYER_INTELLIGENCE}
 
 Use only verified CRM/conversation information below. Never fabricate a person name: if contact identity is unknown, address the company/team naturally. A company name is not automatically a person's name. A Value DM must provide contextual, actionable value with no CTA or disguised sales ask. Do not write a lazy check-in. If an audit was delivered and the prospect is silent, acknowledge that specific prior interaction and choose a commercially useful, low-pressure next move.
 
@@ -93,7 +98,7 @@ function normalise(lead: Lead, data: Record<string, unknown>, requested?: Messag
     strategicReason: String(data.strategicReason || "Based on the recorded lead and conversation context."),
     detectedFriction: String(data.detectedFriction || "No explicit friction recorded."),
     recommendedAction: String(data.recommendedAction || "Send the approved message and wait for a response."),
-    messageType: type, message: cleanMessage(data.message), cta: String(data.cta || ""),
+    messageType: type, message: cleanMessage(data.message), cta: type === "VALUE_DM" ? "" : String(data.cta || ""),
     recommendedFollowUpDate: followUp, recommendedChannel: channel, riskLevel: risk,
     reasoningSummary: String(data.reasoningSummary || "Context-aware next action selected."), qualityChecked: true, rewritten,
   };

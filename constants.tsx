@@ -689,16 +689,20 @@ export function autoAssignSpecialist(leads: Lead[], lead: Lead): string {
     );
     if (existing) return existing.assignedTo;
   }
-  // Only route to Sa'adatu now. Falls back to Alex if Sa'adatu's load is extreme.
-  const saadatuCount = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
-  return saadatuCount < 120 ? "Sa'adatu Mohammed" : "Alex";
+  // Route new outreach leads to the current active team member.
+  const specialistCount = leads.filter(l =>
+    ["Blessing Mudi", "Sa'adatu Mohammed"].includes(l.assignedTo || "") &&
+    !["Closed", "Lost"].includes(l.status)
+  ).length;
+  return specialistCount < 500 ? "Blessing Mudi" : "Alex";
 }
 
 export const ROLE_ACCESS = {
   founder:  { password: CEO_PASSWORD,     label: "Founder",           color: G,       Icon: Shield    },
-  saadatu:  { password: SAADATU_PASSWORD, label: "Sa'adatu Mohammed", color: "#F59E0B", Icon: UserCheck },
+  blessing: { password: SAADATU_PASSWORD, label: "Team Member",       color: "#3ECFDC", Icon: UserCheck },
+  // Legacy key retained for sessions issued before the team-member label change.
+  saadatu:  { password: SAADATU_PASSWORD, label: "Team Member",       color: "#3ECFDC", Icon: UserCheck },
   // abigail offboarded 2026-07-23 — entry removed so login card no longer appears.
-  // internA / internB legacy keys also removed to avoid confusion.
 };
 
 export async function classifyLead(lead: Lead): Promise<{ bucket: string; reason: string; nextAction: string; followUpInDays?: number }> {

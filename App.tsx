@@ -22,8 +22,9 @@ import {
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
 import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspectSummary, DraftContext } from "./aiEngine";
 import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
-import { applyWhatsAppOpened, confirmOutboundSent, createOutboundRecord } from "./lib/execution";
+import { markOutboundWhatsAppOpened, confirmOutboundSent, createOutboundRecord } from "./lib/execution";
 import { newOutboundMessage, OutboundMessage } from "./lib/outbound";
+import { runSalesBrain } from "./salesBrain";
 
 // Import modular subcomponents
 import { AICoach } from "./components/AICoach";
@@ -35,6 +36,8 @@ import { AIGateway } from "./components/AIGateway";
 import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
+import { LearningIntelligence } from "./components/LearningIntelligence";
+import { OutboundActivity } from "./components/OutboundActivity";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
@@ -857,7 +860,7 @@ export default function App() {
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
   const [undoActions, setUndoActions] = useState<any[]>([]);
   const [undoMessage, setUndoMessage] = useState<string | null>(null);
-  const actorId = role === "founder" ? "Founder" : role === "saadatu" ? "Sa'adatu Mohammed" : null;
+  const actorId = role === "founder" ? "Founder" : (role === "blessing" || role === "saadatu") ? "Blessing Mudi" : null;
 
   // ── Dark mode ──────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState(() => {
@@ -1644,6 +1647,8 @@ export default function App() {
     { key: "ceo", label: "CEO Dashboard" },
     { key: "duplicates", label: "Duplicates" },
     { key: "gateway", label: "AI Gateway" },
+    { key: "activity", label: "DM Activity" },
+    { key: "learning", label: "Learning Intelligence" },
     { key: "knowledge", label: "Knowledge Base" }
   ];
 
@@ -1659,11 +1664,11 @@ export default function App() {
   // "abigail" / "internB" roles are kept here ONLY so any lingering cached sessions
   // don't crash — they resolve to "Abigail Dick" which the dashboard renders correctly
   // even though the portal login card has been removed.
-  if (role === "saadatu" || role === "abigail" || role === "internA" || role === "internB") {
+  if (role === "blessing" || role === "saadatu" || role === "abigail" || role === "internA" || role === "internB") {
+    // The former Sa'adatu seat is now occupied by Blessing Mudi. Keep legacy
+    // cached role keys working, but route current work to the active assignee.
     const staffName =
-      role === "saadatu" ? "Sa'adatu Mohammed" :
-      role === "abigail" ? "Abigail Dick" :
-      role === "internA" ? "Sa'adatu Mohammed" :
+      role === "blessing" || role === "saadatu" || role === "internA" ? "Blessing Mudi" :
       "Abigail Dick";
     return (
       <>
@@ -1930,6 +1935,8 @@ export default function App() {
         {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
         {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
+        {tab === "activity" && <OutboundActivity />}
+        {tab === "learning" && <LearningIntelligence />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onLeadCommitted={applyCommittedLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
@@ -2129,7 +2136,7 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
         <div style={{ fontWeight: 800, fontSize: 17, letterSpacing: "0.1em", marginBottom: 4 }}>DFQ<span style={{color: G}}>LABS</span> <span style={{ color: MUTED, fontSize: 12, letterSpacing: "0.05em" }}>OS</span></div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 28 }}>Who's working today?</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 12, maxWidth: 380, margin: "0 auto" }}>
-          <RoleCard onClick={() => onSelect("saadatu")} color={SPECIALIST_COLOR["Sa'adatu Mohammed"]} Icon={UserCheck} label="Sa'adatu" sub="Outreach & client relationships" />
+          <RoleCard onClick={() => onSelect("blessing")} color={SPECIALIST_COLOR["Blessing Mudi"]} Icon={UserCheck} label="Team Member" sub="Outreach & client relationships" />
           <RoleCard onClick={() => onSelect("founder")} color={G} Icon={Shield} label="Founder" sub="Full command view" />
         </div>
       </div>
@@ -2197,9 +2204,13 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modal, setModal] = useState<Lead | null>(null);
 
-  // Show all leads assigned to any of the intern names (Saadatu covers both Intern A and Intern B)
+  // The active Team Member seat inherited Sa'adatu's historical portfolio.
+  // Match both labels for visibility without rewriting historical lead ownership.
   const names: string[] = Array.isArray(internNames) ? internNames : [internNames];
-  const mine = useMemo(() => leads.filter((l: Lead) => names.includes(l.assignedTo || "") && !["Closed", "Lost"].includes(l.status)), [leads, internNames]);
+  const ownershipNames = useMemo(() => new Set(names.flatMap(name =>
+    name === "Blessing Mudi" ? ["Blessing Mudi", "Sa'adatu Mohammed"] : [name]
+  )), [internNames]);
+  const mine = useMemo(() => leads.filter((l: Lead) => ownershipNames.has(l.assignedTo || "") && !["Closed", "Lost"].includes(l.status)), [leads, ownershipNames]);
   const tomorrowStr = addDays(1);
   const weekEnd = addDays(7);
   const RANGES = [
@@ -2256,10 +2267,16 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
     } : undefined;
 
     try {
-      const text = await runFollowUpReply(lead, context);
-      // Save original draft (without strategy block) for the learning loop.
-      // On next "Regenerate", the QA panel passes it back via onRegenerate(ctx).
-      const cleanDraft = text.split('\n\n---STRATEGY---')[0].trim();
+      const brain = await runSalesBrain(lead, {
+        requestedMessageType: "VALUE_DM",
+        task: [
+          "Create a genuinely useful, prospect-specific Value DM for this real-estate business.",
+          "The message must offer one practical content-intelligence insight grounded in verified lead details and relevant Abuja buyer psychology.",
+          "No CTA, no pitch, no meeting request, and no disguised sales ask.",
+          summary ? `Specialist-confirmed conversation context: ${summary}` : "",
+        ].filter(Boolean).join("\n"),
+      });
+      const cleanDraft = brain.message.trim();
       // Persist the executable draft before WhatsApp is opened. Mark-as-Sent
       // later uses this outbound ID to retrieve the exact message server-side.
       const outbound = newOutboundMessage({
@@ -2268,7 +2285,15 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
         messageType: "VALUE_DM",
         messageText: cleanDraft,
         source: "follow_up_queue",
-        strategy: summary,
+        strategy: brain.recommendedAction || summary,
+        salesBrain: {
+          salesStage: brain.salesStage,
+          buyerIntent: brain.buyerIntent,
+          recommendedAction: brain.recommendedAction,
+          recommendedFollowUpDate: brain.recommendedFollowUpDate,
+          reasoningSummary: brain.reasoningSummary,
+          riskLevel: brain.riskLevel,
+        },
       });
       const persisted = await createOutboundRecord(lead.id, outbound);
       setOutboundByLead(current => ({ ...current, [lead.id]: persisted.outboundMessages?.find(item => item.id === outbound.id) || outbound }));
@@ -2310,13 +2335,10 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
 
   const recordWhatsAppOpened = async (lead: Lead, message: string) => {
     const outbound = getOutbound(lead, message);
-    const persisted = await createOutboundRecord(lead.id, outbound);
-    const updated = applyWhatsAppOpened(persisted, outbound.id);
-    const recorded = updated.outboundMessages?.find(item => item.id === outbound.id) || outbound;
+    await createOutboundRecord(lead.id, outbound);
+    const committed = await markOutboundWhatsAppOpened(lead.id, outbound.id);
+    const recorded = committed.outboundMessages?.find(item => item.id === outbound.id) || outbound;
     setOutboundByLead(current => ({ ...current, [lead.id]: recorded }));
-    // Do not send this opened-state snapshot through the generic lead-save
-    // path. It can race a SENT transaction and overwrite its newer document.
-    // The durable generated record above is sufficient for confirmation.
   };
 
   const recordMessageSent = async (lead: Lead, message: string) => {
