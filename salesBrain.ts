@@ -85,7 +85,9 @@ ${MESSAGE_TYPE_RULES[requested]}`;
 }
 
 function normalise(lead: Lead, data: Record<string, unknown>, requested?: MessageType, rewritten = false): SalesBrainResult {
-  const type = messageType(data.messageType, requested);
+  // A caller-specified type is authoritative. The model cannot downgrade a
+  // VALUE_DM request to FOLLOW_UP and thereby bypass the no-CTA contract.
+  const type = requested || messageType(data.messageType);
   const confidence = Math.max(0, Math.min(100, Number(data.confidence) || 60));
   const followUp = /^\d{4}-\d{2}-\d{2}$/.test(String(data.recommendedFollowUpDate || ""))
     ? String(data.recommendedFollowUpDate) : addDays(3);
