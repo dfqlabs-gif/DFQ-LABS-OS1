@@ -22,7 +22,7 @@ import {
 import { BUSINESS_CONTEXT, callClaude } from "./prompts";
 import { runAI, buildFollowUpPrompt, runFollowUpReply, runQuickReply, runProspectSummary, DraftContext } from "./aiEngine";
 import { WhatsAppExecutionButton } from "./components/WhatsAppExecutionButton";
-import { applyWhatsAppOpened, confirmOutboundSent, createOutboundRecord } from "./lib/execution";
+import { markOutboundWhatsAppOpened, confirmOutboundSent, createOutboundRecord } from "./lib/execution";
 import { newOutboundMessage, OutboundMessage } from "./lib/outbound";
 
 // Import modular subcomponents
@@ -2314,13 +2314,10 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
 
   const recordWhatsAppOpened = async (lead: Lead, message: string) => {
     const outbound = getOutbound(lead, message);
-    const persisted = await createOutboundRecord(lead.id, outbound);
-    const updated = applyWhatsAppOpened(persisted, outbound.id);
-    const recorded = updated.outboundMessages?.find(item => item.id === outbound.id) || outbound;
+    await createOutboundRecord(lead.id, outbound);
+    const committed = await markOutboundWhatsAppOpened(lead.id, outbound.id);
+    const recorded = committed.outboundMessages?.find(item => item.id === outbound.id) || outbound;
     setOutboundByLead(current => ({ ...current, [lead.id]: recorded }));
-    // Do not send this opened-state snapshot through the generic lead-save
-    // path. It can race a SENT transaction and overwrite its newer document.
-    // The durable generated record above is sufficient for confirmation.
   };
 
   const recordMessageSent = async (lead: Lead, message: string) => {
