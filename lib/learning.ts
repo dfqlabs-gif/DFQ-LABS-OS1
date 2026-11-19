@@ -56,7 +56,21 @@ export function deriveEditSignals(original: string, final: string): { edited: bo
   return { edited: true, magnitude: ratio > .3 ? "substantial" : "light", types };
 }
 export function messageFingerprint(message: string, outbound: OutboundMessage, lead: Lead): string { const tokens = words(message); const opening = tokens.slice(0, 3).join("-") || "empty"; const cta = /\?|would you|let me know|book|call|reply/.test(message.toLowerCase()) ? "cta" : "no-cta"; const length = message.length < 180 ? "short" : message.length < 420 ? "medium" : "long"; return [outbound.messageType, outbound.strategy || outbound.salesBrain?.recommendedAction || "default", lead.status, lead.clientType || "all", `fu${lead.followUpCount || 0}`, opening, cta, length].join("|"); }
-function relatedReply(lead: Lead, outbound: OutboundMessage) { return !outbound.sentAt ? undefined : (lead.conversationLog || []).filter(item => item.type === "reply" && new Date(item.ts).getTime() >= new Date(outbound.sentAt!).getTime()).sort((a, b) => a.ts.localeCompare(b.ts))[0]; }
+function relatedReply(lead: Lead, outbound: OutboundMessage) {
+  if (!outbound.sentAt) return undefined;
+  const sentAt = new Date(outbound.sentAt).getTime();
+  const nextOutboundAt = (lead.outboundMessages || [])
+    .filter(item => item.id !== outbound.id && item.status === "SENT" && item.sentAt)
+    .map(item => new Date(item.sentAt!).getTime())
+    .filter(timestamp => timestamp > sentAt)
+    .sort((a, b) => a - b)[0];
+  // A reply belongs to the latest outbound before it, never to every earlier
+  // message in the same thread. Bound the attribution interval at the next send.
+  return (lead.conversationLog || [])
+    .filter(item => item.type === "reply" && new Date(item.ts).getTime() >= sentAt &&
+      (nextOutboundAt === undefined || new Date(item.ts).getTime() < nextOutboundAt))
+    .sort((a, b) => a.ts.localeCompare(b.ts))[0];
+}
 export function buildLearningEvent(lead: Lead, outbound: OutboundMessage, existing?: LearningEvent): LearningEvent {
   const reply = relatedReply(lead, outbound); const statusOutcome = ["Closed", "Discovery Call Booked"].includes(lead.status) ? classifyOutcome("", lead.status) : "UNKNOWN"; const inferredOutcome = reply ? classifyOutcome(reply.text, lead.status) : outbound.status === "SENT" ? statusOutcome : "UNKNOWN"; const outcome = existing?.outcomeSource === "manual" ? existing.outcome : inferredOutcome;
   const original = outbound.originalGeneratedMessage || existing?.originalGeneratedMessage || outbound.messageText; const final = outbound.messageText; const edit = deriveEditSignals(original, final); const now = new Date().toISOString();
