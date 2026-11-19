@@ -3,7 +3,7 @@ import { Brain, Target, Copy as CopyIcon, CheckCircle2 } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
 import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, MUTED2, TEXT } from "../constants";
-import { runAI, runProspectSummary, buildObjectionsPrompt, buildPipelinePrompt } from "../aiEngine";
+import { runAI, runProspectSummary, buildObjectionsPrompt, buildClosingPlanPrompt, buildClosingDMPrompt, buildFollowUpDMPrompt, buildPipelinePrompt } from "../aiEngine";
 import { runSalesBrain } from "../salesBrain";
 import { newOutboundMessage, OutboundMessage } from "../lib/outbound";
 import { createOutboundRecord, confirmOutboundSent, markOutboundWhatsAppOpened } from "../lib/execution";
