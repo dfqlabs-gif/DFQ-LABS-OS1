@@ -1540,6 +1540,7 @@ app.post("/api/leads/:leadId/outbound", async (req, res) => {
       await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
     }
     await client.query("COMMIT");
+    if (!existingRecord) void syncLearningForLead(updated as Lead).catch(error => console.error("Learning generated-outbound sync failed:", error));
     return res.json({ ok: true, lead: updated, idempotent: !!existingRecord });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
