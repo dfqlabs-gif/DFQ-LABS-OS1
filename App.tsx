@@ -857,7 +857,7 @@ export default function App() {
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
   const [undoActions, setUndoActions] = useState<any[]>([]);
   const [undoMessage, setUndoMessage] = useState<string | null>(null);
-  const actorId = role === "founder" ? "Founder" : role === "saadatu" ? "Sa'adatu Mohammed" : null;
+  const actorId = role === "founder" ? "Founder" : (role === "blessing" || role === "saadatu") ? "Blessing Mudi" : null;
 
   // ── Dark mode ──────────────────────────────────────────────────────────────
   const [darkMode, setDarkMode] = useState(() => {
@@ -1659,11 +1659,11 @@ export default function App() {
   // "abigail" / "internB" roles are kept here ONLY so any lingering cached sessions
   // don't crash — they resolve to "Abigail Dick" which the dashboard renders correctly
   // even though the portal login card has been removed.
-  if (role === "saadatu" || role === "abigail" || role === "internA" || role === "internB") {
+  if (role === "blessing" || role === "saadatu" || role === "abigail" || role === "internA" || role === "internB") {
+    // The former Sa'adatu seat is now occupied by Blessing Mudi. Keep legacy
+    // cached role keys working, but route current work to the active assignee.
     const staffName =
-      role === "saadatu" ? "Sa'adatu Mohammed" :
-      role === "abigail" ? "Abigail Dick" :
-      role === "internA" ? "Sa'adatu Mohammed" :
+      role === "blessing" || role === "saadatu" || role === "internA" ? "Blessing Mudi" :
       "Abigail Dick";
     return (
       <>
