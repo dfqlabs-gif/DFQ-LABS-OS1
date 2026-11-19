@@ -56,7 +56,7 @@ function getAuthUserFromReq(req: express.Request) {
 }
 
 function requestedActor(value: unknown): string | null {
-  return typeof value === "string" && UNDO_ACTORS.has(value) ? value : null;
+  return typeof value === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(value) ? value : null;
 }
 
 /** Read the only authoritative representation used for execution and AI work. */
