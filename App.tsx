@@ -1931,7 +1931,7 @@ export default function App() {
         {tab === "team" && <TeamTab leads={activeLeads} onSave={setModal} onBulkSave={bulkSaveLeads} />}
         {tab === "strategy" && <><GrowthStrategySummary leads={activeLeads} /><StrategicPathsSummary leads={activeLeads} /></>}
         {tab === "report" && <WeeklyReport leads={activeLeads} stats={stats} revenue={revenueValue} />}
-        {tab === "coach" && <AICoach leads={activeLeads} />}
+        {tab === "coach" && <AICoach leads={activeLeads} onLeadCommitted={applyCommittedLead} userId={actorId || "Founder"} />}
         {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
         {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
@@ -2397,7 +2397,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
         {internTab === "coach" ? (
           <div>
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>COMPILATION HUB</div>
-            <AICoach leads={leads} />
+            <AICoach leads={leads} onLeadCommitted={onLeadCommitted} userId={displayName || "Team Member"} />
           </div>
         ) : (
           <div>
