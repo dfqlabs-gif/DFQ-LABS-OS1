@@ -2197,9 +2197,13 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modal, setModal] = useState<Lead | null>(null);
 
-  // Show all leads assigned to any of the intern names (Saadatu covers both Intern A and Intern B)
+  // The active Team Member seat inherited Sa'adatu's historical portfolio.
+  // Match both labels for visibility without rewriting historical lead ownership.
   const names: string[] = Array.isArray(internNames) ? internNames : [internNames];
-  const mine = useMemo(() => leads.filter((l: Lead) => names.includes(l.assignedTo || "") && !["Closed", "Lost"].includes(l.status)), [leads, internNames]);
+  const ownershipNames = useMemo(() => new Set(names.flatMap(name =>
+    name === "Blessing Mudi" ? ["Blessing Mudi", "Sa'adatu Mohammed"] : [name]
+  )), [internNames]);
+  const mine = useMemo(() => leads.filter((l: Lead) => ownershipNames.has(l.assignedTo || "") && !["Closed", "Lost"].includes(l.status)), [leads, ownershipNames]);
   const tomorrowStr = addDays(1);
   const weekEnd = addDays(7);
   const RANGES = [
