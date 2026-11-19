@@ -3,17 +3,24 @@ import { Brain, Target, Copy as CopyIcon, CheckCircle2 } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
 import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, MUTED2, TEXT } from "../constants";
-import { runAI, runFollowUpReply, runProspectSummary, buildAuditPrompt, buildObjectionsPrompt, buildClosingPlanPrompt, buildClosingDMPrompt, buildFollowUpDMPrompt, buildPipelinePrompt } from "../aiEngine";
+import { runAI, runProspectSummary, buildObjectionsPrompt, buildClosingPlanPrompt, buildClosingDMPrompt, buildFollowUpDMPrompt, buildPipelinePrompt } from "../aiEngine";
+import { runSalesBrain } from "../salesBrain";
+import { newOutboundMessage, OutboundMessage } from "../lib/outbound";
+import { createOutboundRecord, confirmOutboundSent, markOutboundWhatsAppOpened } from "../lib/execution";
+import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
 
 interface AICoachProps {
   leads: Lead[];
+  onLeadCommitted?: (lead: Lead) => void;
+  userId?: string;
 }
 
-export function AICoach({ leads }: AICoachProps) {
+export function AICoach({ leads, onLeadCommitted, userId = "Founder" }: AICoachProps) {
   const sortedActive = useMemo(() => alphaSort(leads.filter(l => !["Closed", "Lost"].includes(l.status))), [leads]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState("followup");
   const [output, setOutput] = useState("");
+  const [outbound, setOutbound] = useState<OutboundMessage | null>(null);
   const [loading2, setLoading2] = useState(false);
   const [pipelineAI, setPipelineAI] = useState("");
   const [pipelineLoading, setPipelineLoading] = useState(false);
@@ -36,6 +43,7 @@ export function AICoach({ leads }: AICoachProps) {
     setSummaryStep('idle');
     setProspectSummary('');
     setOutput('');
+    setOutbound(null);
   }, [selectedId, mode]);
 
   const selected = leads.find(l => l.id === selectedId);
@@ -75,8 +83,20 @@ export function AICoach({ leads }: AICoachProps) {
     setLoading2(true);
     setOutput('');
     try {
-      const text = await runFollowUpReply(selected);
-      setOutput(text);
+      const brain = await runSalesBrain(selected, {
+        requestedMessageType: "VALUE_DM",
+        task: `Create a genuinely useful, no-CTA Value DM. Use this specialist-confirmed conversation context: ${prospectSummary}. Give one practical content-intelligence insight grounded in verified prospect details and relevant Abuja buyer psychology. Do not pitch DFQ Labs or ask for anything.`,
+      });
+      const draft = brain.message.trim();
+      const record = newOutboundMessage({
+        leadId: selected.id, userId, messageType: "VALUE_DM", messageText: draft,
+        source: "ai_coach", strategy: brain.recommendedAction,
+        salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel },
+      });
+      const persisted = await createOutboundRecord(selected.id, record);
+      setOutbound(persisted.outboundMessages?.find(item => item.id === record.id) || record);
+      onLeadCommitted?.(persisted);
+      setOutput(draft);
     } catch (e: any) {
       setOutput('Error: ' + e.message);
     }
@@ -95,8 +115,22 @@ export function AICoach({ leads }: AICoachProps) {
     setLoading2(true);
     setOutput("");
     try {
-      const text = await runAI(buildPrompt(selected, mode), 1000);
-      setOutput(text);
+      if (mode === "followupdm" || mode === "closingdm") {
+        const requestedMessageType = mode === "closingdm" ? "SALES_DM" : "FOLLOW_UP";
+        const brain = await runSalesBrain(selected, { requestedMessageType, task: buildPrompt(selected, mode) });
+        const record = newOutboundMessage({
+          leadId: selected.id, userId, messageType: requestedMessageType, messageText: brain.message,
+          source: "ai_coach", strategy: brain.recommendedAction,
+          salesBrain: { salesStage: brain.salesStage, buyerIntent: brain.buyerIntent, recommendedAction: brain.recommendedAction, recommendedFollowUpDate: brain.recommendedFollowUpDate, reasoningSummary: brain.reasoningSummary, riskLevel: brain.riskLevel },
+        });
+        const persisted = await createOutboundRecord(selected.id, record);
+        setOutbound(persisted.outboundMessages?.find(item => item.id === record.id) || record);
+        onLeadCommitted?.(persisted);
+        setOutput(brain.message);
+      } else {
+        const text = await runAI(buildPrompt(selected, mode), 1000);
+        setOutput(text);
+      }
     } catch (e: any) {
       setOutput("Error: " + e.message);
     }
@@ -264,6 +298,16 @@ export function AICoach({ leads }: AICoachProps) {
                 <div style={{ fontSize: 12, lineHeight: 1.8, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10 }}>
                   {output}
                 </div>
+                {outbound && <div style={{ marginBottom: 10 }}><WhatsAppExecutionButton
+                  lead={selected}
+                  message={output}
+                  messageType={outbound.messageType}
+                  source="ai_coach"
+                  userId={userId}
+                  outboundId={outbound.id}
+                  onWhatsAppOpened={async () => { await markOutboundWhatsAppOpened(selected.id, outbound.id); }}
+                  onSent={async () => { const committed = await confirmOutboundSent(selected.id, outbound.id); onLeadCommitted?.(committed); }}
+                /></div>}
                 <button
                   onClick={copyToClipboard}
                   style={{
