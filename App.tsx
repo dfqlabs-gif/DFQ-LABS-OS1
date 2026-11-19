@@ -1932,7 +1932,7 @@ export default function App() {
         {tab === "strategy" && <><GrowthStrategySummary leads={activeLeads} /><StrategicPathsSummary leads={activeLeads} /></>}
         {tab === "report" && <WeeklyReport leads={activeLeads} stats={stats} revenue={revenueValue} />}
         {tab === "coach" && <AICoach leads={activeLeads} onLeadCommitted={applyCommittedLead} userId={actorId || "Founder"} />}
-        {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} />}
+        {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} onLeadCommitted={applyCommittedLead} userId={actorId || "Founder"} />}
         {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
         {tab === "activity" && <OutboundActivity />}
