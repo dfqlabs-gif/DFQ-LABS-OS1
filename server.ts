@@ -13,6 +13,7 @@ import { stripAttachmentContent } from "./lib/attachments";
 import { describeDbError, runSnapshotReplaceTransaction, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 import { actionCanApply, applyActionFields, createLeadAction, type LeadAction } from "./lib/undoRedo";
 import { commitOutboundSent } from "./lib/execution";
+import { markWhatsAppOpened } from "./lib/outbound";
 import { conversationEventId, removeConversationEvent, restoreConversationEvent, type ConversationEvent, type RemovedConversationEvent } from "./lib/conversationEvents";
 
 dotenv.config();
@@ -1547,6 +1548,30 @@ app.post("/api/leads/:leadId/outbound", async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+app.post("/api/leads/:leadId/outbound/:outboundId/opened", async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT data FROM leads WHERE id = $1 FOR UPDATE", [req.params.leadId]);
+    const lead = result.rows[0]?.data as Lead | undefined;
+    if (!lead) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Lead not found." }); }
+    const outboundMessages = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    const outbound = outboundMessages.find((item: any) => item.id === req.params.outboundId);
+    if (!outbound || outbound.leadId !== lead.id) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Outbound message not found for this lead." }); }
+    if (outbound.status === "SENT") { await client.query("COMMIT"); return res.json({ ok: true, lead, idempotent: true }); }
+    const opened = markWhatsAppOpened(outbound);
+    const updated = { ...lead, outboundMessages: outboundMessages.map((item: any) => item.id === outbound.id ? opened : item) };
+    await client.query("UPDATE leads SET data = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(updated), lead.id]);
+    await client.query("COMMIT");
+    void syncLearningForLead(updated as Lead).catch(error => console.error("Learning opened-outbound sync failed:", error));
+    return res.json({ ok: true, lead: updated, idempotent: false });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST opened outbound:", error);
+    return res.status(500).json({ error: "Could not record WhatsApp execution." });
+  } finally { client.release(); }
 });
 
 app.post("/api/leads/:leadId/outbound/:outboundId/sent", async (req, res) => {
