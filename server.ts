@@ -1063,6 +1063,36 @@ app.get("/api/runtime/version", (_req, res) => {
 // ── Sales Brain Learning API ────────────────────────────────────────────────
 // These endpoints expose aggregate organizational evidence only; raw private
 // conversations remain in the CRM and are never returned by analytics.
+app.get("/api/outbound/activity", async (req, res) => {
+  try {
+    const rows = (await db.query("SELECT id, data FROM leads WHERE jsonb_typeof(data->'outboundMessages') = 'array'")).rows;
+    const activity = rows.flatMap((row: any) => {
+      const lead = row.data as Lead;
+      return (Array.isArray(lead.outboundMessages) ? lead.outboundMessages : []).map((outbound: any) => ({
+        id: outbound.id,
+        leadId: lead.id,
+        leadName: lead.name || "Unnamed contact",
+        company: lead.company || "",
+        assignedTo: lead.assignedTo || "Unassigned",
+        generatedBy: outbound.userId || "Unknown",
+        messageType: outbound.messageType || "UNKNOWN",
+        messageText: outbound.messageText || "",
+        originalGeneratedMessage: outbound.originalGeneratedMessage || outbound.messageText || "",
+        status: outbound.status || "GENERATED",
+        source: outbound.source || "",
+        generatedAt: outbound.generatedAt || null,
+        whatsappOpenedAt: outbound.whatsappOpenedAt || null,
+        sentAt: outbound.sentAt || null,
+      }));
+    });
+    activity.sort((a: any, b: any) => String(b.generatedAt || "").localeCompare(String(a.generatedAt || "")));
+    res.json({ activity: activity.slice(0, 1000), total: activity.length });
+  } catch (error) {
+    console.error("GET outbound activity:", error);
+    res.status(500).json({ error: "Could not load outbound activity." });
+  }
+});
+
 app.get("/api/learning/summary", async (_req, res) => {
   try {
     const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row: any) => row.data as LearningEvent);
