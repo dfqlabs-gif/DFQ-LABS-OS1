@@ -6,6 +6,7 @@ import type { MessageType } from "./lib/messageTypes";
 import { ALL_MESSAGE_TYPES, MESSAGE_TYPE_RULES } from "./lib/messageTypes";
 import { addDays } from "./constants";
 import { buildLeadContext, buildTimeline, runAI, stageObjective, stripMarkdown } from "./aiEngine";
+import { ABUJA_BUYER_INTELLIGENCE } from "./lib/abujaBuyerIntelligence";
 
 export interface SalesBrainResult {
   leadId: string;
@@ -60,6 +61,10 @@ function prompt(lead: Lead, options: SalesBrainOptions, rewriteReason?: string):
     ? `\nOrganizational learning (historical advisory evidence, never rules):\n${options.learningInsights.map(insight => `- ${insight.pattern} Confidence ${insight.confidence}/100; ${insight.evidenceSummary}`).join("\n")}\nUse this only when genuinely relevant. Current lead history, research, and fact safety take precedence. Do not invent facts or force a historically successful strategy.\n`
     : "";
   return `You are the DFQ Labs AI SALES BRAIN. You are the only strategic authority for this lead. Analyze before writing, but do not reveal private chain-of-thought.
+
+Use the following DFQLABS Abuja buyer-intelligence playbook as market-level strategic context. It is not evidence about this individual prospect. Apply only the buyer segment and content opportunity relevant to the prospect's verified business and audience. Never convert a market-level pattern into a prospect-specific claim.
+
+${ABUJA_BUYER_INTELLIGENCE}
 
 Use only verified CRM/conversation information below. Never fabricate a person name: if contact identity is unknown, address the company/team naturally. A company name is not automatically a person's name. A Value DM must provide contextual, actionable value with no CTA or disguised sales ask. Do not write a lazy check-in. If an audit was delivered and the prospect is silent, acknowledge that specific prior interaction and choose a commercially useful, low-pressure next move.
 
