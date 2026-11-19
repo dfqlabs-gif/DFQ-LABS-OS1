@@ -31,6 +31,11 @@ const RESPONSES = new Set<LearningOutcome>([...POSITIVE, ...NEGATIVE]);
 const words = (value: string) => value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
 const dayAge = (date: string) => Math.max(0, (Date.now() - new Date(date).getTime()) / 86_400_000);
 
+/** Only CRM-confirmed or manually recorded outcomes count as controlled evidence. */
+export function isControlledOutcome(event: Pick<LearningEvent, "outcomeSource">): boolean {
+  return event.outcomeSource === "crm" || event.outcomeSource === "manual";
+}
+
 export function classifyOutcome(reply: string, status?: string): LearningOutcome {
   const value = `${reply} ${status || ""}`.toLowerCase();
   if (/\b(closed|converted|signed|paid)\b/.test(value)) return "CONVERTED";
