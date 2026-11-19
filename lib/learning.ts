@@ -56,7 +56,7 @@ export function deriveEditSignals(original: string, final: string): { edited: bo
   return { edited: true, magnitude: ratio > .3 ? "substantial" : "light", types };
 }
 export function messageFingerprint(message: string, outbound: OutboundMessage, lead: Lead): string { const tokens = words(message); const opening = tokens.slice(0, 3).join("-") || "empty"; const cta = /\?|would you|let me know|book|call|reply/.test(message.toLowerCase()) ? "cta" : "no-cta"; const length = message.length < 180 ? "short" : message.length < 420 ? "medium" : "long"; return [outbound.messageType, outbound.strategy || outbound.salesBrain?.recommendedAction || "default", lead.status, lead.clientType || "all", `fu${lead.followUpCount || 0}`, opening, cta, length].join("|"); }
-function relatedReply(lead: Lead, outbound: OutboundMessage) {
+export function relatedReply(lead: Lead, outbound: OutboundMessage) {
   if (!outbound.sentAt) return undefined;
   const sentAt = new Date(outbound.sentAt).getTime();
   const nextOutboundAt = (lead.outboundMessages || [])
