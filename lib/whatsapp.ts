@@ -29,7 +29,8 @@ export interface WhatsAppOpenResult {
  */
 export function openWhatsAppWithMessage(
   lead: { phone?: string; whatsapp?: string; name?: string; company?: string },
-  message: string
+  message: string,
+  reservedWindow?: Window | null
 ): WhatsAppOpenResult {
   const rawNumber = getWhatsAppNumber(lead);
   if (!rawNumber) {
@@ -59,12 +60,17 @@ export function openWhatsAppWithMessage(
     return { ok: false, error: "Could not build WhatsApp link." };
   }
 
-  // Open in a new tab — wa.me redirects to WhatsApp web or app
+  // Reuse a window synchronously reserved by the click handler. If the browser
+  // blocks it, return the URL for an explicit user-click fallback.
   try {
-    window.open(link, "_blank", "noopener,noreferrer");
+    if (reservedWindow) {
+      reservedWindow.location.href = link;
+    } else {
+      const opened = window.open(link, "_blank", "noopener,noreferrer");
+      if (!opened) return { ok: false, link, error: "Your browser blocked the WhatsApp tab. Use the fallback link to open it.", normalized };
+    }
   } catch {
-    // Fallback for environments where window.open is blocked
-    window.location.href = link;
+    return { ok: false, link, error: "Could not open WhatsApp. Use the fallback link to open it.", normalized };
   }
 
   return { ok: true, link, normalized };
