@@ -1095,6 +1095,10 @@ app.get("/api/outbound/activity", async (req, res) => {
 
 app.get("/api/learning/summary", async (_req, res) => {
   try {
+    // Reconcile legacy outbound JSONB records into the learning ledger so the
+    // generated count includes saved drafts created before generation sync existed.
+    const leadRows = (await db.query("SELECT data FROM leads WHERE jsonb_typeof(data->'outboundMessages') = 'array'")).rows;
+    for (const row of leadRows) await syncLearningForLead(row.data as Lead);
     const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row: any) => row.data as LearningEvent);
     const insights = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight);
     res.json({ enabled: LEARNING_ENABLED, influenceEnabled: LEARNING_INFLUENCE_ENABLED, summary: summarizeLearning(events, insights), insights: insights.sort((a, b) => b.confidence - a.confidence).slice(0, 20) });
