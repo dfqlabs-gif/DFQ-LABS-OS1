@@ -33,6 +33,17 @@ export async function createOutboundRecord(leadId: string, outbound: OutboundMes
   return payload.lead as Lead;
 }
 
+/** Persist the WhatsApp handoff timestamp on the authoritative lead record. */
+export async function markOutboundWhatsAppOpened(leadId: string, outboundId: string): Promise<Lead> {
+  const response = await fetch(`/api/leads/${encodeURIComponent(leadId)}/outbound/${encodeURIComponent(outboundId)}/opened`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.lead) throw new Error(payload.error || "Could not record WhatsApp opening.");
+  return payload.lead as Lead;
+}
+
 /**
  * Confirm an outbound message using only its stable identity. The server reads
  * the exact text from the persisted outbound record and returns the committed
