@@ -50,7 +50,7 @@ export function validateSalesBrainMessage(message: string, type: MessageType): s
   if (!message || message.length < 12) return "message is empty or too short";
   if (message.length > 1100) return "message is too long for WhatsApp";
   if (/\b(just checking in|are you still interested|touching base|circle back)\b/i.test(message)) return "message is a generic follow-up";
-  if (type === "VALUE_DM" && /(would you like|let me know if|book a call|schedule a call|reply if|interested in|let'?s talk|happy to chat)/i.test(message)) return "a Value DM contains a CTA";
+  if (type === "VALUE_DM" && /(would you like|let me know if|book a call|schedule a call|reply if|interested in|let'?s talk|happy to chat|reach out|send me|contact us|dm me|message me|give us a call|we can help|our services|our agency|work with us|partner with us|take this forward|set up a time|arrange a call|schedule a meeting|would you be open|are you open to|can we help|we'd love to|we would love to)/i.test(message)) return "a Value DM contains a CTA or disguised sales ask";
   return null;
 }
 
@@ -98,7 +98,7 @@ function normalise(lead: Lead, data: Record<string, unknown>, requested?: Messag
     strategicReason: String(data.strategicReason || "Based on the recorded lead and conversation context."),
     detectedFriction: String(data.detectedFriction || "No explicit friction recorded."),
     recommendedAction: String(data.recommendedAction || "Send the approved message and wait for a response."),
-    messageType: type, message: cleanMessage(data.message), cta: String(data.cta || ""),
+    messageType: type, message: cleanMessage(data.message), cta: type === "VALUE_DM" ? "" : String(data.cta || ""),
     recommendedFollowUpDate: followUp, recommendedChannel: channel, riskLevel: risk,
     reasoningSummary: String(data.reasoningSummary || "Context-aware next action selected."), qualityChecked: true, rewritten,
   };
