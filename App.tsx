@@ -365,7 +365,7 @@ function RevenueGapSummary({ leads }: { leads: Lead[] }) {
 }
 
 // 24-Hour response guard UI
-function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[], onQuickContact: (l: Lead) => void, onEdit: (l: Lead) => void }) {
+function ResponseGuardSummary({ leads, onQuickContact, onEdit, onLeadCommitted, userId }: { leads: Lead[], onQuickContact: (l: Lead) => void, onEdit: (l: Lead) => void, onLeadCommitted: (lead: Lead) => void, userId: string }) {
   const overdue = leads.filter(l => !["Closed", "Lost"].includes(l.status) && l.awaitingReplySince && hoursSince(l.awaitingReplySince) >= RESPONSE_GUARD_HOURS);
   const ranked = [...overdue].sort((a, b) => {
     const va = SERVICE_VALUE[a.service] || 0, vb = SERVICE_VALUE[b.service] || 0;
@@ -376,6 +376,7 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
     return hoursSince(b.awaitingReplySince) - hoursSince(a.awaitingReplySince);
   });
   const [outputs, setOutputs] = useState<Record<string, string>>({});
+  const [outboundByLead, setOutboundByLead] = useState<Record<string, OutboundMessage>>({});
   const [steps, setSteps] = useState<Record<string, string>>({});
   const [summaries, setSummaries] = useState<Record<string, string>>({});
 
@@ -398,7 +399,15 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
     setSteps(p => ({ ...p, [lead.id]: 'generating' }));
     try {
       const text = await runQuickReply(lead, Math.floor(hoursSince(lead.awaitingReplySince)));
-      setOutputs(p => ({ ...p, [lead.id]: text }));
+      const cleanText = text.split("\n\n---STRATEGY---")[0].trim();
+      const outbound = newOutboundMessage({
+        leadId: lead.id, userId, messageType: "RESPONSE_DM", messageText: cleanText,
+        source: "response_guard", strategy: summaries[lead.id],
+      });
+      const persisted = await createOutboundRecord(lead.id, outbound);
+      setOutboundByLead(current => ({ ...current, [lead.id]: persisted.outboundMessages?.find(item => item.id === outbound.id) || outbound }));
+      onLeadCommitted(persisted);
+      setOutputs(p => ({ ...p, [lead.id]: cleanText }));
     } catch (e: any) {
       setOutputs(p => ({ ...p, [lead.id]: "Error: " + e.message }));
     }
@@ -466,6 +475,12 @@ function ResponseGuardSummary({ leads, onQuickContact, onEdit }: { leads: Lead[]
               {dm && step === 'idle' && (
                 <div style={{ padding: "12px 14px", background: SURFACE2, borderTop: `1px solid ${BORDER}` }}>
                   <div style={{ fontSize: 12, lineHeight: 1.85, color: "#ccc", whiteSpace: "pre-wrap", marginBottom: 10 }}>{dm}</div>
+                  {outboundByLead[l.id] && <div style={{ marginBottom: 8 }}><WhatsAppExecutionButton
+                    lead={l} message={dm} messageType="RESPONSE_DM" source="response_guard" userId={userId}
+                    outboundId={outboundByLead[l.id].id}
+                    onWhatsAppOpened={async () => { await markOutboundWhatsAppOpened(l.id, outboundByLead[l.id].id); }}
+                    onSent={async () => { const committed = await confirmOutboundSent(l.id, outboundByLead[l.id].id); onLeadCommitted(committed); }}
+                  /></div>}
                   <CopyBtn text={dm} />
                 </div>
               )}
@@ -1912,7 +1927,7 @@ export default function App() {
             
             <AuditKPISummary leads={activeLeads} onEdit={setModal} onSave={saveLead} />
             <RevenueGapSummary leads={activeLeads} />
-            <ResponseGuardSummary leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} />
+            <ResponseGuardSummary leads={activeLeads} onQuickContact={quickContact} onEdit={setModal} onLeadCommitted={applyCommittedLead} userId={actorId || "Founder"} />
             <MeetingIntelligenceSummary leads={activeLeads} onSave={saveLead} />
             
             <div style={{ height: 1, background: BORDER, margin: "4px 0 14px" }} />
