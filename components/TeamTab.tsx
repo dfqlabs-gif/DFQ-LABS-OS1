@@ -227,7 +227,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
     });
 
     const sorted = [...unassigned].sort((a, b) => scoreLead(b) - scoreLead(a));
-    let countA = leads.filter(l => l.assignedTo === "Sa'adatu Mohammed" && !["Closed", "Lost"].includes(l.status)).length;
+    let countA = leads.filter(l => ["Blessing Mudi", "Sa'adatu Mohammed"].includes(l.assignedTo || "") && !["Closed", "Lost"].includes(l.status)).length;
 
     const updates = sorted.map(l => {
       const norm = normalizeCompany(l.company);
@@ -235,7 +235,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
       if (norm && claimedByCompany[norm]) {
         assignTo = claimedByCompany[norm];
       } else {
-        assignTo = "Sa'adatu Mohammed";
+        assignTo = "Blessing Mudi";
         countA++;
         if (norm) claimedByCompany[norm] = assignTo;
       }
@@ -243,7 +243,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
     });
 
     await onBulkSave(updates);
-    setResult(`Assigned ${updates.length} lead(s) to Sa'adatu Mohammed.`);
+    setResult(`Assigned ${updates.length} lead(s) to Blessing Mudi.`);
     setRunning(false);
   };
 
