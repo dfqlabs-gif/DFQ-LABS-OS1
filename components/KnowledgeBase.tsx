@@ -21,6 +21,7 @@ export interface KnowledgeSource {
   createdAt: string;
   fileSize?: number;
   error?: string;
+  category?: string;
 }
 
 const TYPE_ICON: Record<string, any> = {
@@ -51,6 +52,7 @@ export function KnowledgeBase() {
   const [uploading, setUploading] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [urlTitle, setUrlTitle] = useState("");
+  const [category, setCategory] = useState("Company Information");
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [viewing, setViewing] = useState<KnowledgeSource | null>(null);
@@ -114,6 +116,7 @@ export function KnowledgeBase() {
         enabled: true,
         createdAt: new Date().toISOString(),
         fileSize: file.size,
+        category,
       };
 
       // Optimistic add
@@ -164,7 +167,7 @@ export function KnowledgeBase() {
     const title = urlTitle.trim() || url;
     const source: KnowledgeSource = {
       id, title, type: "url", status: "processing", content: "",
-      sourceUrl: url, enabled: true, createdAt: new Date().toISOString(),
+      sourceUrl: url, enabled: true, createdAt: new Date().toISOString(), category,
     };
     setSources(p => [source, ...p]);
 
