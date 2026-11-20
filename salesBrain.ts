@@ -31,6 +31,15 @@ export interface SalesBrainResult {
 
 export interface SalesBrainLearningInsight { insightId: string; pattern: string; relevance: string; confidence: number; evidenceSummary: string; }
 export interface SalesBrainOptions { requestedMessageType?: MessageType; task?: string; learningInsights?: SalesBrainLearningInsight[]; }
+export const VALUE_DM_NURTURE_GUIDANCE = [
+  "RELATIONSHIP NURTURE STYLE: act as a trusted real-estate content-intelligence partner, not a salesperson.",
+  "Share one specific, evidence-grounded insight, research finding, content opportunity, buyer-psychology observation, or useful industry pattern the prospect can apply.",
+  "Use relevant DFQLABS Knowledge Base material when available. Never invent DFQLABS packages, pricing, client results, statistics, or prospect-specific facts.",
+  "Do not pitch, sell, ask a question, request a reply, or invite a call in a routine Value DM.",
+  "Close naturally and softly, for example: Just thought this was worth sharing in case it is useful.",
+  "Keep it concise and conversational for WhatsApp. Avoid generic check-ins and repeated insights."
+].join("\\n");
+
 export type SalesBrainGenerator = (prompt: string, maxTokens: number) => Promise<string>;
 
 const jsonFromModel = (raw: string): Record<string, unknown> => {
