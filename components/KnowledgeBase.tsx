@@ -228,6 +228,12 @@ export function KnowledgeBase() {
           <Upload size={12} /> Add Knowledge Source
         </div>
 
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: "block", color: MUTED, fontSize: 10, marginBottom: 5 }}>Knowledge category</label>
+          <select value={category} onChange={e => setCategory(e.target.value)} style={{ ...iStyle, width: "100%" }}>
+            {["Company Information", "Services & Packages", "Pricing", "Research", "Buyer Psychology", "Case Studies", "Website Content", "Internal Processes", "Other"].map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </div>
         {/* File upload */}
         <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.doc,.txt,.md,.markdown,.json,.html,.htm,text/*" style={{ display: "none" }} onChange={handleFileUpload} />
         <button
@@ -288,7 +294,7 @@ export function KnowledgeBase() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.title}</div>
                     <div style={{ fontSize: 10, color: MUTED, marginTop: 2, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                      <span>{TYPE_LABEL[s.type] || s.type}</span>
+                      <span>{TYPE_LABEL[s.type] || s.type}</span><span>· {s.category || "Uncategorised"}</span>
                       <span>· {new Date(s.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
                       {s.fileSize ? <span>· {(s.fileSize / 1024).toFixed(0)} KB</span> : null}
                       <span style={{ color: statusColor, fontWeight: 700 }}>· {s.status === "ready" ? (s.enabled ? "Ready" : "Disabled") : s.status === "processing" ? "Processing…" : "Error"}</span>
