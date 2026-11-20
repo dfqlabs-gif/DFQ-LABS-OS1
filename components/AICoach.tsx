@@ -4,7 +4,7 @@ import React from "react";
 import { Lead } from "../types";
 import { alphaSort, leadLabel, iStyle, G, G_DIM, G_BORDER, SURFACE, SURFACE2, BORDER, MUTED, MUTED2, TEXT } from "../constants";
 import { runAI, runProspectSummary, buildObjectionsPrompt, buildClosingPlanPrompt, buildClosingDMPrompt, buildFollowUpDMPrompt, buildPipelinePrompt } from "../aiEngine";
-import { runSalesBrain } from "../salesBrain";
+import { runSalesBrain, VALUE_DM_NURTURE_GUIDANCE } from "../salesBrain";
 import { newOutboundMessage, OutboundMessage } from "../lib/outbound";
 import { createOutboundRecord, confirmOutboundSent, markOutboundWhatsAppOpened } from "../lib/execution";
 import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
@@ -85,7 +85,7 @@ export function AICoach({ leads, onLeadCommitted, userId = "Founder" }: AICoachP
     try {
       const brain = await runSalesBrain(selected, {
         requestedMessageType: "VALUE_DM",
-        task: `Create a genuinely useful, no-CTA Value DM. Use this specialist-confirmed conversation context: ${prospectSummary}. Give one practical content-intelligence insight grounded in verified prospect details and relevant Abuja buyer psychology. Do not pitch DFQ Labs or ask for anything.`,
+        task: `${VALUE_DM_NURTURE_GUIDANCE}\nSpecialist-confirmed conversation context: ${prospectSummary}. Give one practical content-intelligence insight grounded in verified prospect details and relevant Abuja buyer psychology.`,
       });
       const draft = brain.message.trim();
       const record = newOutboundMessage({
