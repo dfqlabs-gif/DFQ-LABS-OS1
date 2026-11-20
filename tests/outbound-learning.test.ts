@@ -41,3 +41,19 @@ test("confirmed outbound appends the exact stored message once", () => {
   assert.equal(commitOutboundSent(committed, draft.id), committed);
   assert.equal(committed.conversationLog?.length, 1);
 });
+
+
+test("nurture VALUE_DM is appended without changing sales follow-up state", () => {
+  const draft = { ...outbound("out-nurture", "2026-11-20T10:00:00.000Z"), status: "GENERATED" as const, sentAt: undefined, source: "nurture_portal" };
+  const lead = leadFixture({ followUpCount: 4, completedFollowUps: ["2026-11-18T10:00:00.000Z"], autoFollowUpDate: "2026-11-22", autoFollowUpReason: "Existing follow-up", lastContacted: "2026-11-18", lastMeaningfulTouchpoint: "2026-11-18", awaitingReplySince: "2026-11-18T12:00:00.000Z", outboundMessages: [draft] });
+  const committed = commitOutboundSent(lead, draft.id, "2026-11-20T11:00:00.000Z");
+  assert.equal(committed.conversationLog?.length, 1);
+  assert.equal(committed.conversationLog?.[0].source, "nurture_portal");
+  assert.equal(committed.followUpCount, 4);
+  assert.deepEqual(committed.completedFollowUps, lead.completedFollowUps);
+  assert.equal(committed.autoFollowUpDate, "2026-11-22");
+  assert.equal(committed.autoFollowUpReason, "Existing follow-up");
+  assert.equal(committed.lastContacted, "2026-11-18");
+  assert.equal(committed.lastMeaningfulTouchpoint, "2026-11-18");
+  assert.equal(committed.awaitingReplySince, "2026-11-18T12:00:00.000Z");
+});

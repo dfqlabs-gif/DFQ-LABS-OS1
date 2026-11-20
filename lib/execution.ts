@@ -73,12 +73,14 @@ export function commitOutboundSent(lead: Lead, outboundId: string, sentAt = nowI
   if (outbound.status === "SENT") return lead;
 
   const committedOutbound = { ...outbound, status: "SENT" as const, sentAt };
+  const isNurtureValue = outbound.messageType === "VALUE_DM" && outbound.source === "nurture_portal";
   const existingLog = Array.isArray(lead.conversationLog) ? lead.conversationLog : [];
   const logEntry = {
     id: `outbound-${outbound.id}`,
     outboundId: outbound.id,
     direction: "outbound" as const,
     messageType: outbound.messageType,
+    source: outbound.source,
     status: "sent" as const,
     ts: sentAt,
     type: "dm" as const,
@@ -91,13 +93,14 @@ export function commitOutboundSent(lead: Lead, outboundId: string, sentAt = nowI
     ...lead,
     conversationLog: alreadyRecorded ? existingLog : [...existingLog, logEntry],
     outboundMessages: outboundMessages.map(message => message.id === outbound.id ? committedOutbound : message),
-    lastContacted: sentAt.slice(0, 10),
-    lastMeaningfulTouchpoint: sentAt.slice(0, 10),
-    awaitingReplySince: "",
-    followUpCount: alreadyRecorded ? (lead.followUpCount || 0) : (lead.followUpCount || 0) + 1,
-    completedFollowUps: alreadyRecorded ? (lead.completedFollowUps || []) : [...(lead.completedFollowUps || []), sentAt],
-    autoFollowUpDate: ["Closed", "Lost"].includes(lead.status) ? null : addDays(3),
-    autoFollowUpReason: "Recently contacted via WhatsApp outbound.",
+    lastContacted: isNurtureValue ? lead.lastContacted : sentAt.slice(0, 10),
+    lastMeaningfulTouchpoint: isNurtureValue ? lead.lastMeaningfulTouchpoint : sentAt.slice(0, 10),
+    awaitingReplySince: isNurtureValue ? lead.awaitingReplySince : "",
+    // Nurture appears in the append-only thread without altering sales follow-up state.
+    followUpCount: isNurtureValue || alreadyRecorded ? (lead.followUpCount || 0) : (lead.followUpCount || 0) + 1,
+    completedFollowUps: isNurtureValue || alreadyRecorded ? (lead.completedFollowUps || []) : [...(lead.completedFollowUps || []), sentAt],
+    autoFollowUpDate: isNurtureValue ? lead.autoFollowUpDate : (["Closed", "Lost"].includes(lead.status) ? null : addDays(3)),
+    autoFollowUpReason: isNurtureValue ? lead.autoFollowUpReason : "Recently contacted via WhatsApp outbound.",
     // dmText is the immutable opening outbound.  A confirmed outbound may
     // establish it only for a lead with no opening DM; every later outbound
     // lives exclusively in the append-only conversationLog above.

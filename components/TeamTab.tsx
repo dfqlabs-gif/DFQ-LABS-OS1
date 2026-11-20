@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { Users, UserCheck, AlertTriangle, FileText, Rocket, Calendar, ChevronRight, X, MessageSquare, UserPlus, RefreshCw, MessageCircle, ClipboardList, CheckCircle2, PhoneCall, PhoneIncoming } from "lucide-react";
+import { useState, useMemo, useEffect } from "react";
+import { Users, UserCheck, AlertTriangle, FileText, Rocket, Calendar, ChevronRight, X, MessageSquare, UserPlus, RefreshCw, MessageCircle, ClipboardList, CheckCircle2, PhoneCall, PhoneIncoming, Sprout } from "lucide-react";
 import React from "react";
 import { Lead } from "../types";
 import { 
@@ -38,11 +38,12 @@ interface TeamTabProps {
 type ViewMode = "day" | "week";
 
 // ── Drilldown types ───────────────────────────────────────────────────────────
-type DrillKey = "leadsAdded" | "dmsSent" | "followUps" | "replies" | "auditsRequested" | "auditsDelivered" | "callsBooked" | "callsDone";
+type DrillKey = "leadsAdded" | "dmsSent" | "nurture" | "followUps" | "replies" | "auditsRequested" | "auditsDelivered" | "callsBooked" | "callsDone";
 
 const DRILL_META: Record<DrillKey, { label: string; color: string; icon: any }> = {
   leadsAdded:      { label: "Leads Added",        color: "#22C55E", icon: UserPlus       },
   dmsSent:         { label: "New DMs Sent",        color: G,         icon: MessageSquare  },
+  nurture:         { label: "Nurture Value Sent",    color: "#22C55E", icon: Sprout          },
   followUps:       { label: "Follow-ups Made",     color: "#3B82F6", icon: RefreshCw      },
   replies:         { label: "Replies Received",    color: "#F59E0B", icon: MessageCircle  },
   auditsRequested: { label: "Audits Requested",    color: "#a855f7", icon: ClipboardList  },
@@ -57,6 +58,8 @@ function filterForDrill(events: any[], key: DrillKey): any[] {
       return events.filter(a => a.type === "add");
     case "dmsSent":
       return events.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent"));
+    case "nurture":
+      return events.filter(a => a.type === "nurture");
     case "followUps":
       return events.filter(a => (a.type === "note" && a.title === "Follow-up Made") || (a.type === "status_change" && a.text === "Follow-up Made"));
     case "replies":
@@ -194,6 +197,11 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
   const [activityDate, setActivityDate] = useState(today());
   const [viewMode, setViewMode] = useState<ViewMode>("day");
   const [drillDown, setDrillDown] = useState<DrillKey | null>(null);
+  const [manualProspecting, setManualProspecting] = useState<any[]>([]);
+  useEffect(() => {
+    fetch("/api/prospecting-activities?limit=500").then(response => response.ok ? response.json() : { activities: [] })
+      .then(payload => setManualProspecting(Array.isArray(payload.activities) ? payload.activities : [])).catch(() => {});
+  }, []);
 
   const unassigned = leads.filter(l => (!l.assignedTo || l.assignedTo === "Unassigned") && !["Closed", "Lost"].includes(l.status));
   
@@ -280,11 +288,17 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
       ? getInternActivitiesRange(leads, getWeekStart(), today())
       : getInternActivities(leads, activityDate);
 
+    const external = manualProspecting.filter(event => viewMode === "week"
+      ? event.activityDate >= getWeekStart() && event.activityDate <= today()
+      : event.activityDate === activityDate
+    ).map(event => ({ ts: event.createdAt || event.activityDate, type: "dm", actor: event.actorName, leadName: event.prospectName, company: "", title: "Prospecting contact (manual log)", text: "Contact recorded for " + event.prospectName + " · " + event.channel + " · " + event.outcome }));
+    const allActs = [...acts, ...external];
     const report: Record<string, any> = {};
     SPECIALISTS.filter(s => s !== "Unassigned").forEach(s => {
-      const myActs = acts.filter(a => a.actor === s);
+      const myActs = allActs.filter(a => a.actor === s);
       report[s] = {
         dmsSent:         myActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length,
+        nurture:         myActs.filter(a => a.type === "nurture").length,
         followUps:       myActs.filter(a => (a.type === "note" && a.title === "Follow-up Made") || (a.type === "status_change" && a.text === "Follow-up Made")).length,
         replies:         myActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length,
         auditsRequested: myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
@@ -296,7 +310,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
       };
     });
     return report;
-  }, [leads, activityDate, viewMode]);
+  }, [leads, activityDate, viewMode, manualProspecting]);
 
   const specialistLeads = (name: string) =>
     alphaSort(leads.filter(l => l.assignedTo === name));
@@ -369,6 +383,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
           const statTiles: { key: DrillKey; label: string; val: number; color: string }[] = [
             { key: "leadsAdded",      label: "Leads Added",        val: stats.leadsAdded      || 0, color: "#22C55E" },
             { key: "dmsSent",         label: "New DMs Sent",        val: stats.dmsSent         || 0, color: G         },
+            { key: "nurture",         label: "Nurture Value Sent",    val: stats.nurture         || 0, color: "#22C55E" },
             { key: "followUps",       label: "Follow-ups Made",     val: stats.followUps       || 0, color: "#3B82F6" },
             { key: "replies",         label: "Replies Received",    val: stats.replies         || 0, color: "#F59E0B" },
             { key: "auditsRequested", label: "Audits Requested",    val: stats.auditsRequested || 0, color: "#a855f7" },

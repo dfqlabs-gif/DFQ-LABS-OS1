@@ -38,6 +38,7 @@ import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { LearningIntelligence } from "./components/LearningIntelligence";
 import { OutboundActivity } from "./components/OutboundActivity";
+import { NurturePortal } from "./components/NurturePortal";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
@@ -1652,6 +1653,7 @@ export default function App() {
   const TABS = [
     { key: "mission", label: "Mission Control" },
     { key: "weekly", label: "Weekly Focus" },
+    { key: "nurture", label: "Nurture" },
     { key: "recent", label: "Recent Leads" },
     { key: "pipeline", label: "Pipeline" },
     { key: "clients", label: "Client Delivery" },
@@ -1940,6 +1942,7 @@ export default function App() {
         )}
         
         {tab === "weekly" && <WeeklyFocusTab leads={activeLeads} onEdit={setModal} onQuickContact={quickContact} onLeadCommitted={applyCommittedLead} />}
+        {tab === "nurture" && <NurturePortal leads={activeLeads} userId="Alex" allowActorSelection onLeadCommitted={applyCommittedLead} />}
         {tab === "recent" && <RecentLeadsPanel leads={activeLeads} onEdit={setModal} />}
         {tab === "pipeline" && <PipelineTab leads={activeLeads} onEdit={setModal} onDelete={deleteLead} onSave={saveLead} onLeadCommitted={applyCommittedLead} onQuickContact={quickContact} classifying={classifying} />}
         {tab === "clients" && <ClientDelivery clients={clientsValue} onEdit={setModal} />}
@@ -2194,7 +2197,7 @@ function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess
 // ----------------------------------------------------
 
 function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommitted, onQuickContact, classifying, onLogout }: any) {
-  const [internTab, setInternTab] = useState<"queue" | "coach">("queue");
+  const [internTab, setInternTab] = useState<"queue" | "coach" | "nurture">("queue");
   const [range, setRange] = useState("today");
 
   // Dark mode — shared with Founder view via localStorage key "dfq-dark-mode"
@@ -2400,6 +2403,7 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
         >
           My Focus Queue
         </button>
+        <button onClick={() => setInternTab("nurture")} style={{ background: "none", border: "none", borderBottom: internTab === "nurture" ? "2px solid " + G : "2px solid transparent", color: internTab === "nurture" ? G : MUTED, padding: "10px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", marginBottom: -1 }}>Nurture</button>
         <button 
           onClick={() => setInternTab("coach")} 
           style={{ background: "none", border: "none", borderBottom: internTab === "coach" ? `2px solid ${G}` : "2px solid transparent", color: internTab === "coach" ? G : MUTED, padding: "10px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "uppercase", marginBottom: -1 }}
@@ -2409,7 +2413,9 @@ function InternDashboard({ internNames, displayName, leads, onSave, onLeadCommit
       </div>
 
       <div style={{ padding: "16px 14px" }}>
-        {internTab === "coach" ? (
+        {internTab === "nurture" ? (
+          <NurturePortal leads={mine} userId={displayName || "Team Member"} specialistNames={Array.from(ownershipNames)} onLeadCommitted={onLeadCommitted} />
+        ) : internTab === "coach" ? (
           <div>
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>COMPILATION HUB</div>
             <AICoach leads={leads} onLeadCommitted={onLeadCommitted} userId={displayName || "Team Member"} />

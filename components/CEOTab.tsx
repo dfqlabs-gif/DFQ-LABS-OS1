@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   Calendar, UserCheck, Shield, FileText, BarChart3, DollarSign, Brain,
   Search, Clock3, AlertTriangle, Sprout, TrendingUp, TrendingDown,
@@ -108,6 +108,11 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
   const yesterdayStr = addDays(-1);
   const dayBeforeYesterdayStr = addDays(-2);
   const [showInternSection, setShowInternSection] = useState(false);
+  const [manualProspecting, setManualProspecting] = useState<any[]>([]);
+  useEffect(() => {
+    fetch("/api/prospecting-activities?limit=500").then(response => response.ok ? response.json() : { activities: [] })
+      .then(payload => setManualProspecting(Array.isArray(payload.activities) ? payload.activities : [])).catch(() => {});
+  }, []);
 
   // ── Draft DM state for priority opportunities ──────────────────────────────
   const [draftDMLead, setDraftDMLead] = useState<Lead | null>(null);
@@ -390,7 +395,9 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
     const mine = leads.filter(l => l.assignedTo === s);
     const activeLeads = mine.filter(l => !["Closed", "Lost"].includes(l.status));
     const closedDeals = mine.filter(l => l.status === "Closed");
-    const todayActs = getInternActivities(leads, today()).filter(a => a.actor === s);
+    const todayManual = manualProspecting.filter(event => event.activityDate === today() && event.actorName === s)
+      .map(event => ({ type: "dm", text: "DM Sent", title: "Prospecting contact (manual log)" }));
+    const todayActs = [...getInternActivities(leads, today()).filter(a => a.actor === s), ...todayManual];
     const dmsSent = todayActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length;
     const repliesGot = todayActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length;
     const auditReq = todayActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length;
@@ -400,17 +407,22 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
     const revenue = closedDeals.reduce((s, l) => s + (SERVICE_VALUE[l.service] || 0), 0);
     const prodScore = Math.min(100, Math.round((dmsSent * 10) + (repliesGot * 15) + (auditReq * 10) + (auditDel * 15) + (callBooked * 20) + (callDone * 20) + (closedDeals.length * 25)));
     return { name: s, activeLeads: activeLeads.length, closedDeals: closedDeals.length, dmsSent, repliesGot, auditReq, auditDel, callBooked, callDone, revenue, prodScore };
-  }).sort((a, b) => b.prodScore - a.prodScore), [leads, specialists]);
+  }).sort((a, b) => b.prodScore - a.prodScore), [leads, specialists, manualProspecting]);
 
   // ── Live activity feed ─────────────────────────────────────────────────────
   const liveActivity = useMemo(() => {
     const acts = getInternActivities(leads, today());
     const yestActs = getInternActivities(leads, yesterdayStr).slice(0, 10);
-    return [...acts, ...yestActs].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 20);
-  }, [leads, yesterdayStr]);
+    const external = manualProspecting.filter(event => [today(), yesterdayStr].includes(event.activityDate))
+      .map(event => ({ ts: event.createdAt || event.activityDate, type: "dm", actor: event.actorName, leadName: event.prospectName, company: "", title: "Prospecting contact (manual log)", text: "Contact recorded · " + event.channel + " · " + event.outcome }));
+    return [...acts, ...yestActs, ...external].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()).slice(0, 20);
+  }, [leads, yesterdayStr, manualProspecting]);
 
   // ── Intern activity (preserved) ────────────────────────────────────────────
-  const activitiesForSelectedDate = useMemo(() => getInternActivities(leads, selectedActivityDate), [leads, selectedActivityDate]);
+  const activitiesForSelectedDate = useMemo(() => [
+    ...getInternActivities(leads, selectedActivityDate),
+    ...manualProspecting.filter(event => event.activityDate === selectedActivityDate).map(event => ({ ts: event.createdAt || event.activityDate, type: "dm", actor: event.actorName, leadName: event.prospectName, company: "", title: "Prospecting contact (manual log)", text: "Contact recorded · " + event.channel + " · " + event.outcome })),
+  ], [leads, selectedActivityDate, manualProspecting]);
 
   const internStatsForSelectedDate = useMemo(() => {
     const report: Record<string, any> = {};
@@ -418,6 +430,7 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
       const myActs = activitiesForSelectedDate.filter(a => a.actor === s);
       report[s] = {
         dmsSent: myActs.filter(a => a.type === "dm" || (a.type === "status_change" && a.text === "DM Sent")).length,
+        nurture: myActs.filter(a => a.type === "nurture").length,
         followUps: myActs.filter(a => (a.type === "note" && a.title === "Follow-up Made") || (a.type === "status_change" && a.text === "Follow-up Made")).length,
         replies: myActs.filter(a => a.type === "reply" || (a.type === "status_change" && a.text === "Replied")).length,
         auditsRequested: myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
@@ -431,13 +444,17 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
 
   // ── Staff activity breakdown for the expandable team workload section ─────
   // Uses `staffActivityDate` (independent from `selectedActivityDate`)
-  const staffActivitiesForDate = useMemo(() => getInternActivities(leads, staffActivityDate), [leads, staffActivityDate]);
+  const staffActivitiesForDate = useMemo(() => [
+    ...getInternActivities(leads, staffActivityDate),
+    ...manualProspecting.filter(event => event.activityDate === staffActivityDate).map(event => ({ ts: event.createdAt || event.activityDate, type: "dm", actor: event.actorName, leadName: event.prospectName, company: "", title: "Prospecting contact (manual log)", text: "Contact recorded · " + event.channel + " · " + event.outcome })),
+  ], [leads, staffActivityDate, manualProspecting]);
   const staffStatsForDate = useMemo(() => {
     const report: Record<string, any> = {};
     specialists.forEach(s => {
       const myActs = staffActivitiesForDate.filter(a => a.actor === s);
       report[s] = {
         newConvos:       myActs.filter(a => a.type === "dm").length,
+        nurture:         myActs.filter(a => a.type === "nurture").length,
         followUps:       myActs.filter(a => a.type === "follow_up").length,
         replies:         myActs.filter(a => a.type === "reply").length,
         auditRequested:  myActs.filter(a => a.type === "status_change" && a.text === "Audit Requested").length,
@@ -1048,6 +1065,7 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(110px,1fr))", gap: 8, marginBottom: 14 }}>
                               {[
                                 { label: "New DMs Sent", val: dayStats.newConvos || 0, color: G },
+                                 { label: "Nurture Value Sent", val: dayStats.nurture || 0, color: "#22C55E" },
                                 { label: "Follow-ups", val: dayStats.followUps || 0, color: "#3B82F6" },
                                 { label: "Replies Logged", val: dayStats.replies || 0, color: "#F59E0B" },
                                 { label: "Audits Requested", val: dayStats.auditRequested || 0, color: "#a855f7" },
@@ -1214,7 +1232,7 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
                       <UserCheck size={12} /> {specialistLabel(s)}
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                      {[["New DM Sent", r.dmsSent, G], ["Follow-ups Made", r.followUps, "#3B82F6"], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audit Delivered", r.auditsDelivered, "#ec4899"], ["Discovery Call Booked", r.callsBooked, "#F97316"], ["Discovery Call Done", r.callsDone, "#06B6D4"]].map(([label, val, color]) => (
+                      {[["New DM Sent", r.dmsSent, G], ["Nurture Value Sent", r.nurture, "#22C55E"], ["Follow-ups Made", r.followUps, "#3B82F6"], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audit Delivered", r.auditsDelivered, "#ec4899"], ["Discovery Call Booked", r.callsBooked, "#F97316"], ["Discovery Call Done", r.callsDone, "#06B6D4"]].map(([label, val, color]) => (
                         <div key={label as string} style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                           <span style={{ color: MUTED2 }}>{label}:</span>
                           <span style={{ fontWeight: 700, color: color as string }}>{val as number}</span>

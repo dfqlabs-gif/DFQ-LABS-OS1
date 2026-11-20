@@ -268,6 +268,12 @@ async function initializeDatabase() {
   }
   await db.query(`CREATE TABLE IF NOT EXISTS crm_action_history (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE INDEX IF NOT EXISTS crm_action_history_actor_created_idx ON crm_action_history ((data->>'actorId'), created_at DESC)`);
+  await db.query(`CREATE TABLE IF NOT EXISTS prospecting_activity_events (
+    id TEXT PRIMARY KEY, actor_name TEXT NOT NULL, prospect_name TEXT NOT NULL,
+    activity_date DATE NOT NULL, channel TEXT NOT NULL DEFAULT 'WhatsApp',
+    outcome TEXT NOT NULL DEFAULT 'Contacted', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  await db.query(`CREATE INDEX IF NOT EXISTS prospecting_activity_date_actor_idx ON prospecting_activity_events (activity_date DESC, actor_name)`);
 
   // 5. Run attachment migration (only after all tables exist)
   try {
@@ -1058,6 +1064,58 @@ app.get("/api/runtime/version", (_req, res) => {
     service: "dfqlabs-os",
     commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unknown",
   });
+});
+
+
+app.get("/api/prospecting-activities", async (req, res) => {
+  try {
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    const result = await db.query(
+      `SELECT id, actor_name AS "actorName", prospect_name AS "prospectName",
+        to_char(activity_date, 'YYYY-MM-DD') AS "activityDate", channel, outcome, created_at AS "createdAt"
+       FROM prospecting_activity_events ORDER BY activity_date DESC, created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ activities: result.rows });
+  } catch (error) {
+    console.error("GET prospecting activities:", error);
+    res.status(500).json({ error: "Could not load prospecting activity." });
+  }
+});
+
+app.post("/api/prospecting-activities/bulk", async (req, res) => {
+  const { actorName, activityDate, channel, outcome, events } = req.body || {};
+  const allowedActors = ["Alex", "Alex (Founder)", "Blessing Mudi", "Sa'adatu Mohammed"];
+  if (!allowedActors.includes(actorName)) return res.status(400).json({ error: "A recognised team member is required." });
+  if (typeof activityDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(activityDate) || Number.isNaN(Date.parse(activityDate + "T00:00:00Z"))) {
+    return res.status(400).json({ error: "A valid activity date is required." });
+  }
+  if (!Array.isArray(events) || events.length < 1 || events.length > 100) return res.status(400).json({ error: "Submit between 1 and 100 prospect records." });
+  const clean = events.map((event: any) => ({
+    id: typeof event?.id === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(event.id) ? event.id : "",
+    prospectName: typeof event?.prospectName === "string" ? event.prospectName.trim().slice(0, 180) : "",
+  }));
+  if (clean.some(event => !event.id || !event.prospectName)) return res.status(400).json({ error: "Every record requires a stable ID and prospect name." });
+  if (new Set(clean.map(event => event.id)).size !== clean.length) return res.status(400).json({ error: "Duplicate event IDs in batch." });
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    let insertedCount = 0;
+    for (const event of clean) {
+      const result = await client.query(
+        `INSERT INTO prospecting_activity_events (id, actor_name, prospect_name, activity_date, channel, outcome)
+         VALUES ($1, $2, $3, $4::date, $5, $6) ON CONFLICT (id) DO NOTHING RETURNING id`,
+        [event.id, actorName, event.prospectName, activityDate, String(channel || "WhatsApp").slice(0, 40), String(outcome || "Contacted").slice(0, 40)]
+      );
+      insertedCount += result.rowCount || 0;
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true, insertedCount, duplicateCount: clean.length - insertedCount });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("POST prospecting activities:", error);
+    res.status(500).json({ error: "Could not save prospecting activity." });
+  } finally { client.release(); }
 });
 
 // ── Sales Brain Learning API ────────────────────────────────────────────────
