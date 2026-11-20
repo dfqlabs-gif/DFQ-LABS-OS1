@@ -8,7 +8,7 @@ import {
   getInternActivities, getInternActivitiesRange, nowISO,
 } from "../constants";
 import { stripMarkdown } from "../aiEngine";
-import { runSalesBrain, SalesBrainResult } from "../salesBrain";
+import { runSalesBrain, SalesBrainResult, VALUE_DM_NURTURE_GUIDANCE } from "../salesBrain";
 import { newOutboundMessage } from "../lib/outbound";
 import { confirmOutboundSent, createOutboundRecord } from "../lib/execution";
 import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
@@ -465,7 +465,7 @@ export function AskAI({ leads, onFollowUp, onOpenLead, onMessageSent, onSaveLead
       const res = await fetch("/api/value-dm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leadId: lead.id, task: query, messageType: "VALUE_DM" }),
+        body: JSON.stringify({ leadId: lead.id, task: VALUE_DM_NURTURE_GUIDANCE + "\\nUser request: " + query, messageType: "VALUE_DM" }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
