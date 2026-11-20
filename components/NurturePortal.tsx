@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Search, Sprout, Loader2, ClipboardList, Plus } from "lucide-react";
 import type { Lead } from "../types";
-import { runSalesBrain } from "../salesBrain";
+import { runSalesBrain, VALUE_DM_NURTURE_GUIDANCE } from "../salesBrain";
 import { newOutboundMessage, type OutboundMessage } from "../lib/outbound";
 import { createOutboundRecord, markOutboundWhatsAppOpened, confirmOutboundSent } from "../lib/execution";
 import { WhatsAppExecutionButton } from "./WhatsAppExecutionButton";
@@ -72,6 +72,7 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
       const brain = await runSalesBrain(lead, {
         requestedMessageType: "VALUE_DM",
         task: [
+          VALUE_DM_NURTURE_GUIDANCE,
           "Create a prospect-specific relationship-nurture message, not a sales follow-up.",
           "Use the complete available conversation history, CRM notes, company/project evidence, previous outbound messages and current pipeline stage.",
           "Provide one concrete, useful insight relevant to this prospect's real-estate business, content positioning, investor confidence or buyer psychology.",
