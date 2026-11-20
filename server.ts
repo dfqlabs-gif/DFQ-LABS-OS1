@@ -1246,29 +1246,60 @@ app.delete("/api/knowledge", async (req, res) => {
 app.post("/api/knowledge/fetch-url", async (req, res) => {
   const { url } = req.body || {};
   if (!url) return res.status(400).json({ error: "url is required." });
+  const isPublicHttpUrl = (value: string) => {
+    let parsed: URL;
+    try { parsed = new URL(value); } catch { return false; }
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "::1") return false;
+    const ip = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ip) {
+      const a = Number(ip[1]), b = Number(ip[2]);
+      if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224) return false;
+    }
+    return true;
+  };
+  const extractPage = async (target: string, originHost: string) => {
+    if (!isPublicHttpUrl(target)) throw new Error("Only public HTTP/HTTPS website URLs can be indexed.");
+    const response = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (compatible; DFQLabsKnowledgeBot/1.0)" }, signal: AbortSignal.timeout(12000), redirect: "follow" });
+    const finalUrl = new URL(response.url || target);
+    if (!response.ok) throw new Error("Website returned HTTP " + response.status);
+    if (finalUrl.host !== originHost) throw new Error("Website redirected to a different host; indexing stopped for safety.");
+    const type = response.headers.get("content-type") || "";
+    if (!type.includes("text/html") && !type.includes("text/plain")) throw new Error("This page did not return readable HTML or text.");
+    const html = (await response.text()).slice(0, 2000000);
+    const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || finalUrl.pathname || finalUrl.host).replace(/<[^>]+>/g, " ").trim();
+    const links = [...html.matchAll(/<a\b[^>]*href=["']([^"'#]+)["'][^>]*>/gi)].map(m => {
+      try { const u = new URL(m[1], finalUrl); return u.host === originHost && isPublicHttpUrl(u.toString()) ? u.toString().split("#")[0] : ""; } catch { return ""; }
+    }).filter(Boolean);
+    const text = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<noscript[\s\S]*?<\/noscript>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim();
+    return { title, text, links };
+  };
   try {
-    const response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (DFQLabs-Knowledge-Bot)" },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok) return res.status(502).json({ error: `Fetch failed: HTTP ${response.status}` });
-    const html = await response.text();
-    // Strip scripts/styles/tags, collapse whitespace
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 50000);
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    res.json({ text, title: titleMatch ? titleMatch[1].trim() : url });
+    if (!isPublicHttpUrl(url)) return res.status(400).json({ error: "Enter a valid public HTTP/HTTPS website URL." });
+    const first = new URL(url);
+    const visited = new Set<string>();
+    const queue = [first.toString()];
+    const pages: string[] = [];
+    let title = first.host;
+    while (queue.length && visited.size < 12 && pages.join("\n").length < 45000) {
+      const next = queue.shift()!;
+      if (visited.has(next)) continue;
+      visited.add(next);
+      try {
+        const page = await extractPage(next, first.host);
+        if (pages.length === 0) title = page.title;
+        pages.push("PAGE: " + page.title + "\nURL: " + next + "\n" + page.text);
+        for (const link of page.links) if (!visited.has(link) && queue.length < 30) queue.push(link);
+      } catch (pageError: any) {
+        if (pages.length === 0) throw pageError;
+      }
+    }
+    const text = pages.join("\n\n").slice(0, 50000);
+    if (text.length < 100) throw new Error("The website did not expose enough readable text to index.");
+    res.json({ text, title, pagesIndexed: pages.length });
   } catch (err: any) {
-    res.status(500).json({ error: "Could not fetch URL: " + (err.message || "unknown error") });
+    res.status(502).json({ error: "Could not index website: " + (err.message || "unknown error") });
   }
 });
 
