@@ -39,6 +39,7 @@ import { AskAI } from "./components/AskAI";
 import { LearningIntelligence } from "./components/LearningIntelligence";
 import { OutboundActivity } from "./components/OutboundActivity";
 import { NurturePortal } from "./components/NurturePortal";
+import { KnowledgeBase } from "./components/KnowledgeBase";
 import { stripAttachmentContent } from "./lib/attachments";
 import { getImportStageMeta, normalizeImportedLead, summarizeImportBatch, summarizeSnapshotImport } from "./lib/imports";
 
@@ -1953,8 +1954,9 @@ export default function App() {
         {tab === "ceo" && <CEOTab leads={activeLeads} stats={stats} revenue={revenueValue} onEdit={setModal} onLeadCommitted={applyCommittedLead} userId={actorId || "Founder"} />}
         {tab === "duplicates" && <DuplicateReviewPanel leads={activeLeads} stats={stats} onPersistStats={persistStats} onMerge={(a, b) => setMergeCandidates([a, b])} />}
         {tab === "gateway" && <AIGateway />}
-        {tab === "activity" && <OutboundActivity />}
+        {tab === "activity" && <OutboundActivity leads={activeLeads} onOpenLead={setModal} />}
         {tab === "learning" && <LearningIntelligence />}
+        {tab === "knowledge" && <KnowledgeBase />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onLeadCommitted={applyCommittedLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
