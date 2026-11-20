@@ -130,18 +130,19 @@ export function KnowledgeBase() {
         } else if (file.type === "text/html" || file.name.endsWith(".html") || file.name.endsWith(".htm")) {
           text = (await file.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
         } else {
-          // PDF/DOCX — best-effort text extraction from raw stream
-          const raw = await file.text();
-          // Extract readable text between stream markers (basic PDF text recovery)
-          text = raw
-            .replace(/[^\x20-\x7E\n\r]/g, " ")
-            .replace(/\b(BT|ET|Tf|Td|Tj|TJ|Tm|rg|rg|re|w|J|j|M|d|S|f|g|gs|cs|scn|BI|ID|EI|Do|cm|q|Q|gs|BT|ET)\b/g, " ")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 50000);
-          if (!text || text.length < 50) {
-            text = `[Binary document: ${file.name}. Text extraction for ${type.toUpperCase()} is limited — the source is indexed by title and metadata. For full AI retrieval, paste the key content as a TXT file.]`;
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          let binary = "";
+          const chunkSize = 0x8000;
+          for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
           }
+          const response = await fetch("/api/knowledge/extract-file", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileName: file.name, base64: btoa(binary) }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || "Could not extract document text.");
+          text = payload.text || "";
         }
 
         const final: KnowledgeSource = { ...source, content: text, status: "ready" };
