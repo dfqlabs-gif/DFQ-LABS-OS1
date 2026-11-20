@@ -465,7 +465,7 @@ export function getInternActivities(leads: Lead[], selectedDate: string) {
 
           activities.push({
             ts: log.ts,
-            type: log.type,
+            type: log.type === "dm" && log.messageType === "VALUE_DM" && log.source === "nurture_portal" ? "nurture" : log.type,
             actor: resolvedActor,
             leadName: lead.name || "Unnamed",
             company: lead.company || "Unknown Company",

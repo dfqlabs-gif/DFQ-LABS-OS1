@@ -39,6 +39,7 @@ export interface Lead {
     direction?: "inbound" | "outbound";
     outboundId?: string;
     messageType?: string;
+    source?: string;
     status?: "sent" | "reversed";
     label: string;
     text: string;
