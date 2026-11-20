@@ -1152,15 +1152,38 @@ app.get("/api/outbound/activity", async (req, res) => {
   }
 });
 
+// Historical reconciliation is deliberately a one-time background task. Running
+// hundreds of per-outbound database operations inside the summary request kept
+// the mobile UI on its loading state and made every refresh repeat the work.
+let legacyLearningBackfillStarted = false;
+function scheduleLegacyLearningBackfill() {
+  if (!LEARNING_ENABLED || legacyLearningBackfillStarted) return;
+  legacyLearningBackfillStarted = true;
+  setImmediate(async () => {
+    try {
+      const leadRows = (await db.query("SELECT data FROM leads WHERE jsonb_typeof(data->'outboundMessages') = 'array'")).rows;
+      for (const row of leadRows) await syncLearningForLead(row.data as Lead);
+      console.log(`✓ Legacy learning reconciliation processed ${leadRows.length} lead(s)`);
+    } catch (error) {
+      // Permit a later request to retry if the background reconciliation fails.
+      legacyLearningBackfillStarted = false;
+      console.error("Legacy learning reconciliation failed:", error);
+    }
+  });
+}
+
 app.get("/api/learning/summary", async (_req, res) => {
   try {
-    // Reconcile legacy outbound JSONB records into the learning ledger so the
-    // generated count includes saved drafts created before generation sync existed.
-    const leadRows = (await db.query("SELECT data FROM leads WHERE jsonb_typeof(data->'outboundMessages') = 'array'")).rows;
-    for (const row of leadRows) await syncLearningForLead(row.data as Lead);
-    const events = (await db.query("SELECT data FROM sales_learning_events")).rows.map((row: any) => row.data as LearningEvent);
-    const insights = (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight);
+    // Serve the durable projection immediately. New outbound activity is synced
+    // on write; older records are reconciled separately without blocking UI.
+    const [eventResult, insightResult] = await Promise.all([
+      db.query("SELECT data FROM sales_learning_events"),
+      db.query("SELECT data FROM sales_learning_insights"),
+    ]);
+    const events = eventResult.rows.map((row: any) => row.data as LearningEvent);
+    const insights = insightResult.rows.map((row: any) => row.data as LearningInsight);
     res.json({ enabled: LEARNING_ENABLED, influenceEnabled: LEARNING_INFLUENCE_ENABLED, summary: summarizeLearning(events, insights), insights: insights.sort((a, b) => b.confidence - a.confidence).slice(0, 20) });
+    scheduleLegacyLearningBackfill();
   } catch (error) { console.error("GET /api/learning/summary:", error); res.status(500).json({ error: "Failed to load learning analytics." }); }
 });
 
