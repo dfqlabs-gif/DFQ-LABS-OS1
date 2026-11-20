@@ -832,7 +832,7 @@ async function enrichLeadAttachments(lead: any): Promise<any> {
 // Keyword-based retrieval: derive keywords from the lead's context and match
 // against enabled knowledge sources. Returns the most relevant snippets so
 // the AI reasons with targeted knowledge instead of the entire knowledge base.
-async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise<{ title: string; snippet: string }[]> {
+async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise<{ title: string; category: string; sourceUrl: string; snippet: string }[]> {
   try {
     const result = await db.query("SELECT data FROM knowledge_sources");
     const sources = (result.rows as any[])
@@ -898,7 +898,7 @@ async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise
       const content = x.source.content;
       // Return a focused snippet (first 1200 chars) — never the whole document
       const snippet = content.length > 1200 ? content.slice(0, 1200) + "\n[...]" : content;
-      return { title: x.source.title, snippet };
+      return { title: x.source.title, category: x.source.category || "Uncategorised", sourceUrl: x.source.sourceUrl || "", snippet };
     });
   } catch (err) {
     console.error("retrieveKnowledgeForLead error:", err);
@@ -927,7 +927,7 @@ app.post("/api/value-dm", async (req, res) => {
   // Retrieve relevant knowledge for this lead + message type (Part 2)
   const knowledge = await retrieveKnowledgeForLead(leadWithAttachments, type);
   const knowledgeBlock = knowledge.length > 0
-    ? `\n\n=== RELEVANT DFQ LABS KNOWLEDGE (use only what is genuinely relevant — do not force unrelated material) ===\n${knowledge.map(k => `--- ${k.title} ---\n${k.snippet}`).join("\n\n")}\n=== END KNOWLEDGE ===`
+    ? `\n\n=== RELEVANT DFQ LABS KNOWLEDGE (use only what is genuinely relevant — do not force unrelated material) ===\n${knowledge.map(k => `--- ${k.title} | Category: ${k.category}${k.sourceUrl ? ` | Source: ${k.sourceUrl}` : ""} ---\n${k.snippet}`).join("\n\n")}\n=== END KNOWLEDGE ===`
     : "";
 
   let styleInstructions: string;
