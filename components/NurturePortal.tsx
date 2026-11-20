@@ -15,7 +15,6 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
   const [activityActor, setActivityActor] = useState(userId);
   const [query, setQuery] = useState("");
   const [stageFilter, setStageFilter] = useState("All");
-  const [visibleCount, setVisibleCount] = useState(40);
   const [drafting, setDrafting] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [outbounds, setOutbounds] = useState<Record<string, OutboundMessage>>({});
@@ -26,14 +25,37 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
   const [savingBatch, setSavingBatch] = useState(false);
   const [batchMessage, setBatchMessage] = useState("");
 
+  const THREE_DAYS_MS = 72 * 60 * 60 * 1000;
+  const nurtureState = (lead: Lead) => {
+    const sent = (lead.outboundMessages || []).filter(item => item.messageType === "VALUE_DM" && item.status === "SENT");
+    const latest = sent.sort((a, b) => (b.sentAt || "").localeCompare(a.sentAt || ""))[0];
+    if (!latest) return { due: true, label: "Ready for first value DM", lastSentAt: "" };
+    if (!latest.sentAt) return { due: false, label: "Review required — sent time unavailable", lastSentAt: "" };
+    const nextAt = new Date(latest.sentAt).getTime() + THREE_DAYS_MS;
+    const remaining = nextAt - Date.now();
+    if (remaining > 0) {
+      const hours = Math.ceil(remaining / 3600000);
+      return { due: false, label: "Next value DM in " + (hours >= 24 ? Math.ceil(hours / 24) + " day(s)" : hours + " hour(s)"), lastSentAt: latest.sentAt };
+    }
+    return { due: true, label: "Ready — 3-day interval completed", lastSentAt: latest.sentAt };
+  };
+
+  const dueLeads = useMemo(() => leads
+    .filter(lead => !lead.mergedInto && !["Closed", "Lost"].includes(lead.status))
+    .filter(lead => !specialistNames?.length || specialistNames.includes(lead.assignedTo || ""))
+    .filter(lead => nurtureState(lead).due)
+    .sort((a, b) => {
+      const aLast = (a.outboundMessages || []).filter(m => m.messageType === "VALUE_DM" && m.status === "SENT").map(m => m.sentAt || "").sort().at(-1) || "";
+      const bLast = (b.outboundMessages || []).filter(m => m.messageType === "VALUE_DM" && m.status === "SENT").map(m => m.sentAt || "").sort().at(-1) || "";
+      return aLast.localeCompare(bLast) || (a.lastMeaningfulTouchpoint || a.lastContacted || a.dateAdded || "").localeCompare(b.lastMeaningfulTouchpoint || b.lastContacted || b.dateAdded || "");
+    }), [leads, specialistNames]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return leads.filter(lead => !lead.mergedInto && !["Closed", "Lost"].includes(lead.status))
-      .filter(lead => !specialistNames?.length || specialistNames.includes(lead.assignedTo || ""))
+    return dueLeads
       .filter(lead => stageFilter === "All" || lead.status === stageFilter)
       .filter(lead => !q || [lead.name, lead.company, lead.status, lead.assignedTo, lead.instagram].some(value => String(value || "").toLowerCase().includes(q)))
-      .sort((a, b) => (a.lastMeaningfulTouchpoint || a.lastContacted || a.dateAdded || "").localeCompare(b.lastMeaningfulTouchpoint || b.lastContacted || b.dateAdded || ""));
-  }, [leads, query, specialistNames, stageFilter]);
+      .slice(0, 30);
+  }, [dueLeads, query, stageFilter]);
 
   const loadActivities = async () => {
     try {
@@ -55,6 +77,7 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
           "Provide one concrete, useful insight relevant to this prospect's real-estate business, content positioning, investor confidence or buyer psychology.",
           "No pitch, sales CTA, question, request for a reply, or disguised sales ask.",
           "Never invent projects, locations, numbers or personal facts. If evidence is limited, provide a grounded insight relevant to the known business category.",
+          "End with a low-pressure closing sentence such as: “Just thought this was worth sharing in case it’s useful.” Do not add a question, invitation to book, sales pitch, or request for a reply to this routine value message.",
           "Write one concise paragraph, or two only when genuinely necessary, in natural WhatsApp language."
         ].join("\n"),
       });
@@ -92,8 +115,9 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
       <div style={{ display: "flex", alignItems: "center", gap: 8, color: G, fontSize: 10, fontWeight: 800, letterSpacing: "0.12em" }}><Sprout size={14} /> RELATIONSHIP INTELLIGENCE</div>
       <div style={{ fontSize: 21, fontWeight: 850, marginTop: 7 }}>Nurture Portal</div>
       <div style={{ fontSize: 12, color: MUTED2, lineHeight: 1.65, marginTop: 5 }}>Deliver useful, prospect-specific intelligence without turning every interaction into a sales follow-up. Drafts enter the conversation only after you confirm they were sent.</div>
+      <div style={{ fontSize: 11, color: MUTED2, marginTop: 8, lineHeight: 1.6 }}>Relationship cadence: a prospect becomes eligible again 72 hours after the last confirmed SENT Value DM. Drafting or opening WhatsApp does not start the cooldown. The list always surfaces the next 30 prospects who are due.</div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <div style={{ background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, padding: "8px 12px" }}><strong style={{ color: G, fontSize: 18 }}>{filtered.length}</strong><div style={{ color: MUTED, fontSize: 9 }}>ELIGIBLE LEADS</div></div>
+        <div style={{ background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, padding: "8px 12px" }}><strong style={{ color: G, fontSize: 18 }}>{filtered.length}</strong><div style={{ color: MUTED, fontSize: 9 }}>NEXT 30 DUE</div></div>
         <div style={{ background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, padding: "8px 12px" }}><strong style={{ color: "#22C55E", fontSize: 18 }}>{activities.filter(item => item.activityDate === today()).length}</strong><div style={{ color: MUTED, fontSize: 9 }}>PROSPECTING LOGS TODAY</div></div>
       </div>
     </div>
@@ -101,7 +125,7 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10 }}><Search size={14} color={G} /><strong style={{ fontSize: 12 }}>Find a prospect</strong></div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><input value={query} onChange={event => { setQuery(event.target.value); setVisibleCount(40); }} placeholder="Search name, company or owner…" style={{ flex: "1 1 220px", background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, color: TEXT, padding: "11px 12px", fontSize: 12 }} /><select value={stageFilter} onChange={event => { setStageFilter(event.target.value); setVisibleCount(40); }} style={{ background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, color: TEXT, padding: "8px 10px", fontSize: 11 }}><option value="All">All stages</option>{Array.from(new Set(leads.map(lead => lead.status).filter(Boolean))).sort().map(stage => <option key={stage} value={stage}>{stage}</option>)}</select></div>
     </div>
-    {filtered.slice(0, visibleCount).map(lead => {
+    {filtered.map(lead => {
       const message = drafts[lead.id]; const outbound = outbounds[lead.id];
       return <div key={lead.id} style={panel}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
@@ -110,7 +134,7 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "9px 0", fontSize: 10, color: MUTED }}>
           <span>Owner: {lead.assignedTo || "Unassigned"}</span><span>· Last contact: {lead.lastContacted || "Not recorded"}</span>
-          <span>· Nurture sent: {(lead.outboundMessages || []).filter(item => item.source === "nurture_portal" && item.status === "SENT").length}</span>
+          <span>· {(lead.outboundMessages || []).filter(item => item.messageType === "VALUE_DM" && item.status === "SENT").length} confirmed Value DM(s)</span><span>· {nurtureState(lead).label}</span>
         </div>
         <button onClick={() => void draftValue(lead)} disabled={drafting !== null} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid " + G_BORDER, background: G_DIM, color: G, borderRadius: 6, padding: "7px 11px", fontSize: 10, fontWeight: 800 }}>
           {drafting === lead.id ? <><Loader2 size={12} /> Drafting…</> : <><Sprout size={12} /> Draft Value DM</>}
@@ -125,8 +149,8 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
         </div>}
       </div>;
     })}
-    {filtered.length > visibleCount && <button onClick={() => setVisibleCount(count => count + 40)} style={{ background: "transparent", border: "1px solid " + BORDER, color: G, borderRadius: 7, padding: 11, fontSize: 11, fontWeight: 800 }}>Load More ({filtered.length - visibleCount} remaining)</button>}
-    {filtered.length === 0 && <div style={{ ...panel, color: MUTED, textAlign: "center" }}>No eligible leads match this search.</div>}
+    {filtered.length === 0 && <div style={{ ...panel, color: MUTED, textAlign: "center" }}>{dueLeads.length === 0 ? "No prospects are due right now. The next prospect becomes eligible 72 hours after their last confirmed Value DM." : "No due prospects match this search or stage filter."}</div>}
+    {dueLeads.length > 30 && <div style={{ color: MUTED2, fontSize: 10, textAlign: "center" }}>Showing the next 30 of {dueLeads.length} prospects currently due.</div>}
     <div style={panel}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}><ClipboardList size={14} color={G} /><strong style={{ fontSize: 12 }}>Log prospecting activity</strong></div>
       <p style={{ color: MUTED2, fontSize: 10, lineHeight: 1.55 }}>For contacts made outside a saved CRM thread, enter one prospect per line. Historical records are date-stamped; no send times are invented.</p>
