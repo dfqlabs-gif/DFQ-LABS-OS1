@@ -14,6 +14,7 @@ const panel: React.CSSProperties = { background: SURFACE, border: "1px solid " +
 export function NurturePortal({ leads, userId, specialistNames, allowActorSelection = false, onLeadCommitted }: Props) {
   const [activityActor, setActivityActor] = useState(userId);
   const [query, setQuery] = useState("");
+  const [stageFilter, setStageFilter] = useState("All");
   const [visibleCount, setVisibleCount] = useState(40);
   const [drafting, setDrafting] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -29,9 +30,10 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
     const q = query.trim().toLowerCase();
     return leads.filter(lead => !lead.mergedInto && !["Closed", "Lost"].includes(lead.status))
       .filter(lead => !specialistNames?.length || specialistNames.includes(lead.assignedTo || ""))
+      .filter(lead => stageFilter === "All" || lead.status === stageFilter)
       .filter(lead => !q || [lead.name, lead.company, lead.status, lead.assignedTo, lead.instagram].some(value => String(value || "").toLowerCase().includes(q)))
       .sort((a, b) => (a.lastMeaningfulTouchpoint || a.lastContacted || a.dateAdded || "").localeCompare(b.lastMeaningfulTouchpoint || b.lastContacted || b.dateAdded || ""));
-  }, [leads, query, specialistNames]);
+  }, [leads, query, specialistNames, stageFilter]);
 
   const loadActivities = async () => {
     try {
@@ -97,7 +99,7 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
     </div>
     <div style={panel}>
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 10 }}><Search size={14} color={G} /><strong style={{ fontSize: 12 }}>Find a prospect</strong></div>
-      <input value={query} onChange={event => { setQuery(event.target.value); setVisibleCount(40); }} placeholder="Search name, company, stage or owner…" style={{ width: "100%", background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, color: TEXT, padding: "11px 12px", fontSize: 12 }} />
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><input value={query} onChange={event => { setQuery(event.target.value); setVisibleCount(40); }} placeholder="Search name, company or owner…" style={{ flex: "1 1 220px", background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, color: TEXT, padding: "11px 12px", fontSize: 12 }} /><select value={stageFilter} onChange={event => { setStageFilter(event.target.value); setVisibleCount(40); }} style={{ background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, color: TEXT, padding: "8px 10px", fontSize: 11 }}><option value="All">All stages</option>{Array.from(new Set(leads.map(lead => lead.status).filter(Boolean))).sort().map(stage => <option key={stage} value={stage}>{stage}</option>)}</select></div>
     </div>
     {filtered.slice(0, visibleCount).map(lead => {
       const message = drafts[lead.id]; const outbound = outbounds[lead.id];
@@ -116,7 +118,7 @@ export function NurturePortal({ leads, userId, specialistNames, allowActorSelect
         {errors[lead.id] && <div style={{ color: "#F87171", fontSize: 10, marginTop: 8 }}>{errors[lead.id]}</div>}
         {message && outbound && <div style={{ marginTop: 11, paddingTop: 10, borderTop: "1px solid " + BORDER }}>
           <div style={{ color: G, fontSize: 9, fontWeight: 800, marginBottom: 6 }}>VALUE MESSAGE — REVIEW BEFORE SENDING</div>
-          <textarea value={message} onChange={event => setDrafts(current => ({ ...current, [lead.id]: event.target.value }))} rows={4} style={{ width: "100%", background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, color: TEXT, padding: 10, fontSize: 12, lineHeight: 1.6 }} />
+          <textarea value={message} readOnly rows={4} style={{ width: "100%", background: SURFACE2, border: "1px solid " + BORDER, borderRadius: 7, color: TEXT, padding: 10, fontSize: 12, lineHeight: 1.6 }} />
           <WhatsAppExecutionButton lead={lead} message={message} messageType="VALUE_DM" source="nurture_portal" userId={userId} outboundId={outbound.id}
             onWhatsAppOpened={async () => { await markOutboundWhatsAppOpened(lead.id, outbound.id); }}
             onSent={async () => { const committed = await confirmOutboundSent(lead.id, outbound.id); onLeadCommitted(committed); }} />

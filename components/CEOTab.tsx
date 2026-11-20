@@ -1065,6 +1065,7 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(110px,1fr))", gap: 8, marginBottom: 14 }}>
                               {[
                                 { label: "New DMs Sent", val: dayStats.newConvos || 0, color: G },
+                                 { label: "Nurture Value Sent", val: dayStats.nurture || 0, color: "#22C55E" },
                                 { label: "Follow-ups", val: dayStats.followUps || 0, color: "#3B82F6" },
                                 { label: "Replies Logged", val: dayStats.replies || 0, color: "#F59E0B" },
                                 { label: "Audits Requested", val: dayStats.auditRequested || 0, color: "#a855f7" },
@@ -1231,7 +1232,7 @@ export function CEOTab({ leads, stats, revenue, onEdit, onLeadCommitted, userId 
                       <UserCheck size={12} /> {specialistLabel(s)}
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                      {[["New DM Sent", r.dmsSent, G], ["Follow-ups Made", r.followUps, "#3B82F6"], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audit Delivered", r.auditsDelivered, "#ec4899"], ["Discovery Call Booked", r.callsBooked, "#F97316"], ["Discovery Call Done", r.callsDone, "#06B6D4"]].map(([label, val, color]) => (
+                      {[["New DM Sent", r.dmsSent, G], ["Nurture Value Sent", r.nurture, "#22C55E"], ["Follow-ups Made", r.followUps, "#3B82F6"], ["Replies Received", r.replies, "#F59E0B"], ["Audits Requested", r.auditsRequested, "#a855f7"], ["Audit Delivered", r.auditsDelivered, "#ec4899"], ["Discovery Call Booked", r.callsBooked, "#F97316"], ["Discovery Call Done", r.callsDone, "#06B6D4"]].map(([label, val, color]) => (
                         <div key={label as string} style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
                           <span style={{ color: MUTED2 }}>{label}:</span>
                           <span style={{ fontWeight: 700, color: color as string }}>{val as number}</span>

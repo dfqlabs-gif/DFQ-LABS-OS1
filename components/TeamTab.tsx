@@ -383,6 +383,7 @@ export function TeamTab({ leads, onSave, onBulkSave }: TeamTabProps) {
           const statTiles: { key: DrillKey; label: string; val: number; color: string }[] = [
             { key: "leadsAdded",      label: "Leads Added",        val: stats.leadsAdded      || 0, color: "#22C55E" },
             { key: "dmsSent",         label: "New DMs Sent",        val: stats.dmsSent         || 0, color: G         },
+            { key: "nurture",         label: "Nurture Value Sent",    val: stats.nurture         || 0, color: "#22C55E" },
             { key: "followUps",       label: "Follow-ups Made",     val: stats.followUps       || 0, color: "#3B82F6" },
             { key: "replies",         label: "Replies Received",    val: stats.replies         || 0, color: "#F59E0B" },
             { key: "auditsRequested", label: "Audits Requested",    val: stats.auditsRequested || 0, color: "#a855f7" },
