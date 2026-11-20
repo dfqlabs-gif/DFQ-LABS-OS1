@@ -93,9 +93,9 @@ export function commitOutboundSent(lead: Lead, outboundId: string, sentAt = nowI
     ...lead,
     conversationLog: alreadyRecorded ? existingLog : [...existingLog, logEntry],
     outboundMessages: outboundMessages.map(message => message.id === outbound.id ? committedOutbound : message),
-    lastContacted: sentAt.slice(0, 10),
-    lastMeaningfulTouchpoint: sentAt.slice(0, 10),
-    awaitingReplySince: "",
+    lastContacted: isNurtureValue ? lead.lastContacted : sentAt.slice(0, 10),
+    lastMeaningfulTouchpoint: isNurtureValue ? lead.lastMeaningfulTouchpoint : sentAt.slice(0, 10),
+    awaitingReplySince: isNurtureValue ? lead.awaitingReplySince : "",
     // Nurture appears in the append-only thread without altering sales follow-up state.
     followUpCount: isNurtureValue || alreadyRecorded ? (lead.followUpCount || 0) : (lead.followUpCount || 0) + 1,
     completedFollowUps: isNurtureValue || alreadyRecorded ? (lead.completedFollowUps || []) : [...(lead.completedFollowUps || []), sentAt],
