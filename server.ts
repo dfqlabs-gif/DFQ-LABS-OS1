@@ -5,6 +5,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
 import { randomBytes, createHash, randomUUID } from "crypto";
+import { inflateRawSync, inflateSync } from "node:zlib";
 import { SYSTEM_PROMPT } from "./aiEngine";
 import { runSalesBrainWithGenerator } from "./salesBrain";
 import type { Lead } from "./types";
@@ -1200,6 +1201,76 @@ app.post("/api/learning/outcomes", async (req, res) => {
     scheduleLearningAnalysis();
     res.json({ ok: true, event: updated });
   } catch (error) { console.error("POST /api/learning/outcomes:", error); res.status(500).json({ error: "Failed to record learning outcome." }); }
+});
+
+function extractDocxText(buffer: Buffer): string {
+  const eocd = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) throw new Error("Invalid DOCX archive.");
+  const count = buffer.readUInt16LE(eocd + 10);
+  const directoryOffset = buffer.readUInt32LE(eocd + 16);
+  let offset = directoryOffset;
+  for (let i = 0; i < count; i++) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.toString("utf8", offset + 46, offset + 46 + nameLength);
+    if (name === "word/document.xml") {
+      const localName = buffer.readUInt16LE(localOffset + 26);
+      const localExtra = buffer.readUInt16LE(localOffset + 28);
+      const dataStart = localOffset + 30 + localName + localExtra;
+      const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+      const xml = (method === 8 ? inflateRawSync(compressed) : compressed).toString("utf8");
+      return xml.replace(/<w:tab\b[^>]*\/>/g, " ").replace(/<w:br\b[^>]*\/>/g, "\n").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
+    }
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  throw new Error("Could not locate readable Word document text.");
+}
+
+function extractPdfText(buffer: Buffer): string {
+  const raw = buffer.toString("latin1");
+  const chunks: string[] = [];
+  const streamPattern = /<<(.*?)>>\s*stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match: RegExpExecArray | null;
+  while ((match = streamPattern.exec(raw))) {
+    let stream = Buffer.from(match[2], "latin1");
+    try { if (/\/FlateDecode/.test(match[1])) stream = inflateSync(stream); } catch { continue; }
+    const content = stream.toString("latin1");
+    const textBlocks = content.match(/BT[\s\S]*?ET/g) || [];
+    for (const block of textBlocks) {
+      const strings = block.match(/\((?:\\.|[^\\)])*\)\s*Tj|\[(?:[\s\S]*?)\]\s*TJ/g) || [];
+      for (const item of strings) {
+        const literals = item.match(/\((?:\\.|[^\\)])*\)/g) || [];
+        for (const literal of literals) chunks.push(literal.slice(1, -1).replace(/\\([nrtbf()\\])/g, (_m, ch) => ({ n: "\n", r: "\r", t: "\t", b: "\b", f: "\f" } as any)[ch] || ch).replace(/\\([0-7]{1,3})/g, (_m, oct) => String.fromCharCode(parseInt(oct, 8))));
+        const hex = item.match(/<([0-9A-Fa-f]{4,})>/g) || [];
+        for (const h of hex) { const v = h.slice(1, -1); for (let j = 0; j + 3 < v.length; j += 4) chunks.push(String.fromCharCode(parseInt(v.slice(j, j + 4), 16))); }
+      }
+    }
+  }
+  const text = chunks.join(" ").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, " ").replace(/\s+/g, " ").trim();
+  if (text.length < 40) throw new Error("This PDF has no extractable text layer. Scanned PDFs need OCR before they can be indexed.");
+  return text;
+}
+
+app.post("/api/knowledge/extract-file", async (req, res) => {
+  try {
+    const { fileName, base64 } = req.body || {};
+    if (typeof fileName !== "string" || typeof base64 !== "string" || base64.length > 18_000_000) return res.status(400).json({ error: "A supported file under 13 MB is required." });
+    const buffer = Buffer.from(base64, "base64");
+    const lower = fileName.toLowerCase();
+    let text = "";
+    if (lower.endsWith(".pdf")) text = extractPdfText(buffer);
+    else if (lower.endsWith(".docx")) text = extractDocxText(buffer);
+    else return res.status(415).json({ error: "Supported binary documents are PDF and DOCX. Use TXT or Markdown for text files." });
+    if (text.length < 40) return res.status(422).json({ error: "Not enough readable text was extracted from this document." });
+    res.json({ text: text.slice(0, 100000), characters: text.length });
+  } catch (error: any) {
+    res.status(422).json({ error: error.message || "Could not extract document text." });
+  }
 });
 
 // ── Knowledge Base API (Parts 1, 2, 23) ──────────────────────────────────────
