@@ -21,6 +21,7 @@ export interface KnowledgeSource {
   createdAt: string;
   fileSize?: number;
   error?: string;
+  category?: string;
 }
 
 const TYPE_ICON: Record<string, any> = {
@@ -51,6 +52,7 @@ export function KnowledgeBase() {
   const [uploading, setUploading] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [urlTitle, setUrlTitle] = useState("");
+  const [category, setCategory] = useState("Company Information");
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [viewing, setViewing] = useState<KnowledgeSource | null>(null);
@@ -114,6 +116,7 @@ export function KnowledgeBase() {
         enabled: true,
         createdAt: new Date().toISOString(),
         fileSize: file.size,
+        category,
       };
 
       // Optimistic add
@@ -127,18 +130,19 @@ export function KnowledgeBase() {
         } else if (file.type === "text/html" || file.name.endsWith(".html") || file.name.endsWith(".htm")) {
           text = (await file.text()).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
         } else {
-          // PDF/DOCX — best-effort text extraction from raw stream
-          const raw = await file.text();
-          // Extract readable text between stream markers (basic PDF text recovery)
-          text = raw
-            .replace(/[^\x20-\x7E\n\r]/g, " ")
-            .replace(/\b(BT|ET|Tf|Td|Tj|TJ|Tm|rg|rg|re|w|J|j|M|d|S|f|g|gs|cs|scn|BI|ID|EI|Do|cm|q|Q|gs|BT|ET)\b/g, " ")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 50000);
-          if (!text || text.length < 50) {
-            text = `[Binary document: ${file.name}. Text extraction for ${type.toUpperCase()} is limited — the source is indexed by title and metadata. For full AI retrieval, paste the key content as a TXT file.]`;
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          let binary = "";
+          const chunkSize = 0x8000;
+          for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
           }
+          const response = await fetch("/api/knowledge/extract-file", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileName: file.name, base64: btoa(binary) }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || "Could not extract document text.");
+          text = payload.text || "";
         }
 
         const final: KnowledgeSource = { ...source, content: text, status: "ready" };
@@ -164,7 +168,7 @@ export function KnowledgeBase() {
     const title = urlTitle.trim() || url;
     const source: KnowledgeSource = {
       id, title, type: "url", status: "processing", content: "",
-      sourceUrl: url, enabled: true, createdAt: new Date().toISOString(),
+      sourceUrl: url, enabled: true, createdAt: new Date().toISOString(), category,
     };
     setSources(p => [source, ...p]);
 
@@ -225,6 +229,12 @@ export function KnowledgeBase() {
           <Upload size={12} /> Add Knowledge Source
         </div>
 
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: "block", color: MUTED, fontSize: 10, marginBottom: 5 }}>Knowledge category</label>
+          <select value={category} onChange={e => setCategory(e.target.value)} style={{ ...iStyle, width: "100%" }}>
+            {["Company Information", "Services & Packages", "Pricing", "Research", "Buyer Psychology", "Case Studies", "Website Content", "Internal Processes", "Other"].map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </div>
         {/* File upload */}
         <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.doc,.txt,.md,.markdown,.json,.html,.htm,text/*" style={{ display: "none" }} onChange={handleFileUpload} />
         <button
@@ -285,7 +295,7 @@ export function KnowledgeBase() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.title}</div>
                     <div style={{ fontSize: 10, color: MUTED, marginTop: 2, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                      <span>{TYPE_LABEL[s.type] || s.type}</span>
+                      <span>{TYPE_LABEL[s.type] || s.type}</span><span>· {s.category || "Uncategorised"}</span>
                       <span>· {new Date(s.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
                       {s.fileSize ? <span>· {(s.fileSize / 1024).toFixed(0)} KB</span> : null}
                       <span style={{ color: statusColor, fontWeight: 700 }}>· {s.status === "ready" ? (s.enabled ? "Ready" : "Disabled") : s.status === "processing" ? "Processing…" : "Error"}</span>

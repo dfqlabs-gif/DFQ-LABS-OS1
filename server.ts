@@ -5,6 +5,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
 import { randomBytes, createHash, randomUUID } from "crypto";
+import { inflateRawSync, inflateSync } from "node:zlib";
 import { SYSTEM_PROMPT } from "./aiEngine";
 import { runSalesBrainWithGenerator } from "./salesBrain";
 import type { Lead } from "./types";
@@ -832,7 +833,7 @@ async function enrichLeadAttachments(lead: any): Promise<any> {
 // Keyword-based retrieval: derive keywords from the lead's context and match
 // against enabled knowledge sources. Returns the most relevant snippets so
 // the AI reasons with targeted knowledge instead of the entire knowledge base.
-async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise<{ title: string; snippet: string }[]> {
+async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise<{ title: string; category: string; sourceUrl: string; snippet: string }[]> {
   try {
     const result = await db.query("SELECT data FROM knowledge_sources");
     const sources = (result.rows as any[])
@@ -898,7 +899,7 @@ async function retrieveKnowledgeForLead(lead: any, messageType: string): Promise
       const content = x.source.content;
       // Return a focused snippet (first 1200 chars) — never the whole document
       const snippet = content.length > 1200 ? content.slice(0, 1200) + "\n[...]" : content;
-      return { title: x.source.title, snippet };
+      return { title: x.source.title, category: x.source.category || "Uncategorised", sourceUrl: x.source.sourceUrl || "", snippet };
     });
   } catch (err) {
     console.error("retrieveKnowledgeForLead error:", err);
@@ -927,7 +928,7 @@ app.post("/api/value-dm", async (req, res) => {
   // Retrieve relevant knowledge for this lead + message type (Part 2)
   const knowledge = await retrieveKnowledgeForLead(leadWithAttachments, type);
   const knowledgeBlock = knowledge.length > 0
-    ? `\n\n=== RELEVANT DFQ LABS KNOWLEDGE (use only what is genuinely relevant — do not force unrelated material) ===\n${knowledge.map(k => `--- ${k.title} ---\n${k.snippet}`).join("\n\n")}\n=== END KNOWLEDGE ===`
+    ? `\n\n=== RELEVANT DFQ LABS KNOWLEDGE (use only what is genuinely relevant — do not force unrelated material) ===\n${knowledge.map(k => `--- ${k.title} | Category: ${k.category}${k.sourceUrl ? ` | Source: ${k.sourceUrl}` : ""} ---\n${k.snippet}`).join("\n\n")}\n=== END KNOWLEDGE ===`
     : "";
 
   let styleInstructions: string;
@@ -1202,6 +1203,76 @@ app.post("/api/learning/outcomes", async (req, res) => {
   } catch (error) { console.error("POST /api/learning/outcomes:", error); res.status(500).json({ error: "Failed to record learning outcome." }); }
 });
 
+function extractDocxText(buffer: Buffer): string {
+  const eocd = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) throw new Error("Invalid DOCX archive.");
+  const count = buffer.readUInt16LE(eocd + 10);
+  const directoryOffset = buffer.readUInt32LE(eocd + 16);
+  let offset = directoryOffset;
+  for (let i = 0; i < count; i++) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.toString("utf8", offset + 46, offset + 46 + nameLength);
+    if (name === "word/document.xml") {
+      const localName = buffer.readUInt16LE(localOffset + 26);
+      const localExtra = buffer.readUInt16LE(localOffset + 28);
+      const dataStart = localOffset + 30 + localName + localExtra;
+      const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+      const xml = (method === 8 ? inflateRawSync(compressed) : compressed).toString("utf8");
+      return xml.replace(/<w:tab\b[^>]*\/>/g, " ").replace(/<w:br\b[^>]*\/>/g, "\n").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
+    }
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  throw new Error("Could not locate readable Word document text.");
+}
+
+function extractPdfText(buffer: Buffer): string {
+  const raw = buffer.toString("latin1");
+  const chunks: string[] = [];
+  const streamPattern = /<<(.*?)>>\s*stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match: RegExpExecArray | null;
+  while ((match = streamPattern.exec(raw))) {
+    let stream = Buffer.from(match[2], "latin1");
+    try { if (/\/FlateDecode/.test(match[1])) stream = inflateSync(stream); } catch { continue; }
+    const content = stream.toString("latin1");
+    const textBlocks = content.match(/BT[\s\S]*?ET/g) || [];
+    for (const block of textBlocks) {
+      const strings = block.match(/\((?:\\.|[^\\)])*\)\s*Tj|\[(?:[\s\S]*?)\]\s*TJ/g) || [];
+      for (const item of strings) {
+        const literals = item.match(/\((?:\\.|[^\\)])*\)/g) || [];
+        for (const literal of literals) chunks.push(literal.slice(1, -1).replace(/\\([nrtbf()\\])/g, (_m, ch) => ({ n: "\n", r: "\r", t: "\t", b: "\b", f: "\f" } as any)[ch] || ch).replace(/\\([0-7]{1,3})/g, (_m, oct) => String.fromCharCode(parseInt(oct, 8))));
+        const hex = item.match(/<([0-9A-Fa-f]{4,})>/g) || [];
+        for (const h of hex) { const v = h.slice(1, -1); for (let j = 0; j + 3 < v.length; j += 4) chunks.push(String.fromCharCode(parseInt(v.slice(j, j + 4), 16))); }
+      }
+    }
+  }
+  const text = chunks.join(" ").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, " ").replace(/\s+/g, " ").trim();
+  if (text.length < 40) throw new Error("This PDF has no extractable text layer. Scanned PDFs need OCR before they can be indexed.");
+  return text;
+}
+
+app.post("/api/knowledge/extract-file", async (req, res) => {
+  try {
+    const { fileName, base64 } = req.body || {};
+    if (typeof fileName !== "string" || typeof base64 !== "string" || base64.length > 18_000_000) return res.status(400).json({ error: "A supported file under 13 MB is required." });
+    const buffer = Buffer.from(base64, "base64");
+    const lower = fileName.toLowerCase();
+    let text = "";
+    if (lower.endsWith(".pdf")) text = extractPdfText(buffer);
+    else if (lower.endsWith(".docx")) text = extractDocxText(buffer);
+    else return res.status(415).json({ error: "Supported binary documents are PDF and DOCX. Use TXT or Markdown for text files." });
+    if (text.length < 40) return res.status(422).json({ error: "Not enough readable text was extracted from this document." });
+    res.json({ text: text.slice(0, 100000), characters: text.length });
+  } catch (error: any) {
+    res.status(422).json({ error: error.message || "Could not extract document text." });
+  }
+});
+
 // ── Knowledge Base API (Parts 1, 2, 23) ──────────────────────────────────────
 
 app.get("/api/knowledge", async (_req, res) => {
@@ -1246,29 +1317,60 @@ app.delete("/api/knowledge", async (req, res) => {
 app.post("/api/knowledge/fetch-url", async (req, res) => {
   const { url } = req.body || {};
   if (!url) return res.status(400).json({ error: "url is required." });
+  const isPublicHttpUrl = (value: string) => {
+    let parsed: URL;
+    try { parsed = new URL(value); } catch { return false; }
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host === "::1") return false;
+    const ip = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ip) {
+      const a = Number(ip[1]), b = Number(ip[2]);
+      if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224) return false;
+    }
+    return true;
+  };
+  const extractPage = async (target: string, originHost: string) => {
+    if (!isPublicHttpUrl(target)) throw new Error("Only public HTTP/HTTPS website URLs can be indexed.");
+    const response = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0 (compatible; DFQLabsKnowledgeBot/1.0)" }, signal: AbortSignal.timeout(12000), redirect: "follow" });
+    const finalUrl = new URL(response.url || target);
+    if (!response.ok) throw new Error("Website returned HTTP " + response.status);
+    if (finalUrl.host !== originHost) throw new Error("Website redirected to a different host; indexing stopped for safety.");
+    const type = response.headers.get("content-type") || "";
+    if (!type.includes("text/html") && !type.includes("text/plain")) throw new Error("This page did not return readable HTML or text.");
+    const html = (await response.text()).slice(0, 2000000);
+    const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || finalUrl.pathname || finalUrl.host).replace(/<[^>]+>/g, " ").trim();
+    const links = [...html.matchAll(/<a\b[^>]*href=["']([^"'#]+)["'][^>]*>/gi)].map(m => {
+      try { const u = new URL(m[1], finalUrl); return u.host === originHost && isPublicHttpUrl(u.toString()) ? u.toString().split("#")[0] : ""; } catch { return ""; }
+    }).filter(Boolean);
+    const text = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<noscript[\s\S]*?<\/noscript>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim();
+    return { title, text, links };
+  };
   try {
-    const response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (DFQLabs-Knowledge-Bot)" },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok) return res.status(502).json({ error: `Fetch failed: HTTP ${response.status}` });
-    const html = await response.text();
-    // Strip scripts/styles/tags, collapse whitespace
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 50000);
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    res.json({ text, title: titleMatch ? titleMatch[1].trim() : url });
+    if (!isPublicHttpUrl(url)) return res.status(400).json({ error: "Enter a valid public HTTP/HTTPS website URL." });
+    const first = new URL(url);
+    const visited = new Set<string>();
+    const queue = [first.toString()];
+    const pages: string[] = [];
+    let title = first.host;
+    while (queue.length && visited.size < 12 && pages.join("\n").length < 45000) {
+      const next = queue.shift()!;
+      if (visited.has(next)) continue;
+      visited.add(next);
+      try {
+        const page = await extractPage(next, first.host);
+        if (pages.length === 0) title = page.title;
+        pages.push("PAGE: " + page.title + "\nURL: " + next + "\n" + page.text);
+        for (const link of page.links) if (!visited.has(link) && queue.length < 30) queue.push(link);
+      } catch (pageError: any) {
+        if (pages.length === 0) throw pageError;
+      }
+    }
+    const text = pages.join("\n\n").slice(0, 50000);
+    if (text.length < 100) throw new Error("The website did not expose enough readable text to index.");
+    res.json({ text, title, pagesIndexed: pages.length });
   } catch (err: any) {
-    res.status(500).json({ error: "Could not fetch URL: " + (err.message || "unknown error") });
+    res.status(502).json({ error: "Could not index website: " + (err.message || "unknown error") });
   }
 });
 
