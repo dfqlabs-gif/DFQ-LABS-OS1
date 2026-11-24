@@ -238,13 +238,100 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
     const decision = req.body?.decision;
     if (!["approve","reject"].includes(decision)) return res.status(400).json({ error: "Decision must be approve or reject" });
     try {
-      if (decision === "approve") {
-        const item = await db.query("SELECT lead_id, action_type FROM agent_queue WHERE id=$1 AND status='pending_approval'", [req.params.id]);
-        if (!item.rowCount) return res.status(409).json({ error: "Item is no longer awaiting review" });
-        if (item.rows[0].lead_id && ["outreach_dm","value_dm","follow_up"].includes(item.rows[0].action_type)) {
-          const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [item.rows[0].lead_id]);
-          if (control.rows[0]?.do_not_contact) return res.status(409).json({ error: "This lead is marked do-not-contact. The draft cannot be approved." });
-        }
+      const itemResult = await db.query("SELECT * FROM agent_queue WHERE id=$1 AND status='pending_approval'", [req.params.id]);
+      const queueItem = itemResult.rows[0];
+      if (!queueItem) return res.status(409).json({ error: "Item is no longer awaiting review" });
+
+      if (decision === "approve" && queueItem.action_type === "new_lead") {
+        const metadata = queueItem.metadata || {};
+        const company = String(metadata.company_name || "").trim().slice(0,200);
+        const sourceUrl = String(metadata.source_url || "").trim();
+        const website = String(metadata.website || "").trim();
+        const observation = String(metadata.buyer_psychology_observation || "").trim().slice(0,1000);
+        const safeUrl = (value: string) => {
+          try { const url = new URL(value); return ["https:","http:"].includes(url.protocol) ? url.toString() : ""; } catch { return ""; }
+        };
+        if (!company || !safeUrl(sourceUrl)) return res.status(400).json({ error: "Scout item is missing a verified company name or source URL." });
+        const client = await db.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["dfqlabs-scout-company:" + company.toLowerCase()]);
+          const existing = await client.query("SELECT id, data FROM leads FOR UPDATE");
+          const domain = (value: string) => { try { return new URL(value).hostname.toLowerCase().replace(/^www\./,""); } catch { return ""; } };
+          const phone = String(metadata.phone || metadata.whatsapp || "").replace(/\D/g,"");
+          const instagram = String(metadata.instagram_url || "").toLowerCase().replace(/\/$/,"");
+          const duplicate = existing.rows.find((row: any) => {
+            const lead = row.data || {};
+            return String(lead.company || "").trim().toLowerCase() === company.toLowerCase() ||
+              (!!website && !!lead.website && domain(website) === domain(String(lead.website))) ||
+              (!!phone && String(lead.whatsapp || lead.phone || "").replace(/\D/g,"") === phone) ||
+              (!!instagram && String(lead.instagram || "").toLowerCase().replace(/\/$/,"") === instagram);
+          });
+          if (duplicate) {
+            await client.query("UPDATE agent_queue SET status='rejected', error_log=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW() WHERE id=$3", ["Possible duplicate of CRM lead " + duplicate.id, actor.userId, req.params.id]);
+            await client.query("COMMIT");
+            await audit(actor, "scout_duplicate_rejected", req.params.id, { duplicateLeadId: duplicate.id });
+            return res.status(409).json({ error: "Possible duplicate detected. Existing lead: " + (duplicate.data?.company || duplicate.id) });
+          }
+          const now = new Date();
+          const date = now.toISOString().slice(0,10);
+          const leadId = randomUUID();
+          const lead = {
+            id: leadId,
+            name: String(metadata.contact_name || company).slice(0,160),
+            company,
+            phone: phone ? String(metadata.phone || metadata.whatsapp) : "",
+            whatsapp: phone ? String(metadata.whatsapp || metadata.phone) : "",
+            email: String(metadata.email || "").slice(0,180),
+            website: safeUrl(website),
+            instagram: safeUrl(String(metadata.instagram_url || "")),
+            linkedin: safeUrl(String(metadata.linkedin_url || "")),
+            source: "AI Scout — " + String(metadata.city || "Nigeria").slice(0,80),
+            clientType: "Real Estate",
+            service: "Content Intelligence",
+            status: "New",
+            priority: "Medium",
+            assignedTo: actor.displayName || "Unassigned",
+            notes: ["Buyer psychology observation: " + (observation || "Review company positioning and buyer trust signals."), "Verified source: " + safeUrl(sourceUrl), "Scout discovery. Verify contact details before outreach."].join("\n"),
+            dmText: "",
+            prospectInitialResponse: "",
+            prospectLatestResponse: "",
+            conversationLog: [],
+            nextAction: "Verify the company profile and approve an appropriate first outreach angle.",
+            nextActionDate: date,
+            dateAdded: date,
+            lastContacted: "",
+            lastMeaningfulTouchpoint: "",
+            awaitingReplySince: "",
+            meetingScheduledAt: "",
+            meetingPrepNote: "",
+            followUpCount: 0,
+            weekAdded: date,
+            completedFollowUps: [],
+            betaCandidate: false,
+            autoFollowUpDate: null,
+            autoFollowUpReason: "",
+            outboundMessages: [],
+          };
+          await client.query("INSERT INTO leads (id, data, updated_at) VALUES ($1,$2::jsonb,NOW())", [leadId, JSON.stringify(lead)]);
+          const updated = await client.query(`
+            UPDATE agent_queue SET status='completed', reviewed_by=$1, reviewed_at=NOW(),
+              metadata = metadata || jsonb_build_object('createdLeadId',$2::text),
+              updated_at=NOW()
+            WHERE id=$3 RETURNING *
+          `, [actor.userId, leadId, req.params.id]);
+          await client.query("COMMIT");
+          await audit(actor, "scout_lead_created", req.params.id, { leadId, company });
+          return res.json({ item: updated.rows[0], createdLeadId: leadId });
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => {});
+          throw error;
+        } finally { client.release(); }
+      }
+
+      if (decision === "approve" && queueItem.lead_id && ["outreach_dm","value_dm","follow_up"].includes(queueItem.action_type)) {
+        const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [queueItem.lead_id]);
+        if (control.rows[0]?.do_not_contact) return res.status(409).json({ error: "This lead is marked do-not-contact. The draft cannot be approved." });
       }
       const status = decision === "approve" ? "approved" : "rejected";
       const result = await db.query(`
