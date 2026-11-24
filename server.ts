@@ -93,6 +93,7 @@ async function syncAgentDoNotContact(lead: Lead): Promise<void> {
     ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source=EXCLUDED.source, updated_by='system', updated_at=NOW()
   `, [lead.id, reason, source]);
   await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: lead is on the do-not-contact list', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [lead.id]);
+  await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,'system:optout','inbound_dnc_applied',$2::jsonb)", [randomUUID(), JSON.stringify({ leadId: lead.id, reason, source })]);
 }
 
 async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
@@ -121,6 +122,7 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
       "Inbound WhatsApp message received from a number that could not be matched to an existing CRM lead. Founder review is required to identify or create the contact.",
       `whatsapp-inbound:${message.messageId}`,
     ]);
+    await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,'system:inbox_sync','whatsapp_inbound_unmatched',$2::jsonb)", [randomUUID(), JSON.stringify({ phone: message.phone, messageId: message.messageId, optedOut: containsExplicitOptOut([message.text]) })]);
     return;
   }
 
@@ -150,6 +152,7 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
     await client.query("UPDATE agent_whatsapp_events SET lead_id=$1 WHERE id=$2", [matched.id, message.messageId]);
     await client.query("COMMIT");
     updatedLead = lead;
+    await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,'system:inbox_sync','whatsapp_inbound_logged',$2::jsonb)", [randomUUID(), JSON.stringify({ leadId: lead.id, messageId: message.messageId })]);
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     throw error;
