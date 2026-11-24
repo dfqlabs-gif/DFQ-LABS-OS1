@@ -355,6 +355,7 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
       for (const id of ids) {
         const item = await db.query("SELECT lead_id, action_type FROM agent_queue WHERE id=$1 AND status='pending_approval'", [id]);
         if (!item.rowCount) { skipped.push({ id, reason: "No longer pending review" }); continue; }
+        if (decision === "approve" && item.rows[0].action_type === "new_lead") { skipped.push({ id, reason: "New lead creation requires individual founder approval." }); continue; }
         if (decision === "approve" && item.rows[0].lead_id && ["outreach_dm","value_dm","follow_up"].includes(item.rows[0].action_type)) {
           const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [item.rows[0].lead_id]);
           if (control.rows[0]?.do_not_contact) { skipped.push({ id, reason: "Lead is marked do-not-contact" }); continue; }
