@@ -1659,8 +1659,8 @@ app.post("/api/leads", async (req, res) => {
         // snapshot transaction has succeeded; never block or alter the import.
         for (const imported of valid) {
           void syncLearningForLead(imported as Lead).catch(error => console.error("Learning snapshot sync failed:", error));
-          void syncAgentDoNotContact(imported as Lead).catch(error => console.error("Agent opt-out sync failed:", error));
         }
+        await Promise.all(valid.map((imported: any) => syncAgentDoNotContact(imported as Lead).catch(error => console.error("Agent opt-out sync failed:", error))));
 
         return res.json({
           ok: true,
@@ -1727,8 +1727,8 @@ app.post("/api/leads", async (req, res) => {
       const importedIds = result.rows.map((row: any) => row.id);
       for (const imported of valid) {
         void syncLearningForLead(imported as Lead).catch(error => console.error("Learning bulk sync failed:", error));
-        void syncAgentDoNotContact(imported as Lead).catch(error => console.error("Agent opt-out sync failed:", error));
       }
+      await Promise.all(valid.map((imported: any) => syncAgentDoNotContact(imported as Lead).catch(error => console.error("Agent opt-out sync failed:", error))));
       return res.json({
         ok: true,
         count: importedIds.length,
@@ -1807,7 +1807,7 @@ app.post("/api/leads", async (req, res) => {
     // CRM persistence is authoritative. Learning is an idempotent, best-effort
     // projection keyed by outbound ID and can never prevent a lead save.
     void syncLearningForLead(mergedLead as Lead).catch(error => console.error("Learning lead sync failed:", error));
-    void syncAgentDoNotContact(mergedLead as Lead).catch(error => console.error("Agent opt-out sync failed:", error));
+    await syncAgentDoNotContact(mergedLead as Lead).catch(error => console.error("Agent opt-out sync failed:", error));
     res.json({ ok: true, lead: mergedLead, actionId: action?.id });
   } catch (err: any) {
     await client.query("ROLLBACK").catch(() => {});
