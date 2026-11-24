@@ -1537,17 +1537,21 @@ async function dispatchApprovedQueue(): Promise<void> {
     const configResult = await client.query("SELECT daily_outreach_cap, daily_value_dm_cap FROM agent_config WHERE id=1");
     const config = configResult.rows[0] || { daily_outreach_cap: 30, daily_value_dm_cap: 30 };
     const isValue = claimedItem.action_type === "value_dm";
+    const isReactiveReply = claimedItem.metadata?.messageType === "RESPONSE_DM";
     const cap = Number(isValue ? config.daily_value_dm_cap : config.daily_outreach_cap);
     const capTypes = isValue ? ["value_dm"] : ["outreach_dm","follow_up"];
-    const sentCount = await client.query(`
-      SELECT COUNT(*)::int AS count FROM agent_queue
-      WHERE action_type = ANY($1::text[]) AND status='sent'
-        AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')
-    `, [capTypes]);
-    if (Number(sentCount.rows[0]?.count || 0) >= cap) {
-      await client.query("UPDATE agent_queue SET status='approved', error_log='Waiting for the next Lagos calendar day: daily send cap reached.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
-      await client.query("COMMIT");
-      return;
+    if (!isReactiveReply) {
+      const sentCount = await client.query(`
+        SELECT COUNT(*)::int AS count FROM agent_queue
+        WHERE action_type = ANY($1::text[]) AND status='sent'
+          AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM'
+          AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')
+      `, [capTypes]);
+      if (Number(sentCount.rows[0]?.count || 0) >= cap) {
+        await client.query("UPDATE agent_queue SET status='approved', error_log='Waiting for the next Lagos calendar day: daily send cap reached.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
+        await client.query("COMMIT");
+        return;
+      }
     }
 
     const phone = normalizePhone(getWhatsAppNumber(lead));
