@@ -150,6 +150,10 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
     const agents = ["scout","inbox_sync","writer","closer","dispatcher"];
     const actions = ["new_lead","log_inbound","outreach_dm","value_dm","follow_up","linkedin_article"];
     if (!agents.includes(agent_name) || !actions.includes(action_type) || typeof draft_content !== "string" || draft_content.length > 30000) return res.status(400).json({ error: "Invalid queue item" });
+    if (lead_id && ["outreach_dm","value_dm","follow_up"].includes(action_type)) {
+      const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [lead_id]);
+      if (control.rows[0]?.do_not_contact) return res.status(409).json({ error: "This lead is marked do-not-contact." });
+    }
     const id = randomUUID();
     try {
       const result = await db.query(`
@@ -180,6 +184,14 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
     const decision = req.body?.decision;
     if (!["approve","reject"].includes(decision)) return res.status(400).json({ error: "Decision must be approve or reject" });
     try {
+      if (decision === "approve") {
+        const item = await db.query("SELECT lead_id, action_type FROM agent_queue WHERE id=$1 AND status='pending_approval'", [req.params.id]);
+        if (!item.rowCount) return res.status(409).json({ error: "Item is no longer awaiting review" });
+        if (item.rows[0].lead_id && ["outreach_dm","value_dm","follow_up"].includes(item.rows[0].action_type)) {
+          const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [item.rows[0].lead_id]);
+          if (control.rows[0]?.do_not_contact) return res.status(409).json({ error: "This lead is marked do-not-contact. The draft cannot be approved." });
+        }
+      }
       const status = decision === "approve" ? "approved" : "rejected";
       const result = await db.query(`
         UPDATE agent_queue SET status=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW()
