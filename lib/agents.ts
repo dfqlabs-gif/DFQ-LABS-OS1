@@ -26,7 +26,7 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
       draft_content TEXT NOT NULL DEFAULT '',
       metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
       reasoning TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'pending_approval' CHECK (status IN ('pending_approval','approved','sent','rejected','failed')),
+      status TEXT NOT NULL DEFAULT 'pending_approval' CHECK (status IN ('pending_approval','approved','sending','sent','rejected','failed')),
       error_log TEXT NULL,
       idempotency_key TEXT UNIQUE,
       scheduled_for TIMESTAMPTZ NULL,
@@ -39,6 +39,13 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
   await db.query("CREATE INDEX IF NOT EXISTS agent_queue_status_created_idx ON agent_queue(status, created_at DESC)");
   await db.query("CREATE INDEX IF NOT EXISTS agent_queue_lead_created_idx ON agent_queue(lead_id, created_at DESC)");
   await db.query("CREATE INDEX IF NOT EXISTS agent_queue_action_status_idx ON agent_queue(action_type, status, created_at DESC)");
+  await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS external_message_id TEXT");
+  await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ");
+  await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS dispatch_attempts INTEGER NOT NULL DEFAULT 0");
+  await db.query("ALTER TABLE agent_queue DROP CONSTRAINT IF EXISTS agent_queue_status_check");
+  await db.query("ALTER TABLE agent_queue ADD CONSTRAINT agent_queue_status_check CHECK (status IN ('pending_approval','approved','sending','sent','rejected','failed'))");
+  await db.query("UPDATE agent_queue SET status='failed', error_log='Interrupted during dispatch; verify WhatsApp delivery manually before retrying.', updated_at=NOW() WHERE status='sending' AND updated_at < NOW() - INTERVAL '10 minutes'");
+
   await db.query(`
     CREATE TABLE IF NOT EXISTS agent_logs (
       id UUID PRIMARY KEY,
