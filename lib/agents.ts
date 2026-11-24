@@ -445,6 +445,25 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
     } catch (error) { console.error("Circuit breaker reset failed", error); res.status(500).json({ error: "Could not reset circuit breaker" }); }
   });
 
+  router.get("/phone-suppressions", async (req, res) => {
+    if (!founder(req, res)) return;
+    try {
+      const result = await db.query("SELECT phone, reason, source, updated_at FROM agent_phone_suppressions ORDER BY updated_at DESC LIMIT 200");
+      res.json({ suppressions: result.rows });
+    } catch (error) { console.error("Phone suppression read failed", error); res.status(500).json({ error: "Could not load phone suppressions" }); }
+  });
+
+  router.delete("/phone-suppressions/:phone", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const phone = String(req.params.phone || "").replace(/\\D/g,"");
+    if (phone.length < 7 || phone.length > 15) return res.status(400).json({ error: "Invalid phone number" });
+    try {
+      await db.query("DELETE FROM agent_phone_suppressions WHERE phone=$1", [phone]);
+      await audit(actor, "phone_suppression_removed_after_opt_in", null, { phone });
+      res.json({ ok: true, phone, suppressed: false });
+    } catch (error) { console.error("Phone suppression removal failed", error); res.status(500).json({ error: "Could not remove phone suppression" }); }
+  });
+
   router.get("/logs", async (req, res) => {
     if (!founder(req, res)) return;
     try {
