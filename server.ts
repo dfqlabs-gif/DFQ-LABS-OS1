@@ -1936,8 +1936,10 @@ app.post("/api/agents/scout", async (req, res) => {
       const isGroundedUrl = (value: string) => groundingSources.some((source: any) => norm(source.uri) === norm(value));
       const isGroundedDomain = (value: string) => groundingSources.some((source: any) => domain(source.uri) && domain(source.uri) === domain(value));
       const website = websiteCandidate && isGroundedDomain(websiteCandidate) ? websiteCandidate : "";
-      const instagramUrl = instagramCandidate && domain(instagramCandidate) === "www.instagram.com" || instagramCandidate && domain(instagramCandidate) === "instagram.com" ? (isGroundedUrl(instagramCandidate) ? instagramCandidate : "") : "";
-      const linkedinUrl = linkedinCandidate && (domain(linkedinCandidate) === "www.linkedin.com" || domain(linkedinCandidate) === "linkedin.com") ? (isGroundedUrl(linkedinCandidate) ? linkedinCandidate : "") : "";
+      const instagramDomain = domain(instagramCandidate);
+      const linkedinDomain = domain(linkedinCandidate);
+      const instagramUrl = instagramCandidate && ["www.instagram.com","instagram.com"].includes(instagramDomain) && isGroundedUrl(instagramCandidate) ? instagramCandidate : "";
+      const linkedinUrl = linkedinCandidate && ["www.linkedin.com","linkedin.com"].includes(linkedinDomain) && isGroundedUrl(linkedinCandidate) ? linkedinCandidate : "";
       const phone = phoneDigits(item.phone || item.whatsapp);
       const duplicate = known.find((lead: any) =>
         norm(lead.company_name || lead.company) === norm(company) ||
