@@ -31,6 +31,9 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const [articleTopic,setArticleTopic] = useState("");
   const [articleBusy,setArticleBusy] = useState(false);
   const [selectedQueueIds,setSelectedQueueIds] = useState<string[]>([]);
+  const [scoutCity,setScoutCity] = useState("Abuja");
+  const [scoutBusy,setScoutBusy] = useState(false);
+  const [scoutResult,setScoutResult] = useState<any>(null);
   const headers = useMemo(() => ({ "Content-Type":"application/json", Authorization:`Bearer ${token}` }),[token]);
 
   const request = useCallback(async (url:string, init:RequestInit = {}) => {
@@ -84,6 +87,14 @@ export function AgentReviewQueue({ token, leads }: Props) {
       setBulkResult(result); setBulkExport(""); await refresh();
     } catch(e:any) { setError(e.message); }
     finally { setBulkBusy(false); }
+  };
+
+  const runScout = async () => {
+    if (!scoutCity.trim()) { setError("Enter a city for the Scout."); return; }
+    setScoutBusy(true); setError(""); setScoutResult(null);
+    try { const result=await request("/api/agents/scout",{method:"POST",body:JSON.stringify({city:scoutCity,limit:10})}); setScoutResult(result); await refresh(); }
+    catch(e:any){setError(e.message);}
+    finally{setScoutBusy(false);}
   };
 
   const generateLinkedInArticle = async () => {
@@ -214,6 +225,12 @@ export function AgentReviewQueue({ token, leads }: Props) {
         <button disabled={busy==="generate"||!selectedLeadIds.length} onClick={()=>generateDrafts("follow_up")} style={{background:SURFACE2,border:`1px solid ${BORDER}`,color:TEXT,borderRadius:6,padding:"8px 11px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Generate Follow-ups</button>
         {busy==="generate"&&<span style={{fontSize:10,color:G,alignSelf:"center"}}>Gemini is reading CRM context…</span>}
       </div>
+    </section>
+    <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
+      <div style={{fontSize:11,fontWeight:900,color:TEXT,marginBottom:5}}>Real-estate Scout</div>
+      <div style={{fontSize:10,color:MUTED,marginBottom:10}}>Gemini uses Google Search grounding to discover public real-estate businesses. Verified candidates are staged as New Lead items; no lead is created until you approve it.</div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input value={scoutCity} onChange={e=>setScoutCity(e.target.value)} placeholder="Abuja, Lagos, Port Harcourt…" style={{...iStyle,flex:"1 1 220px"}}/><button disabled={scoutBusy||!scoutCity.trim()} onClick={runScout} style={{background:G_DIM,border:`1px solid ${G_BORDER}`,color:G,borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>{scoutBusy?"Searching public sources…":"Run Scout"}</button></div>
+      {scoutResult&&<div style={{fontSize:10,color:G,marginTop:9}}>Scout staged {scoutResult.staged?.length||0} candidate(s) for review; {scoutResult.skipped?.length||0} skipped.</div>}
     </section>
     <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
       <div style={{fontSize:11,fontWeight:900,color:TEXT,marginBottom:5}}>LinkedIn thought leadership</div>
