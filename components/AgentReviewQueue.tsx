@@ -12,6 +12,7 @@ const LABELS: Record<string,string> = { outreach_dm:"Outreach DM", value_dm:"Val
 
 export function AgentReviewQueue({ token, leads }: Props) {
   const [config,setConfig] = useState<Config | null>(null);
+  const [counters,setCounters] = useState<any>({});
   const [items,setItems] = useState<QueueItem[]>([]);
   const [filter,setFilter] = useState("all");
   const [status,setStatus] = useState("pending_approval");
