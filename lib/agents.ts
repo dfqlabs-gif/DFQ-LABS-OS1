@@ -253,6 +253,20 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
     } catch (error) { console.error("Do-not-contact removal failed", error); res.status(500).json({ error: "Could not update contact control" }); }
   });
 
+  router.post("/circuit-breakers/:agentName/reset", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const agentName = req.params.agentName;
+    if (!["scout","inbox_sync","writer","closer","dispatcher"].includes(agentName)) return res.status(400).json({ error: "Unknown agent" });
+    try {
+      await db.query(
+        "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,$2,'success',$3,0,0,$4::jsonb)",
+        [randomUUID(), agentName, "Circuit breaker manually reset by founder.", JSON.stringify({ resetBy: actor.userId })]
+      );
+      await audit(actor, "agent_circuit_breaker_reset", null, { agentName });
+      res.json({ ok: true, agentName, halted: false });
+    } catch (error) { console.error("Circuit breaker reset failed", error); res.status(500).json({ error: "Could not reset circuit breaker" }); }
+  });
+
   router.get("/logs", async (req, res) => {
     if (!founder(req, res)) return;
     try {
