@@ -26,6 +26,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const [selectedLeadIds,setSelectedLeadIds] = useState<string[]>([]);
   const [whatsapp,setWhatsapp] = useState<WhatsAppStatus|null>(null);
   const [whatsappBusy,setWhatsappBusy] = useState(false);
+  const [showQrModal,setShowQrModal] = useState(false);
   const [bulkExport,setBulkExport] = useState("");
   const [bulkPhone,setBulkPhone] = useState("");
   const [bulkMyName,setBulkMyName] = useState("You");
@@ -211,7 +212,8 @@ export function AgentReviewQueue({ token, leads }: Props) {
         {whatsapp?.connectedPhone&&<span style={{fontSize:10,color:G,alignSelf:"center"}}>Connected number: +{whatsapp.connectedPhone}</span>}
       </div>
       {!whatsapp?.encryptionConfigured&&<div style={{fontSize:10,color:"#FCA5A5",marginTop:10}}>Before connecting, add WHATSAPP_SESSION_ENCRYPTION_KEY (a random secret of at least 32 characters) to the OS1 Render environment. Session credentials are encrypted in PostgreSQL.</div>}
-      {whatsapp?.qrDataUrl&&<div style={{display:"flex",gap:16,alignItems:"center",flexWrap:"wrap",marginTop:14,padding:12,background:"#fff",borderRadius:8,width:"fit-content"}}><img src={whatsapp.qrDataUrl} alt="WhatsApp Web QR code" style={{width:220,height:220}}/><div style={{maxWidth:230,color:"#111",fontSize:11,lineHeight:1.6}}><b>Scan with your phone</b><br/>Open WhatsApp → Linked Devices → Link a Device. Scan this QR code to connect the account you are authorized to use.</div></div>}
+      {whatsapp?.qrDataUrl&&<button onClick={()=>setShowQrModal(true)} style={{marginTop:12,background:G_DIM,border:`1px solid ${G_BORDER}`,color:G,borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>Open WhatsApp QR scanner</button>}
+      {showQrModal&&whatsapp?.qrDataUrl&&<div role="dialog" aria-modal="true" aria-label="WhatsApp QR scanner" onClick={()=>setShowQrModal(false)} style={{position:"fixed",inset:0,zIndex:10000,background:"rgba(0,0,0,.78)",display:"flex",alignItems:"center",justifyContent:"center",padding:18}}><div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:12,padding:18,maxWidth:360,width:"100%",textAlign:"center",color:"#111"}}><div style={{fontSize:14,fontWeight:900,marginBottom:8}}>Link WhatsApp Web</div><img src={whatsapp.qrDataUrl} alt="WhatsApp Web QR code" style={{width:260,height:260,maxWidth:"100%"}}/><div style={{fontSize:11,lineHeight:1.6,marginTop:8}}>Open WhatsApp → Linked Devices → Link a Device, then scan this code.</div><button onClick={()=>setShowQrModal(false)} style={{marginTop:12,background:"#111",color:"#fff",border:"none",borderRadius:6,padding:"8px 16px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Close</button></div></div>}
       {whatsapp?.lastError&&<div style={{fontSize:10,color:"#FCA5A5",marginTop:8}}>{whatsapp.lastError}</div>}
       <div style={{fontSize:9,color:MUTED2,marginTop:10,lineHeight:1.6}}>Unofficial WhatsApp Web integration, not endorsed by WhatsApp. It may break or result in account restrictions. Use only an account you control or are authorized to connect. All outbound messages remain subject to founder approval.</div>
     </section>
