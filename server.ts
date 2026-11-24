@@ -17,6 +17,7 @@ import { commitOutboundSent } from "./lib/execution";
 import { markWhatsAppOpened } from "./lib/outbound";
 import { conversationEventId, removeConversationEvent, restoreConversationEvent, type ConversationEvent, type RemovedConversationEvent } from "./lib/conversationEvents";
 import { createAgentRouter, initializeAgentTables } from "./lib/agents";
+import { containsExplicitOptOut } from "./lib/agentSafety";
 
 dotenv.config();
 
@@ -75,11 +76,7 @@ async function syncAgentDoNotContact(lead: Lead): Promise<void> {
     lead.prospectLatestResponse || "",
     ...(Array.isArray(lead.conversationLog) ? lead.conversationLog.filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "") : []),
   ];
-  const optedOut = inboundTexts.some(raw => {
-    const text = String(raw).trim().toLowerCase().replace(/[.!?]+$/g, "").replace(/\s+/g, " ");
-    return /^(stop|unsubscribe|remove me|do not contact me|don't contact me|dont contact me|no more messages|stop messaging me|please stop contacting me|not interested)( thanks| please)?$/.test(text) ||
-      /\b(stop sending (?:me )?(?:messages|texts|whatsapp)|do not (?:message|contact) me|don't (?:message|contact) me|dont (?:message|contact) me|remove me from (?:your )?(?:list|contact list)|unsubscribe me)\b/.test(text);
-  });
+  const optedOut = containsExplicitOptOut(inboundTexts);
   if (!optedOut) return;
   await db.query(`
     INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at)
@@ -1130,11 +1127,7 @@ app.post("/api/agents/generate", async (req, res) => {
           lead.prospectLatestResponse || "",
           ...(Array.isArray(lead.conversationLog) ? lead.conversationLog.filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "") : [])
         ];
-        const explicitOptOut = inboundTexts.some((raw: string) => {
-          const text = String(raw).trim().toLowerCase().replace(/[.!?]+$/g, "").replace(/\s+/g, " ");
-          return /^(stop|unsubscribe|remove me|do not contact me|don't contact me|dont contact me|no more messages|stop messaging me|please stop contacting me|not interested)( thanks| please)?$/.test(text) ||
-            /\b(stop sending (?:me )?(?:messages|texts|whatsapp)|do not (?:message|contact) me|don't (?:message|contact) me|dont (?:message|contact) me|remove me from (?:your )?(?:list|contact list)|unsubscribe me)\b/.test(text);
-        });
+        const explicitOptOut = containsExplicitOptOut(inboundTexts);
         if (explicitOptOut) {
           await db.query(`
             INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at)
