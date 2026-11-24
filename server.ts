@@ -1637,14 +1637,130 @@ function scheduleDispatcherTick(): void {
   timer.unref?.();
 }
 
+let agentSystemToken: string | null = null;
+
+async function runScheduledInternalRoute(
+  jobName: string,
+  hour: number,
+  route: string,
+  bodyFactory: () => Promise<Record<string, unknown> | null>,
+  allowedWeekdays?: string[],
+): Promise<void> {
+  const local = lagosDateTimeParts();
+  if (Number(local.hour) < hour) return;
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: "Africa/Lagos", weekday: "short" }).format(new Date());
+  if (allowedWeekdays && !allowedWeekdays.includes(weekday)) return;
+  const scheduledDate = `${local.year}-${local.month}-${local.day}`;
+  let client: any = null;
+  let locked = false;
+  try {
+    client = await db.connect();
+    const lock = await client.query("SELECT pg_try_advisory_lock(hashtext($1)) AS locked", ["dfqlabs-os1-schedule:" + jobName]);
+    locked = Boolean(lock.rows[0]?.locked);
+    if (!locked) return;
+    await client.query("UPDATE agent_schedule_runs SET status='error' WHERE job_name=$1 AND scheduled_date=$2::date AND status='started' AND created_at < NOW() - INTERVAL '10 minutes'", [jobName, scheduledDate]);
+    const runId = randomUUID();
+    const run = await client.query(`
+      INSERT INTO agent_schedule_runs (id, job_name, scheduled_date, status)
+      VALUES ($1,$2,$3::date,'started')
+      ON CONFLICT (job_name, scheduled_date) DO UPDATE SET status='started', summary='', completed_at=NULL
+      WHERE agent_schedule_runs.status IN ('error','failed')
+      RETURNING id
+    `, [runId, jobName, scheduledDate]);
+    if (!run.rowCount) return;
+    const config = await client.query("SELECT automation_mode FROM agent_config WHERE id=1");
+    if (config.rows[0]?.automation_mode !== "queue_only") {
+      await client.query("UPDATE agent_schedule_runs SET status='blocked', summary='Review Queue mode is required.', completed_at=NOW() WHERE id=$1", [runId]);
+      return;
+    }
+    const body = await bodyFactory();
+    if (!body) {
+      await client.query("UPDATE agent_schedule_runs SET status='completed', summary='No eligible work was found.', completed_at=NOW() WHERE id=$1", [runId]);
+      return;
+    }
+    if (!agentSystemToken) throw new Error("Internal agent scheduler identity is not initialized.");
+    const response = await fetch(`http://127.0.0.1:${PORT}${route}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${agentSystemToken}` },
+      body: JSON.stringify(body),
+    });
+    const payload: any = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const status = response.status === 423 ? "blocked" : "error";
+      await client.query("UPDATE agent_schedule_runs SET status=$1, summary=$2, completed_at=NOW() WHERE id=$3", [status, String(payload.error || "Scheduled agent request failed").slice(0,500), runId]);
+      return;
+    }
+    const summary = payload.staged?.length !== undefined
+      ? `Staged ${payload.staged.length} review item(s).`
+      : payload.item ? "Generated a LinkedIn article draft for review."
+      : `Scheduled ${jobName} completed.`;
+    await client.query("UPDATE agent_schedule_runs SET status='completed', summary=$1, completed_at=NOW() WHERE id=$2", [summary, runId]);
+  } catch (error: any) {
+    console.error("Scheduled agent route failed (" + jobName + "):", String(error?.message || error).slice(0,300));
+    if (client) await client.query("UPDATE agent_schedule_runs SET status='error', summary=$1, completed_at=NOW() WHERE job_name=$2 AND scheduled_date=$3::date AND status='started'", [String(error?.message || "Scheduled job failed").slice(0,500), jobName, scheduledDate]).catch(() => {});
+  } finally {
+    if (client) {
+      if (locked) await client.query("SELECT pg_advisory_unlock(hashtext($1))", ["dfqlabs-os1-schedule:" + jobName]).catch(() => {});
+      client.release();
+    }
+  }
+}
+
+async function runDailyScoutSchedule(): Promise<void> {
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: "Africa/Lagos", weekday: "short" }).format(new Date());
+  const city = weekday === "Tue" || weekday === "Fri" ? "Lagos" : weekday === "Wed" || weekday === "Sat" ? "Port Harcourt" : "Abuja";
+  await runScheduledInternalRoute("daily_scout", 8, "/api/agents/scout", async () => ({ city, limit: 10 }));
+}
+
+async function runDailyWriterSchedule(): Promise<void> {
+  await runScheduledInternalRoute("daily_writer", 9, "/api/agents/generate", async () => {
+    const [leads, queued, controls] = await Promise.all([
+      db.query("SELECT id, data FROM leads"),
+      db.query("SELECT DISTINCT lead_id FROM agent_queue WHERE action_type='outreach_dm' AND status IN ('pending_approval','approved','sending','sent')"),
+      db.query("SELECT lead_id FROM agent_contact_controls WHERE do_not_contact=TRUE"),
+    ]);
+    const alreadyDrafted = new Set(queued.rows.map((row: any) => String(row.lead_id)));
+    const dnc = new Set(controls.rows.map((row: any) => String(row.lead_id)));
+    const leadIds = leads.rows
+      .map((row: any) => row.data as Lead)
+      .filter((lead: Lead) => lead?.id && !dnc.has(String(lead.id)) && !alreadyDrafted.has(String(lead.id)))
+      .filter((lead: Lead) => !["Closed","Lost"].includes(lead.status) && !lead.dmText && !(lead.outboundMessages || []).length && !(lead.conversationLog || []).length && !lead.prospectInitialResponse && !lead.prospectLatestResponse)
+      .sort((a: Lead,b: Lead) => String(a.dateAdded || "").localeCompare(String(b.dateAdded || "")))
+      .slice(0,10)
+      .map((lead: Lead) => lead.id);
+    return leadIds.length ? { leadIds, actionType: "outreach_dm" } : null;
+  });
+}
+
+async function runLinkedInArticleSchedule(): Promise<void> {
+  const local = lagosDateTimeParts();
+  const topics = [
+    "Why high-ticket property buyers hesitate even after a promising viewing",
+    "The trust signals that make a real-estate developer credible before a sales call",
+    "How property brands can reduce perceived risk without relying on discounts",
+    "Why luxury buyers read status cues differently from generic property marketing",
+    "The gap between property attention and buyer confidence",
+    "What a serious real-estate buyer needs to believe before making contact",
+  ];
+  const topic = topics[Number(local.day) % topics.length];
+  await runScheduledInternalRoute("linkedin_article", 10, "/api/agents/linkedin-article", async () => ({ topic }), ["Mon","Thu"]);
+}
+
 function startAgentScheduler(): void {
   if (agentSchedulerStarted) return;
   agentSchedulerStarted = true;
-  const timer = setInterval(() => {
-    runDailyCloserIfDue().catch(error => console.error("Agent scheduler tick failed:", error));
-  }, 60_000);
+  agentSystemToken = randomUUID();
+  activeSessions.set(agentSystemToken, { userId: "system:agent-scheduler", role: "FOUNDER", username: "system", displayName: "DFQLABS Scheduler" });
+  const runAllScheduledJobs = () => {
+    runDailyScoutSchedule().catch(error => console.error("Scout schedule failed:", error));
+    runDailyWriterSchedule().catch(error => console.error("Writer schedule failed:", error));
+    runLinkedInArticleSchedule().catch(error => console.error("LinkedIn schedule failed:", error));
+    runDailyCloserIfDue().catch(error => console.error("Closer schedule failed:", error));
+  };
+  const timer = setInterval(runAllScheduledJobs, 60_000);
   timer.unref?.();
-  runDailyCloserIfDue().catch(error => console.error("Initial agent scheduler tick failed:", error));
+  const initial = setTimeout(runAllScheduledJobs, 5_000);
+  initial.unref?.();
   scheduleDispatcherTick();
 }
 
