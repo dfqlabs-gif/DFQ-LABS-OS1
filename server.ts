@@ -185,6 +185,44 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   }
 }
 
+async function appendWhatsAppHistoricalOutbound(message: WhatsAppInbound, author: string): Promise<boolean> {
+  const allLeads = await db.query("SELECT id, data FROM leads");
+  const matched = allLeads.rows.find((row: any) => {
+    const lead = row.data as Lead;
+    const phone = normalizePhone(getWhatsAppNumber(lead));
+    return phone.valid && phone.digits === message.phone;
+  });
+  if (!matched) return false;
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query("SELECT data FROM leads WHERE id=$1 FOR UPDATE", [matched.id]);
+    if (!current.rows[0]?.data) { await client.query("ROLLBACK"); return false; }
+    const lead = current.rows[0].data as Lead;
+    const log = Array.isArray(lead.conversationLog) ? lead.conversationLog : [];
+    if (!log.some((event: any) => event.id === message.messageId)) {
+      lead.conversationLog = [...log, {
+        id: message.messageId,
+        ts: message.receivedAt,
+        type: "dm",
+        direction: "outbound",
+        label: "WhatsApp export (historical)",
+        text: message.text,
+        by: author || "You",
+      }];
+      lead.awaitingReplySince = message.receivedAt;
+      lead.lastContacted = message.receivedAt.slice(0,10);
+      lead.lastMeaningfulTouchpoint = message.receivedAt.slice(0,10);
+      await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(lead), matched.id]);
+    }
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally { client.release(); }
+}
+
 const whatsappBridge = createWhatsAppBridge(db, handleWhatsAppInbound);
 
 // The regular lead form sends complete JSON documents. A Mark-as-Sent request
