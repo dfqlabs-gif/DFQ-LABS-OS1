@@ -1634,6 +1634,55 @@ function startAgentScheduler(): void {
   scheduleDispatcherTick();
 }
 
+app.post("/api/agents/whatsapp/bulk-sync", async (req, res) => {
+  const actor = getAuthUserFromReq(req);
+  if (!actor || actor.role !== "FOUNDER") return res.status(actor ? 403 : 401).json({ error: "Founder access required" });
+  const phone = normalizePhone(String(req.body?.phone || ""));
+  const exportText = typeof req.body?.exportText === "string" ? req.body.exportText.trim() : "";
+  const myName = typeof req.body?.myName === "string" ? req.body.myName.trim().slice(0,80) : "";
+  if (!phone.valid) return res.status(400).json({ error: phone.error || "Enter a valid WhatsApp contact number." });
+  if (!exportText || exportText.length > 100_000) return res.status(400).json({ error: "Paste a WhatsApp export between 1 and 100,000 characters." });
+  try {
+    const prompt = `Parse this WhatsApp plain-text chat export into a chronological JSON array. Return ONLY valid JSON, no markdown or explanation. Each item must have: timestamp (ISO 8601 with timezone when present, otherwise null), direction ("inbound" or "outbound" or "unknown"), author (exact author label if visible, otherwise empty string), text (message text preserved as accurately as possible). The connected business account owner's display name is "${myName || "Me/You"}"; messages from that account are outbound, messages from the contact are inbound. Never invent message content or timestamps. Ignore system notices, encryption notices, missed-call notices, and attachment placeholders with no text. Keep message order. Do not merge distinct messages. Maximum 300 messages.\n\nCHAT EXPORT:\n${exportText}`;
+    const raw = await callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, 12000);
+    const first = raw.indexOf("[");
+    const last = raw.lastIndexOf("]");
+    if (first < 0 || last <= first) throw new Error("Gemini did not return a valid message array. Try a cleaner WhatsApp export.");
+    const parsed = JSON.parse(raw.slice(first, last + 1));
+    if (!Array.isArray(parsed)) throw new Error("Parsed export is not a message list.");
+    let inbound = 0, outbound = 0, unmatched = 0, skipped = 0;
+    for (const item of parsed.slice(0,300)) {
+      const textValue = typeof item?.text === "string" ? item.text.trim() : "";
+      const direction = item?.direction;
+      const timestamp = typeof item?.timestamp === "string" ? new Date(item.timestamp) : null;
+      if (!textValue || !timestamp || !Number.isFinite(timestamp.getTime()) || !["inbound","outbound"].includes(direction)) { skipped++; continue; }
+      const receivedAt = timestamp.toISOString();
+      const messageId = "bulk-" + createHash("sha256").update([phone.digits, receivedAt, direction, textValue].join("|")).digest("hex").slice(0,40);
+      const message: WhatsAppInbound = {
+        messageId, remoteJid: phone.digits + "@s.whatsapp.net", phone: phone.digits,
+        text: textValue, receivedAt, pushName: typeof item.author === "string" ? item.author : undefined, historical: true,
+      };
+      if (direction === "inbound") {
+        await handleWhatsAppInbound(message);
+        inbound++;
+        const matched = await db.query("SELECT lead_id FROM agent_whatsapp_events WHERE id=$1", [messageId]);
+        if (!matched.rows[0]?.lead_id) unmatched++;
+      } else {
+        const saved = await appendWhatsAppHistoricalOutbound(message, myName || "You");
+        if (saved) outbound++; else skipped++;
+      }
+    }
+    await db.query(
+      "INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,$2,'whatsapp_bulk_sync',$3::jsonb)",
+      [randomUUID(), actor.userId, JSON.stringify({ phone: phone.digits, inbound, outbound, unmatched, skipped })]
+    );
+    res.json({ ok: true, inbound, outbound, unmatched, skipped, totalParsed: Math.min(parsed.length,300) });
+  } catch (error: any) {
+    console.error("WhatsApp bulk sync failed:", String(error?.message || error).slice(0,300));
+    res.status(422).json({ error: String(error?.message || "Could not parse this WhatsApp export.") });
+  }
+});
+
 // Safe deployment evidence for Render; intentionally exposes no configuration
 // values beyond the commit supplied by Render's build environment.
 app.get("/api/runtime/version", (_req, res) => {
