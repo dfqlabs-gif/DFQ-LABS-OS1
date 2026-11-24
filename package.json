@@ -37,5 +37,6 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.3",
     "@types/qrcode": "^1.5.5"
-  }
+  },
+  "description": "DFQLABS OS1 — real-estate buyer psychology CRM and agent operating system"
 }
