@@ -23,6 +23,11 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const [selectedLeadIds,setSelectedLeadIds] = useState<string[]>([]);
   const [whatsapp,setWhatsapp] = useState<WhatsAppStatus|null>(null);
   const [whatsappBusy,setWhatsappBusy] = useState(false);
+  const [bulkExport,setBulkExport] = useState("");
+  const [bulkPhone,setBulkPhone] = useState("");
+  const [bulkMyName,setBulkMyName] = useState("You");
+  const [bulkBusy,setBulkBusy] = useState(false);
+  const [bulkResult,setBulkResult] = useState<any>(null);
   const headers = useMemo(() => ({ "Content-Type":"application/json", Authorization:`Bearer ${token}` }),[token]);
 
   const request = useCallback(async (url:string, init:RequestInit = {}) => {
@@ -66,6 +71,16 @@ export function AgentReviewQueue({ token, leads }: Props) {
     try { const result=await request("/api/agents/whatsapp/disconnect",{method:"POST"}); setWhatsapp(result.status); }
     catch(e:any) { setError(e.message); }
     finally { setWhatsappBusy(false); }
+  };
+
+  const syncWhatsAppExport = async () => {
+    if (!bulkPhone.trim() || !bulkExport.trim()) { setError("Enter the contact number and paste the WhatsApp export."); return; }
+    setBulkBusy(true); setError(""); setBulkResult(null);
+    try {
+      const result=await request("/api/agents/whatsapp/bulk-sync",{method:"POST",body:JSON.stringify({phone:bulkPhone,myName:bulkMyName,exportText:bulkExport})});
+      setBulkResult(result); setBulkExport(""); await refresh();
+    } catch(e:any) { setError(e.message); }
+    finally { setBulkBusy(false); }
   };
 
   const generateDrafts = async (actionType:"outreach_dm"|"value_dm"|"follow_up") => {
@@ -141,6 +156,16 @@ export function AgentReviewQueue({ token, leads }: Props) {
       {whatsapp?.qrDataUrl&&<div style={{display:"flex",gap:16,alignItems:"center",flexWrap:"wrap",marginTop:14,padding:12,background:"#fff",borderRadius:8,width:"fit-content"}}><img src={whatsapp.qrDataUrl} alt="WhatsApp Web QR code" style={{width:220,height:220}}/><div style={{maxWidth:230,color:"#111",fontSize:11,lineHeight:1.6}}><b>Scan with your phone</b><br/>Open WhatsApp → Linked Devices → Link a Device. Scan this QR code to connect the account you are authorized to use.</div></div>}
       {whatsapp?.lastError&&<div style={{fontSize:10,color:"#FCA5A5",marginTop:8}}>{whatsapp.lastError}</div>}
       <div style={{fontSize:9,color:MUTED2,marginTop:10,lineHeight:1.6}}>Unofficial WhatsApp Web integration, not endorsed by WhatsApp. It may break or result in account restrictions. Use only an account you control or are authorized to connect. All outbound messages remain subject to founder approval.</div>
+    </section>
+    <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
+      <div style={{fontSize:11,fontWeight:900,color:TEXT,marginBottom:5}}>Quick bulk chat sync</div>
+      <div style={{fontSize:10,color:MUTED,marginBottom:10}}>Paste a WhatsApp chat export. Gemini extracts dated messages, then OS1 appends them chronologically to the matching CRM lead. Historical messages are logged only; they are not sent again.</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:9,marginBottom:9}}>
+        <label style={{fontSize:10,color:MUTED}}>Contact WhatsApp number<input value={bulkPhone} onChange={e=>setBulkPhone(e.target.value)} placeholder="+2348012345678" style={{...iStyle,width:"100%",marginTop:5}} /></label>
+        <label style={{fontSize:10,color:MUTED}}>Your name in the export<input value={bulkMyName} onChange={e=>setBulkMyName(e.target.value)} placeholder="You" style={{...iStyle,width:"100%",marginTop:5}} /></label>
+      </div>
+      <textarea value={bulkExport} onChange={e=>setBulkExport(e.target.value)} rows={5} placeholder="Paste the exported WhatsApp chat text here…" style={{...iStyle,width:"100%",lineHeight:1.6,marginBottom:9}} />
+      <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}><button disabled={bulkBusy||!bulkPhone.trim()||!bulkExport.trim()} onClick={syncWhatsAppExport} style={{background:G_DIM,border:`1px solid ${G_BORDER}`,color:G,borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>{bulkBusy?"Parsing and syncing…":"Parse & Sync Export"}</button>{bulkResult&&<span style={{fontSize:10,color:G}}>Imported {bulkResult.inbound} inbound · {bulkResult.outbound} outbound · {bulkResult.unmatched} unmatched · {bulkResult.skipped} skipped</span>}</div>
     </section>
     {config && <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginBottom:18}}>
       <div style={{background:SURFACE,border:`1px solid ${G_BORDER}`,borderRadius:10,padding:14}}>
