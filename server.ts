@@ -1819,6 +1819,8 @@ app.post("/api/agents/linkedin-article", async (req, res) => {
   const topic = typeof req.body?.topic === "string" ? req.body.topic.trim().slice(0,300) : "";
   if (!topic) return res.status(400).json({ error: "Enter an article topic or strategic question." });
   try {
+    const priorWriterLog = await db.query("SELECT status FROM agent_logs WHERE agent_name='writer' ORDER BY created_at DESC LIMIT 1");
+    if (priorWriterLog.rows[0]?.status === "halted_circuit_breaker") return res.status(423).json({ error: "Writer circuit breaker is active. A founder must reset it first." });
     const configResult = await db.query("SELECT brand_voice, buyer_psychology_pillars FROM agent_config WHERE id=1");
     const config = configResult.rows[0] || {};
     const prompt = `Write a high-quality LinkedIn thought-leadership article for DFQ Labs on this topic: "${topic}". Audience: founders, CEOs and marketing leaders at real-estate developers, brokerages and architecture/construction firms in Nigeria. Position DFQ Labs as a buyer-psychology and content-intelligence authority, not a generic social media agency. Brand voice: ${config.brand_voice || "Sharp, consultative, peer-to-peer."}. Strategic pillars: ${(config.buyer_psychology_pillars || []).join("; ")}. Structure: a strong non-clickbait opening, a clear central argument, practical examples relevant to high-ticket real estate, a concise actionable framework, and a thoughtful closing question. Use 600–900 words. Do not invent statistics, client stories, research findings, named companies or market facts. Do not make a hard sales pitch. Return only the finished article, with a compelling headline and readable LinkedIn paragraph spacing.`;
@@ -1838,10 +1840,15 @@ app.post("/api/agents/linkedin-article", async (req, res) => {
       idempotencyKey,
     ]);
     await db.query("INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,$2,'linkedin_article_generated',$3,$4::jsonb)", [randomUUID(), actor.userId, saved.rows[0].id, JSON.stringify({ topic })]);
+    await db.query("INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer','success',$2,1,0,$3::jsonb)", [randomUUID(), "Generated a LinkedIn article draft for founder review.", JSON.stringify({ topic })]);
     res.json({ ok: true, item: saved.rows[0] });
   } catch (error: any) {
     console.error("LinkedIn article generation failed:", String(error?.message || error).slice(0,250));
-    res.status(500).json({ error: String(error?.message || "Could not generate LinkedIn article.") });
+    const prior = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='writer' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
+    const failures = prior.rows[0]?.status === "error" ? Number(prior.rows[0].consecutive_failures || 0) + 1 : 1;
+    const status = failures >= 2 ? "halted_circuit_breaker" : "error";
+    await db.query("INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer',$2,$3,0,$4,$5::jsonb)", [randomUUID(), status, "LinkedIn article generation failed: " + String(error?.message || "unknown error").slice(0,250), failures, JSON.stringify({ topic })]).catch(() => {});
+    res.status(failures >= 2 ? 423 : 500).json({ error: String(error?.message || "Could not generate LinkedIn article.") });
   }
 });
 
