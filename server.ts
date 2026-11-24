@@ -1687,6 +1687,38 @@ app.post("/api/agents/whatsapp/bulk-sync", async (req, res) => {
   }
 });
 
+app.post("/api/agents/linkedin-article", async (req, res) => {
+  const actor = getAuthUserFromReq(req);
+  if (!actor || actor.role !== "FOUNDER") return res.status(actor ? 403 : 401).json({ error: "Founder access required" });
+  const topic = typeof req.body?.topic === "string" ? req.body.topic.trim().slice(0,300) : "";
+  if (!topic) return res.status(400).json({ error: "Enter an article topic or strategic question." });
+  try {
+    const configResult = await db.query("SELECT brand_voice, buyer_psychology_pillars FROM agent_config WHERE id=1");
+    const config = configResult.rows[0] || {};
+    const prompt = `Write a high-quality LinkedIn thought-leadership article for DFQ Labs on this topic: "${topic}". Audience: founders, CEOs and marketing leaders at real-estate developers, brokerages and architecture/construction firms in Nigeria. Position DFQ Labs as a buyer-psychology and content-intelligence authority, not a generic social media agency. Brand voice: ${config.brand_voice || "Sharp, consultative, peer-to-peer."}. Strategic pillars: ${(config.buyer_psychology_pillars || []).join("; ")}. Structure: a strong non-clickbait opening, a clear central argument, practical examples relevant to high-ticket real estate, a concise actionable framework, and a thoughtful closing question. Use 600–900 words. Do not invent statistics, client stories, research findings, named companies or market facts. Do not make a hard sales pitch. Return only the finished article, with a compelling headline and readable LinkedIn paragraph spacing.`;
+    const article = (await callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, 3500, 0.7)).trim();
+    if (article.length < 500) throw new Error("Gemini returned an article that was too short.");
+    const dateKey = new Date().toISOString().slice(0,10);
+    const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,60) || "thought-leadership";
+    const idempotencyKey = `linkedin-article:${dateKey}:${slug}`;
+    const saved = await db.query(`
+      INSERT INTO agent_queue (id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
+      VALUES ($1,'writer','linkedin_article',$2,$3::jsonb,$4,$5)
+      ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
+      RETURNING *
+    `, [
+      randomUUID(), article, JSON.stringify({ platform: "LinkedIn", topic, generatedDate: dateKey, wordCount: article.split(/\\s+/).length }),
+      "Thought-leadership draft built around a single buyer-psychology argument. Review all factual claims before publishing.",
+      idempotencyKey,
+    ]);
+    await db.query("INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,$2,'linkedin_article_generated',$3,$4::jsonb)", [randomUUID(), actor.userId, saved.rows[0].id, JSON.stringify({ topic })]);
+    res.json({ ok: true, item: saved.rows[0] });
+  } catch (error: any) {
+    console.error("LinkedIn article generation failed:", String(error?.message || error).slice(0,250));
+    res.status(500).json({ error: String(error?.message || "Could not generate LinkedIn article.") });
+  }
+});
+
 // Safe deployment evidence for Render; intentionally exposes no configuration
 // values beyond the commit supplied by Render's build environment.
 app.get("/api/runtime/version", (_req, res) => {
