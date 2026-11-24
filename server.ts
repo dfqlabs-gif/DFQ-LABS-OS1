@@ -1288,7 +1288,7 @@ app.post("/api/agents/generate", async (req, res) => {
     const capActionTypes = actionType === "value_dm" ? ["value_dm"] : ["outreach_dm", "follow_up"];
     const capCount = await db.query(
       `SELECT COUNT(*)::int AS count FROM agent_queue
-       WHERE action_type = ANY($1::text[])
+       WHERE action_type = ANY($1::text[]) AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM'
          AND ((status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))
            OR (status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')))`,
       [capActionTypes]
@@ -1434,7 +1434,7 @@ async function runDailyCloserIfDue(): Promise<void> {
     }
     const count = await client.query(`
       SELECT COUNT(*)::int AS count FROM agent_queue
-      WHERE action_type IN ('outreach_dm','follow_up')
+      WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM'
         AND ((status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))
           OR (status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')))
     `);
