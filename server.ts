@@ -147,7 +147,7 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   if (!updatedLead) return;
   await syncAgentDoNotContact(updatedLead);
   const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [updatedLead.id]);
-  if (contactControl.rows[0]?.do_not_contact) return;
+  if (contactControl.rows[0]?.do_not_contact || message.historical) return;
 
   try {
     const cfgResult = await db.query("SELECT brand_voice, buyer_psychology_pillars FROM agent_config WHERE id=1");
