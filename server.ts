@@ -1237,7 +1237,12 @@ async function runDailyCloserIfDue(): Promise<void> {
     if (!run.rowCount) return;
 
     let staged = 0;
-    let failures = 0;
+    const priorCloserLog = await client.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='closer' ORDER BY created_at DESC LIMIT 1");
+    if (priorCloserLog.rows[0]?.status === "halted_circuit_breaker") {
+      await client.query("UPDATE agent_schedule_runs SET status='blocked', summary='Closer circuit breaker is active; founder reset required.', completed_at=NOW() WHERE id=$1", [runId]);
+      return;
+    }
+    let failures = priorCloserLog.rows[0]?.status === "error" ? Number(priorCloserLog.rows[0].consecutive_failures || 0) : 0;
     const configResult = await client.query("SELECT * FROM agent_config WHERE id=1");
     const config = configResult.rows[0];
     if (!config || config.automation_mode !== "queue_only") {
