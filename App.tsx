@@ -2170,19 +2170,39 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
   );
 }
 
-function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess: () => void, onBack: () => void }) {
+function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess: (token?: string) => void, onBack: () => void }) {
   const cfg = ROLE_ACCESS[roleKey as keyof typeof ROLE_ACCESS] || ROLE_ACCESS.founder;
   const Icon = cfg.Icon;
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
-  
-  const submit = () => {
-    if (pin === cfg.password) {
-      onSuccess();
-    } else {
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (pin !== cfg.password) {
       setErr("Incorrect password.");
       setPin("");
+      return;
     }
+    if (roleKey === "founder") {
+      setSubmitting(true);
+      try {
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: "alex@dfqlabs.com", password: pin })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.token) throw new Error(data.error || "Founder server authentication failed. Please verify the founder account credentials.");
+        onSuccess(data.token);
+      } catch (error: any) {
+        setErr(error.message || "Could not authenticate founder session.");
+        setPin("");
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+    onSuccess();
   };
 
   return (
@@ -2192,7 +2212,7 @@ function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess
         <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>{cfg.label} Access</div>
         <div style={{ fontSize: 11, color: MUTED, marginBottom: 16 }}>Enter the password to unlock DFQ Labs Operating System.</div>
         <input type="password" value={pin} onChange={e => { setPin(e.target.value); setErr(""); }} onKeyDown={e => { if (e.key === "Enter") submit(); }} placeholder="Password" style={{ ...iStyle, textAlign: "center", marginBottom: 10 }} autoFocus />
-        <button onClick={submit} style={{ background: cfg.color, color: "#000", border: "none", borderRadius: 6, padding: "10px 20px", fontWeight: 800, fontSize: 12, cursor: "pointer", width: "100%", marginBottom: 10 }}>Unlock</button>
+        <button onClick={submit} disabled={submitting} style={{ background: cfg.color, color: "#000", border: "none", borderRadius: 6, padding: "10px 20px", fontWeight: 800, fontSize: 12, cursor: submitting ? "wait" : "pointer", width: "100%", marginBottom: 10 }}>{submitting ? "Verifying…" : "Unlock"}</button>
         {err && <div style={{ fontSize: 11, color: "#EF4444", marginBottom: 8 }}>{err}</div>}
         <button onClick={onBack} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 16px", fontSize: 11, cursor: "pointer" }}>← Back</button>
       </div>
