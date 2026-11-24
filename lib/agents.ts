@@ -198,7 +198,7 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
         WHERE id=$3 AND status='pending_approval' RETURNING *
       `, [status, actor.userId, req.params.id]);
       if (!result.rowCount) return res.status(409).json({ error: "Item is no longer awaiting review" });
-      await audit(actor, "queue_item_" + decision + "d", req.params.id, {});
+      await audit(actor, decision === "approve" ? "queue_item_approved" : "queue_item_rejected", req.params.id, {});
       res.json({ item: result.rows[0] });
     } catch (error) { console.error("Agent review failed", error); res.status(500).json({ error: "Could not review queue item" }); }
   });
