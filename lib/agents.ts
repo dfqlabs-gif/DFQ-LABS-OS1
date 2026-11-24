@@ -75,6 +75,41 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
   `);
   await db.query("CREATE INDEX IF NOT EXISTS agent_contact_controls_dnc_idx ON agent_contact_controls(do_not_contact) WHERE do_not_contact = TRUE");
   await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_whatsapp_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'disconnected',
+      connected_phone TEXT NULL,
+      last_error TEXT NULL,
+      last_connected_at TIMESTAMPTZ NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("INSERT INTO agent_whatsapp_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_whatsapp_auth_state (
+      state_key TEXT PRIMARY KEY,
+      ciphertext TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      auth_tag TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_whatsapp_events (
+      id TEXT PRIMARY KEY,
+      lead_id TEXT NULL REFERENCES leads(id) ON DELETE SET NULL,
+      remote_jid TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      message_text TEXT NOT NULL,
+      received_at TIMESTAMPTZ NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("CREATE INDEX IF NOT EXISTS agent_whatsapp_events_lead_received_idx ON agent_whatsapp_events(lead_id, received_at DESC)");
+
+  await db.query(`
     CREATE TABLE IF NOT EXISTS agent_schedule_runs (
       id UUID PRIMARY KEY,
       job_name TEXT NOT NULL,
