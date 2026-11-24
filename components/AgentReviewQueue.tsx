@@ -19,6 +19,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const [busy,setBusy] = useState<string | null>(null);
   const [edits,setEdits] = useState<Record<string,string>>({});
   const [logs,setLogs] = useState<any[]>([]);
+  const [selectedLeadIds,setSelectedLeadIds] = useState<string[]>([]);
   const headers = useMemo(() => ({ "Content-Type":"application/json", Authorization:`Bearer ${token}` }),[token]);
 
   const request = useCallback(async (url:string, init:RequestInit = {}) => {
@@ -41,6 +42,18 @@ export function AgentReviewQueue({ token, leads }: Props) {
     finally { setLoading(false); }
   },[request,status]);
   useEffect(()=>{ refresh(); },[refresh]);
+
+  const generateDrafts = async (actionType:"outreach_dm"|"value_dm"|"follow_up") => {
+    if (!selectedLeadIds.length) { setError("Select at least one CRM lead first."); return; }
+    setBusy("generate"); setError("");
+    try {
+      const result = await request("/api/agents/generate",{method:"POST",body:JSON.stringify({leadIds:selectedLeadIds,actionType})});
+      setSelectedLeadIds([]);
+      await refresh();
+      if (result.skipped?.length) setError(`Staged ${result.staged?.length || 0} draft(s). Skipped: ${result.skipped.join(" · ")}`);
+    } catch(e:any) { setError(e.message); }
+    finally { setBusy(null); }
+  };
 
   const updateConfig = async (patch:Partial<Config>) => {
     if (!config) return;
@@ -80,6 +93,20 @@ export function AgentReviewQueue({ token, leads }: Props) {
       <div style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14}}><div style={{fontSize:9,color:MUTED,fontWeight:800}}>ACTIVE CRM LEADS</div><div style={{fontSize:28,fontWeight:900,color:TEXT,marginTop:5}}>{activeLeads.length}</div><div style={{fontSize:10,color:MUTED}}>Available for agent context</div></div>
       <div style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14}}><div style={{fontSize:9,color:MUTED,fontWeight:800}}>DAILY CAPS</div><div style={{fontSize:18,fontWeight:900,color:TEXT,marginTop:5}}>{config.daily_outreach_cap} / {config.daily_value_dm_cap}</div><div style={{fontSize:10,color:MUTED}}>Outreach / value DMs</div></div>
     </div>}
+    <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
+      <div style={{fontSize:11,fontWeight:800,color:TEXT,marginBottom:5}}>Generate drafts from your CRM</div>
+      <div style={{fontSize:10,color:MUTED,marginBottom:10}}>Select up to 10 active leads. Gemini reads each authoritative CRM record and thread, then stages the draft here. Nothing is sent.</div>
+      <select multiple value={selectedLeadIds} onChange={e=>setSelectedLeadIds(Array.from(e.target.selectedOptions).map(o=>o.value).slice(0,10))} style={{...iStyle,width:"100%",minHeight:130,marginBottom:10}}>
+        {activeLeads.filter(l=>!["Closed","Lost"].includes(l.status)).map(lead=><option key={lead.id} value={lead.id}>{lead.company||lead.name} — {lead.name||"No contact name"} · {lead.status}</option>)}
+      </select>
+      <div style={{fontSize:9,color:MUTED2,marginBottom:9}}>{selectedLeadIds.length}/10 leads selected</div>
+      <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+        <button disabled={busy==="generate"||!selectedLeadIds.length} onClick={()=>generateDrafts("outreach_dm")} style={{background:G_DIM,border:`1px solid ${G_BORDER}`,color:G,borderRadius:6,padding:"8px 11px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Generate Outreach</button>
+        <button disabled={busy==="generate"||!selectedLeadIds.length} onClick={()=>generateDrafts("value_dm")} style={{background:SURFACE2,border:`1px solid ${BORDER}`,color:TEXT,borderRadius:6,padding:"8px 11px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Generate Value DMs</button>
+        <button disabled={busy==="generate"||!selectedLeadIds.length} onClick={()=>generateDrafts("follow_up")} style={{background:SURFACE2,border:`1px solid ${BORDER}`,color:TEXT,borderRadius:6,padding:"8px 11px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Generate Follow-ups</button>
+        {busy==="generate"&&<span style={{fontSize:10,color:G,alignSelf:"center"}}>Gemini is reading CRM context…</span>}
+      </div>
+    </section>
     {config && <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
       <div style={{fontSize:11,fontWeight:800,color:TEXT,marginBottom:12}}>Agent operating rules</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginBottom:12}}>
