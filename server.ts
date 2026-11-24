@@ -1449,7 +1449,7 @@ async function runDailyCloserIfDue(): Promise<void> {
     const blockedIds = new Set(blockedResult.rows.map((row: any) => String(row.lead_id)));
     const candidates = leadsResult.rows.map((row: any) => row.data as Lead).filter((lead: Lead) => {
       if (!lead?.id || blockedIds.has(String(lead.id)) || ["Closed","Lost","Booked","Meeting Scheduled","Converted","Not Interested","DNC"].includes(lead.status) || lead.meetingScheduledAt) return false;
-      if (!lead.awaitingReplySince) return false;
+      if (!lead.awaitingReplySince || lead.prospectLatestResponse) return false;
       const hours = (Date.now() - new Date(lead.awaitingReplySince).getTime()) / 3600000;
       if (!Number.isFinite(hours) || hours < 48 || hours > 72) return false;
       const thread = (lead.conversationLog || []).filter((entry: any) => entry?.type === "dm" || entry?.type === "reply").sort((a,b) => String(a.ts).localeCompare(String(b.ts)));
