@@ -104,7 +104,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
     <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
       <div style={{fontSize:11,fontWeight:800,color:TEXT,marginBottom:5}}>Generate drafts from your CRM</div>
       <div style={{fontSize:10,color:MUTED,marginBottom:10}}>Select up to 10 active leads. Gemini reads each authoritative CRM record and thread, then stages the draft here. Nothing is sent.</div>
-      <select multiple value={selectedLeadIds} onChange={e=>setSelectedLeadIds(Array.from(e.target.selectedOptions).map(o=>o.value).slice(0,10))} style={{...iStyle,width:"100%",minHeight:130,marginBottom:10}}>
+      <select multiple value={selectedLeadIds} onChange={(e: React.ChangeEvent<HTMLSelectElement>)=>setSelectedLeadIds(Array.from(e.currentTarget.selectedOptions).map((option: HTMLOptionElement)=>option.value).slice(0,10))} style={{...iStyle,width:"100%",minHeight:130,marginBottom:10}}>
         {activeLeads.filter(l=>!["Closed","Lost"].includes(l.status)).map(lead=><option key={lead.id} value={lead.id}>{lead.company||lead.name} — {lead.name||"No contact name"} · {lead.status}</option>)}
       </select>
       <div style={{fontSize:9,color:MUTED2,marginBottom:9}}>{selectedLeadIds.length}/10 leads selected</div>
