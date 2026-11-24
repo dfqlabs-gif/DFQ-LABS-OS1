@@ -1287,7 +1287,10 @@ app.post("/api/agents/generate", async (req, res) => {
     const cap = actionType === "value_dm" ? config.daily_value_dm_cap : config.daily_outreach_cap;
     const capActionTypes = actionType === "value_dm" ? ["value_dm"] : ["outreach_dm", "follow_up"];
     const capCount = await db.query(
-      "SELECT COUNT(*)::int AS count FROM agent_queue WHERE action_type = ANY($1::text[]) AND created_at >= date_trunc('day', NOW()) AND status IN ('pending_approval','approved','sending','sent')",
+      `SELECT COUNT(*)::int AS count FROM agent_queue
+       WHERE action_type = ANY($1::text[])
+         AND ((status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))
+           OR (status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')))`,
       [capActionTypes]
     );
     let remaining = Math.max(0, cap - Number(capCount.rows[0]?.count || 0));
@@ -1432,8 +1435,8 @@ async function runDailyCloserIfDue(): Promise<void> {
     const count = await client.query(`
       SELECT COUNT(*)::int AS count FROM agent_queue
       WHERE action_type IN ('outreach_dm','follow_up')
-        AND created_at >= date_trunc('day', NOW())
-        AND status IN ('pending_approval','approved','sent')
+        AND ((status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))
+          OR (status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')))
     `);
     const remaining = Math.max(0, Number(config.daily_outreach_cap) - Number(count.rows[0]?.count || 0));
     if (!remaining) {
