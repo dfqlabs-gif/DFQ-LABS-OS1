@@ -165,9 +165,9 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
       const counters = await db.query(`
         SELECT
           COUNT(*) FILTER (WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM' AND status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS outreach_sent,
-          COUNT(*) FILTER (WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM' AND status IN ('pending_approval','approved','sending'))::int AS outreach_queued,
+          COUNT(*) FILTER (WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM' AND status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS outreach_queued,
           COUNT(*) FILTER (WHERE action_type='value_dm' AND status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS value_sent,
-          COUNT(*) FILTER (WHERE action_type='value_dm' AND status IN ('pending_approval','approved','sending'))::int AS value_queued
+          COUNT(*) FILTER (WHERE action_type='value_dm' AND status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS value_queued
         FROM agent_queue
       `);
       res.json({ config: result.rows[0], counters: counters.rows[0] || {} });
