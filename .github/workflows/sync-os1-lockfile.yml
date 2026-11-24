@@ -1,3 +1,4 @@
+# This branch-scoped helper keeps npm ci reproducible when new dependencies are introduced.
 name: Sync OS1 dependency lockfile
 
 on:
