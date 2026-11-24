@@ -1152,7 +1152,10 @@ app.post("/api/agents/generate", async (req, res) => {
         }
         const brain = await runSalesBrainWithGenerator(
           lead,
-          { requestedMessageType: actionMap[actionType] as any },
+          {
+            requestedMessageType: actionMap[actionType] as any,
+            task: `DFQ Labs agent configuration — brand voice: ${config.brand_voice}. Buyer psychology pillars: ${(config.buyer_psychology_pillars || []).join("; ")}. Stay grounded in the verified CRM facts and full conversation history. Do not invent observations, projects, budgets or outcomes.`,
+          },
           (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
         );
         const draft = String(brain.message || "").trim();
