@@ -1109,9 +1109,9 @@ app.post("/api/agents/generate", async (req, res) => {
           ...(Array.isArray(lead.conversationLog) ? lead.conversationLog.filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "") : [])
         ];
         const explicitOptOut = inboundTexts.some((raw: string) => {
-          const text = String(raw).trim().toLowerCase().replace(/[.!?]+$/g, "").replace(/\\s+/g, " ");
+          const text = String(raw).trim().toLowerCase().replace(/[.!?]+$/g, "").replace(/\s+/g, " ");
           return /^(stop|unsubscribe|remove me|do not contact me|don't contact me|dont contact me|no more messages|stop messaging me|please stop contacting me|not interested)( thanks| please)?$/.test(text) ||
-            /\\b(stop sending (?:me )?(?:messages|texts|whatsapp)|do not (?:message|contact) me|don't (?:message|contact) me|dont (?:message|contact) me|remove me from (?:your )?(?:list|contact list)|unsubscribe me)\\b/.test(text);
+            /\b(stop sending (?:me )?(?:messages|texts|whatsapp)|do not (?:message|contact) me|don't (?:message|contact) me|dont (?:message|contact) me|remove me from (?:your )?(?:list|contact list)|unsubscribe me)\b/.test(text);
         });
         if (explicitOptOut) {
           await db.query(`
