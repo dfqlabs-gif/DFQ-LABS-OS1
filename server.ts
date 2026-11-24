@@ -241,12 +241,20 @@ async function initializeDatabase() {
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_events (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, outbound_id TEXT UNIQUE NOT NULL, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_insights (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
 
+  // Upgrade only the known one-time legacy seed credential to the current founder gate.
+  // Never overwrite a founder password that has already been changed by an administrator.
+  const founderAccount = await db.query("SELECT id, password_hash FROM users WHERE username = $1 AND role = 'FOUNDER'", ["alex@dfqlabs.com"]);
+  if (founderAccount.rows[0] && verifyPassword("dfq2026!", founderAccount.rows[0].password_hash)) {
+    await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [hashPassword("War_Machine26"), founderAccount.rows[0].id]);
+    console.log("✓ Migrated legacy seeded founder credential to the current OS founder credential");
+  }
+
   // Seed default seats and Founder user if empty
   const userCountRes = await db.query("SELECT COUNT(*) FROM users");
   if (parseInt(userCountRes.rows[0].count) === 0) {
     const founderId = "user-founder";
     const specialistId = "user-blessing";
-    const founderPass = hashPassword("dfq2026!");
+    const founderPass = hashPassword("War_Machine26");
     const specialistPass = hashPassword("specialist2026!");
 
     await db.query(
