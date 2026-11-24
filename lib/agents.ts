@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
+import { normalizePhone } from "./phone.js";
 
 type AuthUser = { userId: string; role: string; username: string; displayName: string; seatId?: string };
 type AuthResolver = (req: Request) => AuthUser | null;
@@ -332,7 +333,8 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
             outboundMessages: [],
           };
           await client.query("INSERT INTO leads (id, data, updated_at) VALUES ($1,$2::jsonb,NOW())", [leadId, JSON.stringify(lead)]);
-          const leadPhoneDigits = String(lead.whatsapp || lead.phone || "").replace(/\D/g,"");
+          const normalizedLeadPhone = normalizePhone(String(lead.whatsapp || lead.phone || ""));
+          const leadPhoneDigits = normalizedLeadPhone.valid ? normalizedLeadPhone.digits : String(lead.whatsapp || lead.phone || "").replace(/\D/g,"");
           if (leadPhoneDigits) {
             const suppression = await client.query("SELECT reason FROM agent_phone_suppressions WHERE phone=$1", [leadPhoneDigits]);
             if (suppression.rows[0]) {
