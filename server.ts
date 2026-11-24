@@ -18,6 +18,8 @@ import { markWhatsAppOpened } from "./lib/outbound";
 import { conversationEventId, removeConversationEvent, restoreConversationEvent, type ConversationEvent, type RemovedConversationEvent } from "./lib/conversationEvents";
 import { createAgentRouter, initializeAgentTables } from "./lib/agents";
 import { containsExplicitOptOut } from "./lib/agentSafety";
+import { createWhatsAppBridge, type WhatsAppInbound } from "./lib/whatsappBridge";
+import { getWhatsAppNumber, normalizePhone } from "./lib/phone";
 
 dotenv.config();
 
@@ -86,6 +88,103 @@ async function syncAgentDoNotContact(lead: Lead): Promise<void> {
   await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: explicit opt-out detected', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [lead.id]);
 }
 
+async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
+  const allLeads = await db.query("SELECT id, data FROM leads");
+  const matched = allLeads.rows.find((row: any) => {
+    const lead = row.data as Lead;
+    const phone = normalizePhone(getWhatsAppNumber(lead));
+    return phone.valid && phone.digits === message.phone;
+  });
+
+  if (!matched) {
+    await db.query(`
+      INSERT INTO agent_queue (id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
+      VALUES ($1,'inbox_sync','log_inbound',$2,$3::jsonb,$4,$5)
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `, [
+      randomUUID(), message.text,
+      JSON.stringify({ phone: message.phone, remoteJid: message.remoteJid, messageId: message.messageId, receivedAt: message.receivedAt, pushName: message.pushName || null }),
+      "Inbound WhatsApp message received from a number that could not be matched to an existing CRM lead. Founder review is required to identify or create the contact.",
+      `whatsapp-inbound:${message.messageId}`,
+    ]);
+    return;
+  }
+
+  const client = await db.connect();
+  let updatedLead: Lead | null = null;
+  try {
+    await client.query("BEGIN");
+    const currentResult = await client.query("SELECT data FROM leads WHERE id=$1 FOR UPDATE", [matched.id]);
+    if (!currentResult.rows[0]?.data) throw new Error("Matched CRM lead disappeared before inbound persistence.");
+    const lead = currentResult.rows[0].data as Lead;
+    const log = Array.isArray(lead.conversationLog) ? lead.conversationLog : [];
+    if (!log.some((event: any) => event.id === message.messageId)) {
+      lead.conversationLog = [...log, {
+        id: message.messageId,
+        ts: message.receivedAt,
+        type: "reply",
+        direction: "inbound",
+        label: "WhatsApp inbound",
+        text: message.text,
+        by: lead.name || lead.company || message.phone,
+      }];
+      lead.prospectLatestResponse = message.text;
+      lead.awaitingReplySince = "";
+      lead.lastMeaningfulTouchpoint = message.receivedAt;
+      await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(lead), matched.id]);
+    }
+    await client.query("UPDATE agent_whatsapp_events SET lead_id=$1 WHERE id=$2", [matched.id, message.messageId]);
+    await client.query("COMMIT");
+    updatedLead = lead;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  if (!updatedLead) return;
+  await syncAgentDoNotContact(updatedLead);
+  const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [updatedLead.id]);
+  if (contactControl.rows[0]?.do_not_contact) return;
+
+  try {
+    const cfgResult = await db.query("SELECT brand_voice, buyer_psychology_pillars FROM agent_config WHERE id=1");
+    const config = cfgResult.rows[0] || {};
+    const lead = await enrichLeadAttachments(updatedLead);
+    const brain = await runSalesBrainWithGenerator(
+      lead,
+      {
+        requestedMessageType: "RESPONSE_DM" as any,
+        task: `A new inbound WhatsApp reply has just arrived. Respond to the actual message in context, not with a generic follow-up. Match the prospect's tone, answer their question directly if they asked one, and pursue only the next appropriate conversational objective. Do not restart the pitch, repeat prior angles, invent facts, or send a CTA if the prospect has not invited one. DFQ Labs voice: ${config.brand_voice || "Sharp, consultative, peer-to-peer."}. Buyer psychology pillars: ${(config.buyer_psychology_pillars || []).join("; ")}.`,
+      },
+      (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
+    );
+    const draft = String(brain.message || "").trim();
+    if (!draft) throw new Error("Sales Brain returned an empty inbound response draft.");
+    await db.query(`
+      INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
+      VALUES ($1,$2,'inbox_sync','follow_up',$3,$4::jsonb,$5,$6)
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `, [
+      randomUUID(), updatedLead.id, draft,
+      JSON.stringify({ messageType: "RESPONSE_DM", inboundMessageId: message.messageId, channel: "whatsapp_web" }),
+      String(brain.reasoningSummary || brain.recommendedAction || "Generated from the latest inbound reply and full CRM conversation.").slice(0,5000),
+      `whatsapp-response:${message.messageId}`,
+    ]);
+    await db.query(
+      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'inbox_sync','success',$2,1,0,$3::jsonb)",
+      [randomUUID(), "Logged inbound WhatsApp reply and staged a contextual response.", JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
+    );
+  } catch (error: any) {
+    await db.query(
+      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'inbox_sync','error',$2,0,1,$3::jsonb)",
+      [randomUUID(), "Inbound reply was saved, but response drafting failed: " + String(error?.message || error).slice(0,250), JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
+    );
+  }
+}
+
+const whatsappBridge = createWhatsAppBridge(db, handleWhatsAppInbound);
 
 // The regular lead form sends complete JSON documents. A Mark-as-Sent request
 // is different: its document may have been composed from an older client copy.
