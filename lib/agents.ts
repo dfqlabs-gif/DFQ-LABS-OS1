@@ -162,7 +162,15 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
     if (!founder(req, res)) return;
     try {
       const result = await db.query("SELECT * FROM agent_config WHERE id = 1");
-      res.json({ config: result.rows[0] });
+      const counters = await db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM' AND status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS outreach_sent,
+          COUNT(*) FILTER (WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM' AND status IN ('pending_approval','approved','sending'))::int AS outreach_queued,
+          COUNT(*) FILTER (WHERE action_type='value_dm' AND status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS value_sent,
+          COUNT(*) FILTER (WHERE action_type='value_dm' AND status IN ('pending_approval','approved','sending'))::int AS value_queued
+        FROM agent_queue
+      `);
+      res.json({ config: result.rows[0], counters: counters.rows[0] || {} });
     } catch (error) { console.error("Agent config read failed", error); res.status(500).json({ error: "Could not load agent settings" }); }
   });
 
