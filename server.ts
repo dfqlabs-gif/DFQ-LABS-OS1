@@ -1719,6 +1719,131 @@ app.post("/api/agents/linkedin-article", async (req, res) => {
   }
 });
 
+app.post("/api/agents/scout", async (req, res) => {
+  const actor = getAuthUserFromReq(req);
+  if (!actor || actor.role !== "FOUNDER") return res.status(actor ? 403 : 401).json({ error: "Founder access required" });
+  const city = typeof req.body?.city === "string" ? req.body.city.trim().slice(0,80) : "Abuja";
+  const limit = Math.min(10, Math.max(1, Number(req.body?.limit) || 10));
+  try {
+    const prior = await db.query("SELECT status FROM agent_logs WHERE agent_name='scout' ORDER BY created_at DESC LIMIT 1");
+    if (prior.rows[0]?.status === "halted_circuit_breaker") return res.status(423).json({ error: "Scout circuit breaker is active. A founder must reset it first." });
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) return res.status(503).json({ error: "GEMINI_API_KEY is not configured." });
+    const ai = new GoogleGenAI({ apiKey });
+    const prompt = `Use Google Search to discover up to ${limit} real-estate businesses based in or actively serving ${city}, Nigeria. Focus on property developers, established real-estate brokerages, luxury realtor brands, and architecture/construction firms with a credible high-ticket property presence. Prefer companies with a verifiable website or strong public business profile. Return ONLY a JSON array. Each object must contain: company_name, city, category, website, phone, whatsapp, instagram_url, linkedin_url, source_url, buyer_psychology_observation, evidence_summary. Only include businesses you can verify from the search results. Never invent or infer URLs, phone numbers, contacts, projects, budgets or facts. Use null for unavailable contact fields. source_url must be a direct public source URL that supports the company's existence or positioning. buyer_psychology_observation must be one concise, specific observation about how the brand currently signals trust, reduces buyer hesitation, communicates risk, or positions status/identity; if evidence is insufficient, say "Needs manual review" rather than speculate. Do not include duplicate companies. Return at most ${limit} objects.`;
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: { tools: [{ googleSearch: {} }], maxOutputTokens: 7000, temperature: 0.2 } as any,
+    });
+    const raw = response.text || "";
+    const first = raw.indexOf("[");
+    const last = raw.lastIndexOf("]");
+    if (first < 0 || last <= first) throw new Error("Google Search Scout did not return a parseable JSON list.");
+    const discovered = JSON.parse(raw.slice(first,last+1));
+    if (!Array.isArray(discovered)) throw new Error("Scout response is not a list.");
+    const candidate: any = response.candidates?.[0];
+    const groundingMetadata = candidate?.groundingMetadata || {};
+    const groundingSources = (groundingMetadata.groundingChunks || []).map((chunk: any) => ({
+      title: String(chunk.web?.title || chunk.maps?.title || "").slice(0,200),
+      uri: String(chunk.web?.uri || chunk.maps?.uri || ""),
+    })).filter((source: any) => /^https?:\/\//i.test(source.uri));
+    const searchEntryPoint = typeof groundingMetadata.searchEntryPoint?.renderedContent === "string" ? groundingMetadata.searchEntryPoint.renderedContent : null;
+    const webSearchQueries = Array.isArray(groundingMetadata.webSearchQueries) ? groundingMetadata.webSearchQueries : [];
+
+    const existingRows = await db.query("SELECT data FROM leads");
+    const existingQueue = await db.query("SELECT metadata FROM agent_queue WHERE action_type='new_lead' AND status IN ('pending_approval','approved','completed')");
+    const norm = (value: unknown) => String(value || "").trim().toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/$/,"");
+    const domain = (value: unknown) => { try { return new URL(String(value)).hostname.toLowerCase().replace(/^www\./,""); } catch { return ""; } };
+    const phoneDigits = (value: unknown) => String(value || "").replace(/\D/g,"");
+    const known = [
+      ...existingRows.rows.map((row: any) => row.data || {}),
+      ...existingQueue.rows.map((row: any) => row.metadata || {}),
+    ];
+    const dateKey = new Date().toISOString().slice(0,10);
+    const staged: any[] = [];
+    const skipped: string[] = [];
+    let failures = 0;
+    for (const item of discovered.slice(0,limit)) {
+      const company = String(item?.company_name || "").trim().slice(0,200);
+      const sourceUrl = String(item?.source_url || "").trim();
+      const safeUrl = (value: unknown) => {
+        try { const url = new URL(String(value)); return ["https:","http:"].includes(url.protocol) ? url.toString() : ""; } catch { return ""; }
+      };
+      const verifiedSource = safeUrl(sourceUrl);
+      if (!company || !verifiedSource || !groundingSources.some((source: any) => norm(source.uri) === norm(verifiedSource))) {
+        skipped.push((company || "Unnamed result") + ": missing a source URL that appears in Google grounding sources.");
+        continue;
+      }
+      const website = safeUrl(item.website);
+      const instagramUrl = safeUrl(item.instagram_url);
+      const linkedinUrl = safeUrl(item.linkedin_url);
+      const phone = phoneDigits(item.phone || item.whatsapp);
+      const duplicate = known.find((lead: any) =>
+        norm(lead.company_name || lead.company) === norm(company) ||
+        (!!website && !!lead.website && domain(website) === domain(lead.website)) ||
+        (!!instagramUrl && norm(instagramUrl) === norm(lead.instagram_url || lead.instagram)) ||
+        (!!linkedinUrl && norm(linkedinUrl) === norm(lead.linkedin_url || lead.linkedin)) ||
+        (!!phone && phoneDigits(lead.phone || lead.whatsapp) === phone)
+      );
+      if (duplicate) { skipped.push(company + ": possible CRM or queue duplicate."); continue; }
+      const metadata = {
+        company_name: company,
+        city: String(item.city || city).slice(0,80),
+        category: String(item.category || "Real Estate").slice(0,120),
+        website: website || null,
+        phone: phone ? String(item.phone || item.whatsapp) : null,
+        whatsapp: phone ? String(item.whatsapp || item.phone) : null,
+        instagram_url: instagramUrl || null,
+        linkedin_url: linkedinUrl || null,
+        source_url: verifiedSource,
+        buyer_psychology_observation: String(item.buyer_psychology_observation || "Needs manual review").slice(0,1000),
+        evidence_summary: String(item.evidence_summary || "").slice(0,1500),
+        grounding_sources: groundingSources,
+        search_entry_point: searchEntryPoint,
+        web_search_queries: webSearchQueries,
+      };
+      const contentText = [
+        "Company: " + company,
+        "City: " + metadata.city,
+        "Category: " + metadata.category,
+        "Website: " + (website || "Not verified"),
+        "Public phone: " + (metadata.phone || "Not verified"),
+        "Instagram: " + (instagramUrl || "Not verified"),
+        "LinkedIn: " + (linkedinUrl || "Not verified"),
+        "Buyer psychology observation: " + metadata.buyer_psychology_observation,
+        "Evidence: " + metadata.evidence_summary,
+        "Source: " + verifiedSource,
+      ].join("\n");
+      const slug = company.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,60);
+      const saved = await db.query(`
+        INSERT INTO agent_queue (id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
+        VALUES ($1,'scout','new_lead',$2,$3::jsonb,$4,$5)
+        ON CONFLICT (idempotency_key) DO NOTHING RETURNING *
+      `, [
+        randomUUID(), contentText, JSON.stringify(metadata),
+        "Discovered from Google-grounded public sources. Verify all details before creating or contacting the lead.",
+        `scout:${dateKey}:${city.toLowerCase().replace(/[^a-z0-9]+/g,"-")}:${slug}`,
+      ]);
+      if (saved.rowCount) {
+        staged.push(saved.rows[0]);
+        known.push(metadata);
+      } else skipped.push(company + ": already staged today.");
+    }
+    const summary = "Scout staged " + staged.length + " verified real-estate lead candidate(s) for founder review.";
+    await db.query("INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'scout','success',$2,$3,0,$4::jsonb)", [randomUUID(), summary, staged.length, JSON.stringify({ city, discovered: discovered.length, skipped })]);
+    await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,$2,'scout_discovery_run',$3::jsonb)", [randomUUID(), actor.userId, JSON.stringify({ city, staged: staged.length, skipped })]);
+    res.json({ ok: true, city, staged, skipped, groundingSources, searchEntryPoint });
+  } catch (error: any) {
+    console.error("Scout discovery failed:", String(error?.message || error).slice(0,300));
+    const prior = await db.query("SELECT consecutive_failures FROM agent_logs WHERE agent_name='scout' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
+    const failures = Number(prior.rows[0]?.consecutive_failures || 0) + 1;
+    const status = failures >= 2 ? "halted_circuit_breaker" : "error";
+    await db.query("INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'scout',$2,$3,0,$4,$5::jsonb)", [randomUUID(), status, "Scout run failed: " + String(error?.message || "unknown error").slice(0,250), failures, JSON.stringify({ city })]).catch(() => {});
+    res.status(502).json({ error: String(error?.message || "Scout discovery failed.") });
+  }
+});
+
 // Safe deployment evidence for Render; intentionally exposes no configuration
 // values beyond the commit supplied by Render's build environment.
 app.get("/api/runtime/version", (_req, res) => {
