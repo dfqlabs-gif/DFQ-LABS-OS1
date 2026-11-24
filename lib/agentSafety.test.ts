@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { containsExplicitOptOut, isExplicitOptOut } from "./agentSafety.js";
 
 test("detects explicit opt-out phrases", () => {
-  for (const message of ["STOP", "unsubscribe", "remove me", "do not contact me", "Please stop contacting me.", "not interested"]) {
+  for (const message of ["STOP", "unsubscribe", "remove me", "do not contact me", "Please stop contacting me.", "not interested", "I'm not interested", "take me off your list", "no more texts"]) {
     assert.equal(isExplicitOptOut(message), true, message);
   }
 });
@@ -18,6 +18,7 @@ test("does not confuse property disinterest or incidental wording with an opt-ou
   assert.equal(isExplicitOptOut("I'm not interested in the property."), false);
   assert.equal(isExplicitOptOut("Please stop by our office tomorrow."), false);
   assert.equal(isExplicitOptOut("Not interested in this particular development, thanks."), false);
+  assert.equal(isExplicitOptOut("I am not interested in the property."), false);
 });
 
 test("checks a saved conversation collection", () => {
