@@ -324,6 +324,13 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
             outboundMessages: [],
           };
           await client.query("INSERT INTO leads (id, data, updated_at) VALUES ($1,$2::jsonb,NOW())", [leadId, JSON.stringify(lead)]);
+          const leadPhoneDigits = String(lead.whatsapp || lead.phone || "").replace(/\D/g,"");
+          if (leadPhoneDigits) {
+            const suppression = await client.query("SELECT reason FROM agent_phone_suppressions WHERE phone=$1", [leadPhoneDigits]);
+            if (suppression.rows[0]) {
+              await client.query("INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at) VALUES ($1,TRUE,$2,'phone_suppression','system',NOW()) ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source='phone_suppression', updated_by='system', updated_at=NOW()", [leadId, suppression.rows[0].reason]);
+            }
+          }
           const updated = await client.query(`
             UPDATE agent_queue SET status='completed', reviewed_by=$1, reviewed_at=NOW(),
               metadata = metadata || jsonb_build_object('createdLeadId',$2::text),
