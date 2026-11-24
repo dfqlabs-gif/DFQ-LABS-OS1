@@ -1707,7 +1707,7 @@ app.post("/api/agents/linkedin-article", async (req, res) => {
       ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
       RETURNING *
     `, [
-      randomUUID(), article, JSON.stringify({ platform: "LinkedIn", topic, generatedDate: dateKey, wordCount: article.split(/\\s+/).length }),
+      randomUUID(), article, JSON.stringify({ platform: "LinkedIn", topic, generatedDate: dateKey, wordCount: article.split(/\s+/).length }),
       "Thought-leadership draft built around a single buyer-psychology argument. Review all factual claims before publishing.",
       idempotencyKey,
     ]);
