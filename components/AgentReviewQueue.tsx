@@ -5,6 +5,7 @@ import type { Lead } from "../types";
 type Config = { automation_mode: "queue_only" | "autopilot"; daily_outreach_cap: number; daily_value_dm_cap: number; brand_voice: string; buyer_psychology_pillars: string[] };
 type QueueItem = { id: string; lead_id: string | null; agent_name: string; action_type: string; draft_content: string; reasoning: string; status: string; created_at: string; lead_name?: string; lead_company?: string; lead_phone?: string; metadata?: Record<string, unknown> };
 type Props = { token: string; leads: Lead[] };
+type WhatsAppStatus = { enabled:boolean; status:string; connectedPhone:string|null; lastError:string|null; lastConnectedAt:string|null; qrDataUrl:string|null; encryptionConfigured:boolean };
 
 const ACTIONS = ["all","outreach_dm","value_dm","follow_up","new_lead","log_inbound","linkedin_article"];
 const LABELS: Record<string,string> = { outreach_dm:"Outreach DM", value_dm:"Value DM", follow_up:"Follow-up", new_lead:"New Lead", log_inbound:"Inbound Reply", linkedin_article:"LinkedIn Article" };
@@ -20,6 +21,8 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const [edits,setEdits] = useState<Record<string,string>>({});
   const [logs,setLogs] = useState<any[]>([]);
   const [selectedLeadIds,setSelectedLeadIds] = useState<string[]>([]);
+  const [whatsapp,setWhatsapp] = useState<WhatsAppStatus|null>(null);
+  const [whatsappBusy,setWhatsappBusy] = useState(false);
   const headers = useMemo(() => ({ "Content-Type":"application/json", Authorization:`Bearer ${token}` }),[token]);
 
   const request = useCallback(async (url:string, init:RequestInit = {}) => {
@@ -42,6 +45,28 @@ export function AgentReviewQueue({ token, leads }: Props) {
     finally { setLoading(false); }
   },[request,status]);
   useEffect(()=>{ refresh(); },[refresh]);
+
+  const refreshWhatsApp = useCallback(async () => {
+    try { const result=await request("/api/agents/whatsapp/status"); setWhatsapp(result.status); }
+    catch(e:any) { setError(e.message || "Could not read WhatsApp connection status."); }
+  },[request]);
+  useEffect(() => {
+    refreshWhatsApp();
+    const timer=setInterval(refreshWhatsApp,5000);
+    return ()=>clearInterval(timer);
+  },[refreshWhatsApp]);
+  const connectWhatsApp = async () => {
+    setWhatsappBusy(true); setError("");
+    try { const result=await request("/api/agents/whatsapp/connect",{method:"POST"}); setWhatsapp(result.status); }
+    catch(e:any) { setError(e.message); await refreshWhatsApp(); }
+    finally { setWhatsappBusy(false); }
+  };
+  const disconnectWhatsApp = async () => {
+    setWhatsappBusy(true); setError("");
+    try { const result=await request("/api/agents/whatsapp/disconnect",{method:"POST"}); setWhatsapp(result.status); }
+    catch(e:any) { setError(e.message); }
+    finally { setWhatsappBusy(false); }
+  };
 
   const generateDrafts = async (actionType:"outreach_dm"|"value_dm"|"follow_up") => {
     if (!selectedLeadIds.length) { setError("Select at least one CRM lead first."); return; }
@@ -102,6 +127,21 @@ export function AgentReviewQueue({ token, leads }: Props) {
       <button onClick={refresh} style={{background:SURFACE2,border:`1px solid ${BORDER}`,color:TEXT,borderRadius:7,padding:"8px 13px",cursor:"pointer"}}>↻ Refresh</button>
     </div>
     {error && <div role="alert" style={{background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.35)",color:"#FCA5A5",padding:10,borderRadius:8,marginBottom:12,fontSize:12}}>{error}</div>}
+    <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
+      <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+        <div><div style={{fontSize:11,fontWeight:900,color:TEXT}}>WhatsApp Web bridge</div><div style={{fontSize:10,color:MUTED,marginTop:4}}>QR-based connection · no Cloud API or paid provider</div></div>
+        <span style={{fontSize:9,fontWeight:800,color:whatsapp?.status==="connected"?G:whatsapp?.status==="error"?"#FCA5A5":MUTED,background:SURFACE2,border:`1px solid ${BORDER}`,borderRadius:20,padding:"6px 10px"}}>{(whatsapp?.status||"checking").replace("_"," ").toUpperCase()}</span>
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
+        <button disabled={whatsappBusy||!whatsapp?.encryptionConfigured||whatsapp?.status==="connected"} onClick={connectWhatsApp} style={{background:G,color:"#001014",border:"none",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>{whatsappBusy?"Connecting…":whatsapp?.status==="qr_required"?"Refresh connection":"Connect WhatsApp"}</button>
+        <button disabled={whatsappBusy||!whatsapp?.enabled} onClick={disconnectWhatsApp} style={{background:"transparent",color:MUTED,border:`1px solid ${BORDER}`,borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Disconnect</button>
+        {whatsapp?.connectedPhone&&<span style={{fontSize:10,color:G,alignSelf:"center"}}>Connected number: +{whatsapp.connectedPhone}</span>}
+      </div>
+      {!whatsapp?.encryptionConfigured&&<div style={{fontSize:10,color:"#FCA5A5",marginTop:10}}>Before connecting, add WHATSAPP_SESSION_ENCRYPTION_KEY (a random secret of at least 32 characters) to the OS1 Render environment. Session credentials are encrypted in PostgreSQL.</div>}
+      {whatsapp?.qrDataUrl&&<div style={{display:"flex",gap:16,alignItems:"center",flexWrap:"wrap",marginTop:14,padding:12,background:"#fff",borderRadius:8,width:"fit-content"}}><img src={whatsapp.qrDataUrl} alt="WhatsApp Web QR code" style={{width:220,height:220}}/><div style={{maxWidth:230,color:"#111",fontSize:11,lineHeight:1.6}}><b>Scan with your phone</b><br/>Open WhatsApp → Linked Devices → Link a Device. Scan this QR code to connect the account you are authorized to use.</div></div>}
+      {whatsapp?.lastError&&<div style={{fontSize:10,color:"#FCA5A5",marginTop:8}}>{whatsapp.lastError}</div>}
+      <div style={{fontSize:9,color:MUTED2,marginTop:10,lineHeight:1.6}}>Unofficial WhatsApp Web integration, not endorsed by WhatsApp. It may break or result in account restrictions. Use only an account you control or are authorized to connect. All outbound messages remain subject to founder approval.</div>
+    </section>
     {config && <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginBottom:18}}>
       <div style={{background:SURFACE,border:`1px solid ${G_BORDER}`,borderRadius:10,padding:14}}>
         <div style={{fontSize:9,color:MUTED,letterSpacing:".12em",fontWeight:800}}>AUTOMATION MODE</div>
