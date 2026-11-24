@@ -104,6 +104,13 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   });
 
   if (!matched) {
+    if (containsExplicitOptOut([message.text])) {
+      await db.query(`
+        INSERT INTO agent_phone_suppressions (phone, reason, source, updated_by, updated_at)
+        VALUES ($1, 'Explicit opt-out received from unmatched WhatsApp sender', 'inbound_detection', 'system', NOW())
+        ON CONFLICT (phone) DO UPDATE SET reason=EXCLUDED.reason, source=EXCLUDED.source, updated_by='system', updated_at=NOW()
+      `, [message.phone]);
+    }
     await db.query(`
       INSERT INTO agent_queue (id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
       VALUES ($1,'inbox_sync','log_inbound',$2,$3::jsonb,$4,$5)
