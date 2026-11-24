@@ -938,7 +938,7 @@ export default function App() {
       lastActivityRef.current = Date.now();
       if (Date.now() - lastSessionWriteRef.current > 60000) {
         lastSessionWriteRef.current = Date.now();
-        writeSession(role);
+        writeSession(role, apiToken);
       }
     };
     const events = ["click", "keydown", "mousemove", "touchstart", "scroll"];
