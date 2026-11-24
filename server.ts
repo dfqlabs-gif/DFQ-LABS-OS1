@@ -1448,7 +1448,7 @@ async function runDailyCloserIfDue(): Promise<void> {
     const blockedResult = await client.query("SELECT lead_id FROM agent_contact_controls WHERE do_not_contact=TRUE");
     const blockedIds = new Set(blockedResult.rows.map((row: any) => String(row.lead_id)));
     const candidates = leadsResult.rows.map((row: any) => row.data as Lead).filter((lead: Lead) => {
-      if (!lead?.id || blockedIds.has(String(lead.id)) || ["Closed","Lost"].includes(lead.status)) return false;
+      if (!lead?.id || blockedIds.has(String(lead.id)) || ["Closed","Lost","Booked","Meeting Scheduled","Converted","Not Interested","DNC"].includes(lead.status) || lead.meetingScheduledAt) return false;
       if (!lead.awaitingReplySince) return false;
       const hours = (Date.now() - new Date(lead.awaitingReplySince).getTime()) / 3600000;
       if (!Number.isFinite(hours) || hours < 48 || hours > 72) return false;
