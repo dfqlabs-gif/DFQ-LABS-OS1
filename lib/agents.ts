@@ -257,6 +257,30 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
     } catch (error) { console.error("Agent review failed", error); res.status(500).json({ error: "Could not review queue item" }); }
   });
 
+  router.post("/queue/batch-review", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids.filter((id: unknown) => typeof id === "string"))].slice(0,30) : [];
+    const decision = req.body?.decision;
+    if (!ids.length || !["approve","reject"].includes(decision)) return res.status(400).json({ error: "Provide 1–30 queue IDs and an approve/reject decision." });
+    const updated: any[] = [];
+    const skipped: any[] = [];
+    try {
+      for (const id of ids) {
+        const item = await db.query("SELECT lead_id, action_type FROM agent_queue WHERE id=$1 AND status='pending_approval'", [id]);
+        if (!item.rowCount) { skipped.push({ id, reason: "No longer pending review" }); continue; }
+        if (decision === "approve" && item.rows[0].lead_id && ["outreach_dm","value_dm","follow_up"].includes(item.rows[0].action_type)) {
+          const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [item.rows[0].lead_id]);
+          if (control.rows[0]?.do_not_contact) { skipped.push({ id, reason: "Lead is marked do-not-contact" }); continue; }
+        }
+        const status = decision === "approve" ? "approved" : "rejected";
+        const result = await db.query("UPDATE agent_queue SET status=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW() WHERE id=$3 AND status='pending_approval' RETURNING id,status", [status, actor.userId, id]);
+        if (result.rowCount) updated.push(result.rows[0]); else skipped.push({ id, reason: "Queue item changed during review" });
+      }
+      await audit(actor, "queue_batch_" + (decision === "approve" ? "approved" : "rejected"), null, { updated: updated.length, skipped });
+      res.json({ ok: true, updated, skipped });
+    } catch (error) { console.error("Batch queue review failed", error); res.status(500).json({ error: "Could not complete batch review" }); }
+  });
+
   router.get("/contact-controls", async (req, res) => {
     if (!founder(req, res)) return;
     try {
