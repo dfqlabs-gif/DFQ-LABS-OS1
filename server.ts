@@ -1071,6 +1071,91 @@ app.post("/api/sales-brain", async (req, res) => {
   }
 });
 
+// Founder-only batch drafting. This stages content for review; it never sends messages.
+app.post("/api/agents/generate", async (req, res) => {
+  const actor = getAuthUserFromReq(req);
+  if (!actor || actor.role !== "FOUNDER") return res.status(actor ? 403 : 401).json({ error: "Founder access required" });
+  const { leadIds, actionType } = req.body || {};
+  const actionMap: Record<string, string> = { outreach_dm: "INTRODUCTION_DM", value_dm: "VALUE_DM", follow_up: "FOLLOW_UP" };
+  if (!Array.isArray(leadIds) || leadIds.length < 1 || leadIds.length > 10 || leadIds.some((id: unknown) => typeof id !== "string")) {
+    return res.status(400).json({ error: "Select between 1 and 10 leads." });
+  }
+  if (!actionMap[actionType]) return res.status(400).json({ error: "Choose outreach_dm, value_dm or follow_up." });
+  try {
+    const cfgResult = await db.query("SELECT * FROM agent_config WHERE id = 1");
+    const config = cfgResult.rows[0];
+    if (!config || config.automation_mode !== "queue_only") return res.status(409).json({ error: "Drafting requires Review Queue mode." });
+    const cap = actionType === "outreach_dm" ? config.daily_outreach_cap : config.daily_value_dm_cap;
+    const capActionTypes = actionType === "outreach_dm" ? ["outreach_dm"] : actionType === "value_dm" ? ["value_dm"] : ["follow_up"];
+    const capCount = await db.query(
+      "SELECT COUNT(*)::int AS count FROM agent_queue WHERE action_type = ANY($1::text[]) AND created_at >= date_trunc('day', NOW()) AND status IN ('pending_approval','approved','sent')",
+      [capActionTypes]
+    );
+    let remaining = Math.max(0, cap - Number(capCount.rows[0]?.count || 0));
+    if (!remaining) return res.status(429).json({ error: "Daily draft cap reached for this action type.", cap });
+    const uniqueIds = [...new Set(leadIds)].slice(0, Math.min(10, remaining));
+    const staged: any[] = [];
+    const skipped: string[] = [];
+    let consecutiveFailures = 0;
+    for (const leadId of uniqueIds) {
+      try {
+        const stored = await getAuthoritativeLead(leadId);
+        if (!stored) { skipped.push(leadId + ": lead not found"); continue; }
+        if (["Closed", "Lost"].includes(stored.status)) { skipped.push((stored.company || stored.name || leadId) + ": closed/lost"); continue; }
+        const lead = await enrichLeadAttachments(stored);
+        const brain = await runSalesBrainWithGenerator(
+          lead,
+          { requestedMessageType: actionMap[actionType] as any },
+          (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
+        );
+        const draft = String(brain.message || "").trim();
+        if (!draft) throw new Error("Sales Brain returned an empty draft");
+        const id = randomUUID();
+        const idempotencyKey = "agent-draft:" + leadId + ":" + actionType + ":" + new Date().toISOString().slice(0,10);
+        const saved = await db.query(`
+          INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
+          VALUES ($1,$2,'writer',$3,$4,$5::jsonb,$6,$7)
+          ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+          RETURNING *
+        `, [
+          id, leadId, actionType, draft,
+          JSON.stringify({ company: lead.company, contact_name: lead.name, message_type: actionMap[actionType], model: GEMINI_MODEL }),
+          String(brain.reasoningSummary || brain.recommendedAction || "Generated from the authoritative CRM record and conversation history.").slice(0,5000),
+          idempotencyKey
+        ]);
+        staged.push(saved.rows[0]);
+        consecutiveFailures = 0;
+      } catch (error: any) {
+        consecutiveFailures++;
+        skipped.push(leadId + ": " + String(error?.message || "generation failed").slice(0,180));
+        await db.query(
+          "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer','error',$2,0,$3,$4::jsonb)",
+          [randomUUID(), "Draft generation failed for " + leadId, consecutiveFailures, JSON.stringify({ leadId })]
+        );
+        if (consecutiveFailures >= 2) {
+          await db.query(
+            "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer','halted_circuit_breaker',$2,$3,$4,$5::jsonb)",
+            [randomUUID(), "Writer halted after two consecutive generation failures.", staged.length, consecutiveFailures, JSON.stringify({ actionType })]
+          );
+          break;
+        }
+      }
+    }
+    await db.query(
+      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer',$2,$3,$4,$5,$6::jsonb)",
+      [randomUUID(), consecutiveFailures >= 2 ? "halted_circuit_breaker" : "success", "Staged " + staged.length + " draft(s) for founder review.", staged.length, consecutiveFailures, JSON.stringify({ actionType, requested: uniqueIds.length, skipped })]
+    );
+    await db.query(
+      "INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,$2,'draft_batch_generated',$3::jsonb)",
+      [randomUUID(), actor.userId, JSON.stringify({ actionType, staged: staged.length, skipped })]
+    );
+    return res.json({ ok: true, staged, skipped, remainingCap: Math.max(0, remaining - staged.length) });
+  } catch (error: any) {
+    console.error("Agent batch generation failed:", error);
+    return res.status(500).json({ error: "Could not generate drafts." });
+  }
+});
+
 // Safe deployment evidence for Render; intentionally exposes no configuration
 // values beyond the commit supplied by Render's build environment.
 app.get("/api/runtime/version", (_req, res) => {
