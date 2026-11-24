@@ -365,13 +365,13 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
         const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [queueItem.lead_id]);
         if (control.rows[0]?.do_not_contact) return res.status(409).json({ error: "This lead is marked do-not-contact. The draft cannot be approved." });
       }
-      const status = decision === "approve" ? "approved" : "rejected";
+      const status = decision === "approve" ? (queueItem.action_type === "log_inbound" ? "completed" : "approved") : "rejected";
       const result = await db.query(`
         UPDATE agent_queue SET status=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW()
         WHERE id=$3 AND status='pending_approval' RETURNING *
       `, [status, actor.userId, req.params.id]);
       if (!result.rowCount) return res.status(409).json({ error: "Item is no longer awaiting review" });
-      await audit(actor, decision === "approve" ? "queue_item_approved" : "queue_item_rejected", req.params.id, {});
+      await audit(actor, decision === "approve" ? (queueItem.action_type === "log_inbound" ? "inbound_log_acknowledged" : "queue_item_approved") : "queue_item_rejected", req.params.id, {});
       res.json({ item: result.rows[0] });
     } catch (error) { console.error("Agent review failed", error); res.status(500).json({ error: "Could not review queue item" }); }
   });
@@ -392,7 +392,7 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
           const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [item.rows[0].lead_id]);
           if (control.rows[0]?.do_not_contact) { skipped.push({ id, reason: "Lead is marked do-not-contact" }); continue; }
         }
-        const status = decision === "approve" ? "approved" : "rejected";
+        const status = decision === "approve" ? (item.rows[0].action_type === "log_inbound" ? "completed" : "approved") : "rejected";
         const result = await db.query("UPDATE agent_queue SET status=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW() WHERE id=$3 AND status='pending_approval' RETURNING id,status", [status, actor.userId, id]);
         if (result.rowCount) updated.push(result.rows[0]); else skipped.push({ id, reason: "Queue item changed during review" });
       }
