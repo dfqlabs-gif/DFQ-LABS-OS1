@@ -1115,7 +1115,9 @@ app.post("/api/agents/generate", async (req, res) => {
     const uniqueIds = [...new Set(leadIds)].slice(0, Math.min(10, remaining));
     const staged: any[] = [];
     const skipped: string[] = [];
-    let consecutiveFailures = 0;
+    const priorWriterLog = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='writer' ORDER BY created_at DESC LIMIT 1");
+    if (priorWriterLog.rows[0]?.status === "halted_circuit_breaker") return res.status(423).json({ error: "Writer circuit breaker is active. A founder must reset it before more drafts can be generated." });
+    let consecutiveFailures = priorWriterLog.rows[0]?.status === "error" ? Number(priorWriterLog.rows[0].consecutive_failures || 0) : 0;
     for (const leadId of uniqueIds) {
       try {
         const stored = await getAuthoritativeLead(leadId);
@@ -1186,7 +1188,7 @@ app.post("/api/agents/generate", async (req, res) => {
     }
     await db.query(
       "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer',$2,$3,$4,$5,$6::jsonb)",
-      [randomUUID(), consecutiveFailures >= 2 ? "halted_circuit_breaker" : "success", "Staged " + staged.length + " draft(s) for founder review.", staged.length, consecutiveFailures, JSON.stringify({ actionType, requested: uniqueIds.length, skipped })]
+      [randomUUID(), consecutiveFailures >= 2 ? "halted_circuit_breaker" : consecutiveFailures > 0 ? "error" : "success", "Staged " + staged.length + " draft(s) for founder review.", staged.length, consecutiveFailures, JSON.stringify({ actionType, requested: uniqueIds.length, skipped })]
     );
     await db.query(
       "INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,$2,'draft_batch_generated',$3::jsonb)",
