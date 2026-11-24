@@ -22,6 +22,8 @@ export interface Lead {
   instagram?: string;
   whatsapp?: string;
   email?: string;
+  website?: string;
+  linkedin?: string;
   source: string;
   clientType: string;
   service: string;
