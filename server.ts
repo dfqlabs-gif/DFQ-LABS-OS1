@@ -1930,9 +1930,14 @@ app.post("/api/agents/scout", async (req, res) => {
         skipped.push((company || "Unnamed result") + ": missing a source URL that appears in Google grounding sources.");
         continue;
       }
-      const website = safeUrl(item.website);
-      const instagramUrl = safeUrl(item.instagram_url);
-      const linkedinUrl = safeUrl(item.linkedin_url);
+      const websiteCandidate = safeUrl(item.website);
+      const instagramCandidate = safeUrl(item.instagram_url);
+      const linkedinCandidate = safeUrl(item.linkedin_url);
+      const isGroundedUrl = (value: string) => groundingSources.some((source: any) => norm(source.uri) === norm(value));
+      const isGroundedDomain = (value: string) => groundingSources.some((source: any) => domain(source.uri) && domain(source.uri) === domain(value));
+      const website = websiteCandidate && isGroundedDomain(websiteCandidate) ? websiteCandidate : "";
+      const instagramUrl = instagramCandidate && domain(instagramCandidate) === "www.instagram.com" || instagramCandidate && domain(instagramCandidate) === "instagram.com" ? (isGroundedUrl(instagramCandidate) ? instagramCandidate : "") : "";
+      const linkedinUrl = linkedinCandidate && (domain(linkedinCandidate) === "www.linkedin.com" || domain(linkedinCandidate) === "linkedin.com") ? (isGroundedUrl(linkedinCandidate) ? linkedinCandidate : "") : "";
       const phone = phoneDigits(item.phone || item.whatsapp);
       const duplicate = known.find((lead: any) =>
         norm(lead.company_name || lead.company) === norm(company) ||
