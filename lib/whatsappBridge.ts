@@ -180,6 +180,7 @@ export function createWhatsAppBridge(db: Pool, onInbound: InboundHandler) {
     if (socket) return;
     encryptionKey();
     manualStop = false;
+    try {
     if (!lockClient) {
       lockClient = await db.connect();
       const lock = await lockClient.query("SELECT pg_try_advisory_lock(hashtext($1)) AS locked", ["dfqlabs-os1-whatsapp-bridge"]);
@@ -232,13 +233,25 @@ export function createWhatsAppBridge(db: Pool, onInbound: InboundHandler) {
       if (event?.type !== "notify") return;
       for (const message of event.messages || []) void handleInbound(message);
     });
+    } catch (error) {
+      const current = socket;
+      socket = null;
+      if (current) current.end(error as Error);
+      await releaseLock();
+      throw error;
+    }
   }
 
   return {
     async connect() {
       await updateSettings({ enabled: true, status: "connecting", last_error: null });
-      await startSocket();
-      return this.status();
+      try {
+        await startSocket();
+        return this.status();
+      } catch (error: any) {
+        await updateSettings({ enabled: false, status: "error", last_error: String(error?.message || "WhatsApp connection failed").slice(0, 500) });
+        throw error;
+      }
     },
     async disconnect() {
       manualStop = true;
@@ -274,7 +287,9 @@ export function createWhatsAppBridge(db: Pool, onInbound: InboundHandler) {
     },
     async initialize() {
       const status = await this.status();
-      if (status.enabled && status.encryptionConfigured) {
+      if (status.enabled && !status.encryptionConfigured) {
+        await updateSettings({ status: "encryption_key_missing", last_error: "Set WHATSAPP_SESSION_ENCRYPTION_KEY to restore the encrypted WhatsApp session." });
+      } else if (status.enabled) {
         await startSocket().catch(async error => {
           await updateSettings({ status: "error", last_error: String(error?.message || "WhatsApp startup failed").slice(0, 500) }).catch(() => {});
         });
