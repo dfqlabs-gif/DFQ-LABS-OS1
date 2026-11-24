@@ -1103,6 +1103,31 @@ app.post("/api/agents/generate", async (req, res) => {
         if (!stored) { skipped.push(leadId + ": lead not found"); continue; }
         if (["Closed", "Lost"].includes(stored.status)) { skipped.push((stored.company || stored.name || leadId) + ": closed/lost"); continue; }
         const lead = await enrichLeadAttachments(stored);
+        const inboundTexts = [
+          lead.prospectInitialResponse || "",
+          lead.prospectLatestResponse || "",
+          ...(Array.isArray(lead.conversationLog) ? lead.conversationLog.filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "") : [])
+        ];
+        const explicitOptOut = inboundTexts.some((raw: string) => {
+          const text = String(raw).trim().toLowerCase().replace(/[.!?]+$/g, "").replace(/\\s+/g, " ");
+          return /^(stop|unsubscribe|remove me|do not contact me|don't contact me|dont contact me|no more messages|stop messaging me|please stop contacting me|not interested)( thanks| please)?$/.test(text) ||
+            /\\b(stop sending (?:me )?(?:messages|texts|whatsapp)|do not (?:message|contact) me|don't (?:message|contact) me|dont (?:message|contact) me|remove me from (?:your )?(?:list|contact list)|unsubscribe me)\\b/.test(text);
+        });
+        if (explicitOptOut) {
+          await db.query(`
+            INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at)
+            VALUES ($1, TRUE, 'Explicit opt-out detected in recorded inbound conversation', 'inbound_detection', 'system', NOW())
+            ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source='inbound_detection', updated_by='system', updated_at=NOW()
+          `, [leadId]);
+          await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: explicit opt-out detected', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [leadId]);
+          skipped.push((lead.company || lead.name || leadId) + ": explicit opt-out; marked do-not-contact");
+          continue;
+        }
+        const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [leadId]);
+        if (contactControl.rows[0]?.do_not_contact) {
+          skipped.push((lead.company || lead.name || leadId) + ": do-not-contact flag is active");
+          continue;
+        }
         const brain = await runSalesBrainWithGenerator(
           lead,
           { requestedMessageType: actionMap[actionType] as any },
