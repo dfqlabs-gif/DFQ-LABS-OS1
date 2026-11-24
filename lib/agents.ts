@@ -332,7 +332,7 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
             }
           }
           const updated = await client.query(`
-            UPDATE agent_queue SET status='completed', reviewed_by=$1, reviewed_at=NOW(),
+            UPDATE agent_queue SET status='completed', lead_id=$2, reviewed_by=$1, reviewed_at=NOW(),
               metadata = metadata || jsonb_build_object('createdLeadId',$2::text),
               updated_at=NOW()
             WHERE id=$3 RETURNING *
