@@ -62,6 +62,14 @@ export function AgentReviewQueue({ token, leads }: Props) {
     catch(e:any){setError(e.message);}
     finally{setBusy(null);}
   };
+  const markDoNotContact = async (item:QueueItem) => {
+    if (!item.lead_id || !window.confirm("Mark this lead as DO NOT CONTACT and cancel all pending/approved drafts?")) return;
+    setBusy(item.id); setError("");
+    try { await request(`/api/agents/leads/${item.lead_id}/do-not-contact`,{method:"POST",body:JSON.stringify({reason:"Founder marked from AI Review Queue"})}); await refresh(); }
+    catch(e:any){setError(e.message);}
+    finally{setBusy(null);}
+  };
+
   const review = async (item:QueueItem, decision:"approve"|"reject", edited?:string) => {
     setBusy(item.id); setError("");
     try {
@@ -125,7 +133,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
         <div style={{display:"flex",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:9}}><div><div style={{fontSize:12,fontWeight:800,color:TEXT}}>{item.lead_name||item.lead_company||String(item.metadata?.company_name||"Unassigned item")}</div><div style={{fontSize:10,color:MUTED,marginTop:3}}>{LABELS[item.action_type]||item.action_type} · {item.agent_name} · {item.lead_phone||""}</div></div><span style={{fontSize:9,fontWeight:800,color:item.status==="pending_approval"?G:MUTED,background:item.status==="pending_approval"?G_DIM:SURFACE2,border:`1px solid ${item.status==="pending_approval"?G_BORDER:BORDER}`,borderRadius:20,padding:"5px 9px",height:"fit-content"}}>{item.status.replace("_"," ").toUpperCase()}</span></div>
         <textarea value={edits[item.id]??item.draft_content} onChange={e=>setEdits(p=>({...p,[item.id]:e.target.value}))} readOnly={item.status!=="pending_approval"} rows={Math.min(10,Math.max(3,Math.ceil((item.draft_content.length||100)/100)))} style={{...iStyle,width:"100%",lineHeight:1.65,resize:"vertical"}} />
         {item.reasoning&&<div style={{fontSize:10,color:MUTED,background:SURFACE2,padding:9,borderRadius:6,marginTop:8}}><b style={{color:G}}>AGENT REASONING</b><div style={{marginTop:4,lineHeight:1.6}}>{item.reasoning}</div></div>}
-        {item.status==="pending_approval"&&<div style={{display:"flex",gap:7,flexWrap:"wrap",marginTop:10}}><button disabled={busy===item.id} onClick={()=>review(item,"approve",edits[item.id])} style={{background:G,color:"#001014",border:"none",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>Approve for Dispatch</button><button disabled={busy===item.id} onClick={()=>review(item,"reject")} style={{background:"transparent",color:"#FCA5A5",border:"1px solid rgba(239,68,68,.35)",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Reject</button></div>}
+        {item.status==="pending_approval"&&<div style={{display:"flex",gap:7,flexWrap:"wrap",marginTop:10}}><button disabled={busy===item.id} onClick={()=>review(item,"approve",edits[item.id])} style={{background:G,color:"#001014",border:"none",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>Approve for Dispatch</button><button disabled={busy===item.id} onClick={()=>review(item,"reject")} style={{background:"transparent",color:"#FCA5A5",border:"1px solid rgba(239,68,68,.35)",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Reject</button>{item.lead_id&&<button disabled={busy===item.id} onClick={()=>markDoNotContact(item)} style={{background:"transparent",color:"#FCA5A5",border:"1px solid rgba(239,68,68,.35)",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Mark Do Not Contact</button>}</div>}
       </article>)}
     </div>}
     <section style={{marginTop:20,background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14}}><div style={{fontSize:11,fontWeight:800,color:TEXT,marginBottom:8}}>Agent activity</div>{logs.length===0?<div style={{fontSize:10,color:MUTED}}>No agent runs recorded yet.</div>:logs.slice(0,8).map(log=><div key={log.id} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${BORDER}`,fontSize:10}}><span style={{color:TEXT}}>{log.agent_name} · {log.summary}</span><span style={{color:log.status==="error"||log.status==="halted_circuit_breaker"?"#FCA5A5":MUTED,whiteSpace:"nowrap"}}>{new Date(log.created_at).toLocaleString()}</span></div>)}</section>
