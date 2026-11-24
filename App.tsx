@@ -894,10 +894,11 @@ export default function App() {
   const lastSessionWriteRef = useRef(0);
 
   const clearSession = useCallback(async () => {
-    try {
-      localStorage.removeItem(SESSION_KEY);
-    } catch (_) {}
-  }, []);
+    try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+    if (apiToken) {
+      fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${apiToken}` } }).catch(() => {});
+    }
+  }, [apiToken]);
 
   const writeSession = useCallback(async (roleKey: string, token?: string) => {
     const expiresAt = Date.now() + SESSION_IDLE_MS;
@@ -915,20 +916,29 @@ export default function App() {
 
   // Session persistence checks
   useEffect(() => {
-    (() => {
+    let cancelled = false;
+    (async () => {
       try {
-        const r = localStorage.getItem(SESSION_KEY);
-        if (r) {
-          const s = JSON.parse(r);
-          if (s?.role && s?.expiresAt && s.expiresAt > Date.now() && (s.role !== "founder" || s.token)) {
-            lastActivityRef.current = Date.now();
-            setRole(s.role);
-            setApiToken(s.token || "");
-            setAuthed(true);
-          }
+        const raw = localStorage.getItem(SESSION_KEY);
+        if (!raw) return;
+        const session = JSON.parse(raw);
+        if (!session?.role || !session?.expiresAt || session.expiresAt <= Date.now()) {
+          localStorage.removeItem(SESSION_KEY);
+          return;
         }
-      } catch (_) {}
+        if (session.role === "founder") {
+          if (!session.token) { localStorage.removeItem(SESSION_KEY); return; }
+          const response = await fetch("/api/auth/me", { headers: { Authorization: `Bearer ${session.token}` } });
+          if (!response.ok) { localStorage.removeItem(SESSION_KEY); return; }
+        }
+        if (cancelled) return;
+        lastActivityRef.current = Date.now();
+        setRole(session.role);
+        setApiToken(session.token || "");
+        setAuthed(true);
+      } catch (_) { try { localStorage.removeItem(SESSION_KEY); } catch {} }
     })();
+    return () => { cancelled = true; };
   }, []);
 
   // Idle lock listener
