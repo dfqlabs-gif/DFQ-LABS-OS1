@@ -74,6 +74,18 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
     )
   `);
   await db.query("CREATE INDEX IF NOT EXISTS agent_contact_controls_dnc_idx ON agent_contact_controls(do_not_contact) WHERE do_not_contact = TRUE");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_schedule_runs (
+      id UUID PRIMARY KEY,
+      job_name TEXT NOT NULL,
+      scheduled_date DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'started',
+      summary TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ NULL,
+      UNIQUE (job_name, scheduled_date)
+    )
+  `);
   await db.query("INSERT INTO agent_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
 }
 
