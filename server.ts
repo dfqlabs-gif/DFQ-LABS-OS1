@@ -1219,9 +1219,10 @@ async function runDailyCloserIfDue(): Promise<void> {
   if (hour < 14) return;
   const scheduledDate = `${local.year}-${local.month}-${local.day}`;
   closerSchedulerBusy = true;
-  const client = await db.connect();
+  let client: any = null;
   let locked = false;
   try {
+    client = await db.connect();
     const lock = await client.query("SELECT pg_try_advisory_lock(hashtext($1)) AS locked", ["dfqlabs-os1-daily-closer"]);
     locked = Boolean(lock.rows[0]?.locked);
     if (!locked) return;
@@ -1309,8 +1310,10 @@ async function runDailyCloserIfDue(): Promise<void> {
   } catch (error: any) {
     console.error("Daily closer scheduler failed:", error);
   } finally {
-    if (locked) await client.query("SELECT pg_advisory_unlock(hashtext($1))", ["dfqlabs-os1-daily-closer"]).catch(() => {});
-    client.release();
+    if (client) {
+      if (locked) await client.query("SELECT pg_advisory_unlock(hashtext($1))", ["dfqlabs-os1-daily-closer"]).catch(() => {});
+      client.release();
+    }
     closerSchedulerBusy = false;
   }
 }
