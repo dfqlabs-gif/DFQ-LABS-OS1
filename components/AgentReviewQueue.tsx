@@ -21,6 +21,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const [edits,setEdits] = useState<Record<string,string>>({});
   const [logs,setLogs] = useState<any[]>([]);
   const [contactControls,setContactControls] = useState<any[]>([]);
+  const [phoneSuppressions,setPhoneSuppressions] = useState<any[]>([]);
   const [selectedLeadIds,setSelectedLeadIds] = useState<string[]>([]);
   const [whatsapp,setWhatsapp] = useState<WhatsAppStatus|null>(null);
   const [whatsappBusy,setWhatsappBusy] = useState(false);
@@ -47,13 +48,14 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const refresh = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [c,q,l,dnc] = await Promise.all([
+      const [c,q,l,dnc,phones] = await Promise.all([
         request("/api/agents/config"),
         request(`/api/agents/queue?status=${encodeURIComponent(status)}&limit=100`),
         request("/api/agents/logs"),
-        request("/api/agents/contact-controls")
+        request("/api/agents/contact-controls"),
+        request("/api/agents/phone-suppressions")
       ]);
-      setConfig(c.config); setItems(q.items || []); setLogs(l.logs || []); setContactControls(dnc.controls || []);
+      setConfig(c.config); setItems(q.items || []); setLogs(l.logs || []); setContactControls(dnc.controls || []); setPhoneSuppressions(phones.suppressions || []);
     } catch(e:any) { setError(e.message || "Could not load agent workspace"); }
     finally { setLoading(false); }
   },[request,status]);
@@ -126,6 +128,14 @@ export function AgentReviewQueue({ token, leads }: Props) {
     catch(e:any){setError(e.message);}
     finally{setBusy(null);}
   };
+  const removePhoneSuppression = async (phone:string) => {
+    if (!window.confirm("Remove this phone-level suppression only after the sender has explicitly opted back in?")) return;
+    setBusy(phone); setError("");
+    try { await request("/api/agents/phone-suppressions/"+phone,{method:"DELETE"}); await refresh(); }
+    catch(e:any){setError(e.message);}
+    finally{setBusy(null);}
+  };
+
   const removeDoNotContact = async (leadId:string) => {
     if (!window.confirm("Remove this lead from the do-not-contact list? Only do this if the contact has explicitly opted back in.")) return;
     setBusy(leadId); setError("");
@@ -278,6 +288,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
       </article>)}
     </div>}
     {haltedAgents.length>0&&<section style={{marginTop:18,background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.35)",borderRadius:10,padding:14}}><div style={{fontSize:11,fontWeight:900,color:"#FCA5A5",marginBottom:8}}>Circuit breaker — agent halted</div>{haltedAgents.map(log=><div key={log.agent_name} style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap",padding:"6px 0"}}><span style={{fontSize:10,color:TEXT}}>{log.agent_name}: {log.summary}</span><button disabled={busy===log.agent_name} onClick={()=>resetCircuitBreaker(log.agent_name)} style={{background:"transparent",border:"1px solid rgba(239,68,68,.4)",color:"#FCA5A5",borderRadius:6,padding:"6px 9px",fontSize:9,fontWeight:800,cursor:"pointer"}}>Reset circuit breaker</button></div>)}</section>}
+    {phoneSuppressions.length>0&&<section style={{marginTop:18,background:SURFACE,border:"1px solid "+BORDER,borderRadius:10,padding:14}}><div style={{fontSize:11,fontWeight:900,color:"#FCA5A5",marginBottom:8}}>Unmatched phone suppressions ({phoneSuppressions.length})</div>{phoneSuppressions.map(entry=><div key={entry.phone} style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap",padding:"7px 0",borderBottom:"1px solid "+BORDER}}><div><div style={{fontSize:10,color:TEXT,fontWeight:700}}>+{entry.phone}</div><div style={{fontSize:9,color:MUTED}}>{entry.reason} · {entry.source}</div></div><button disabled={busy===entry.phone} onClick={()=>removePhoneSuppression(entry.phone)} style={{background:"transparent",border:"1px solid rgba(239,68,68,.35)",color:"#FCA5A5",borderRadius:6,padding:"6px 9px",fontSize:9,fontWeight:800,cursor:"pointer"}}>Remove suppression</button></div>)}</section>}
     {contactControls.length>0&&<section style={{marginTop:18,background:SURFACE,border:"1px solid "+BORDER,borderRadius:10,padding:14}}><div style={{fontSize:11,fontWeight:900,color:"#FCA5A5",marginBottom:8}}>Do Not Contact list ({contactControls.length})</div>{contactControls.map(control=><div key={control.lead_id} style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap",padding:"7px 0",borderBottom:"1px solid "+BORDER}}><div><div style={{fontSize:10,color:TEXT,fontWeight:700}}>{control.lead_company||control.lead_name||control.lead_id}</div><div style={{fontSize:9,color:MUTED}}>{control.reason} · {control.source}</div></div><button disabled={busy===control.lead_id} onClick={()=>removeDoNotContact(control.lead_id)} style={{background:"transparent",border:"1px solid rgba(239,68,68,.35)",color:"#FCA5A5",borderRadius:6,padding:"6px 9px",fontSize:9,fontWeight:800,cursor:"pointer"}}>Remove DNC</button></div>)}</section>}
     <section style={{marginTop:20,background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14}}><div style={{fontSize:11,fontWeight:800,color:TEXT,marginBottom:8}}>Agent activity</div>{logs.length===0?<div style={{fontSize:10,color:MUTED}}>No agent runs recorded yet.</div>:logs.slice(0,8).map(log=><div key={log.id} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${BORDER}`,fontSize:10}}><span style={{color:TEXT}}>{log.agent_name} · {log.summary}</span><span style={{color:log.status==="error"||log.status==="halted_circuit_breaker"?"#FCA5A5":MUTED,whiteSpace:"nowrap"}}>{new Date(log.created_at).toLocaleString()}</span></div>)}</section>
   </div>;
