@@ -1580,6 +1580,12 @@ async function dispatchApprovedQueue(): Promise<void> {
       await client.query("COMMIT");
       return;
     }
+    const phoneSuppression = await client.query("SELECT reason FROM agent_phone_suppressions WHERE phone=$1 FOR UPDATE", [phone.digits]);
+    if (phoneSuppression.rows[0]) {
+      await client.query("UPDATE agent_queue SET status='rejected', error_log='Blocked at dispatch: phone-level opt-out suppression is active.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
+      await client.query("COMMIT");
+      return;
+    }
 
     const messageType = String(claimedItem.metadata?.messageType ||
       (claimedItem.action_type === "value_dm" ? "VALUE_DM" : claimedItem.action_type === "outreach_dm" ? "INTRODUCTION_DM" : "FOLLOW_UP")) as MessageType;
