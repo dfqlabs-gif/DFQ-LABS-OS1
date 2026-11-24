@@ -37,6 +37,7 @@ import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { LearningIntelligence } from "./components/LearningIntelligence";
+import { AgentReviewQueue } from "./components/AgentReviewQueue";
 import { OutboundActivity } from "./components/OutboundActivity";
 import { NurturePortal } from "./components/NurturePortal";
 import { KnowledgeBase } from "./components/KnowledgeBase";
@@ -874,6 +875,7 @@ export default function App() {
   const [importError, setImportError] = useState<string | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [authed, setAuthed] = useState(false);
+  const [apiToken, setApiToken] = useState<string>("");
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
   const [undoActions, setUndoActions] = useState<any[]>([]);
   const [undoMessage, setUndoMessage] = useState<string | null>(null);
@@ -897,16 +899,17 @@ export default function App() {
     } catch (_) {}
   }, []);
 
-  const writeSession = useCallback(async (roleKey: string) => {
+  const writeSession = useCallback(async (roleKey: string, token?: string) => {
     const expiresAt = Date.now() + SESSION_IDLE_MS;
     try {
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ role: roleKey, expiresAt }));
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ role: roleKey, expiresAt, token: token || "" }));
     } catch (_) {}
   }, []);
 
   const logout = useCallback(() => {
     setAuthed(false);
     setRole(null);
+    setApiToken("");
     clearSession();
   }, [clearSession]);
 
@@ -917,9 +920,10 @@ export default function App() {
         const r = localStorage.getItem(SESSION_KEY);
         if (r) {
           const s = JSON.parse(r);
-          if (s?.role && s?.expiresAt && s.expiresAt > Date.now()) {
+          if (s?.role && s?.expiresAt && s.expiresAt > Date.now() && (s.role !== "founder" || s.token)) {
             lastActivityRef.current = Date.now();
             setRole(s.role);
+            setApiToken(s.token || "");
             setAuthed(true);
           }
         }
@@ -1667,7 +1671,8 @@ export default function App() {
     { key: "gateway", label: "AI Gateway" },
     { key: "activity", label: "DM Activity" },
     { key: "learning", label: "Learning Intelligence" },
-    { key: "knowledge", label: "Knowledge Base" }
+    { key: "knowledge", label: "Knowledge Base" },
+    ...(role === "founder" ? [{ key: "agents", label: "AI Agents" }] : [])
   ];
 
   const importStageMeta = getImportStageMeta(importStage);
@@ -1676,7 +1681,7 @@ export default function App() {
 
   if (loading) return <div style={{ background: BG, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: G, fontFamily: "monospace", letterSpacing: 4, fontSize: 13 }}>LOADING OS…</span></div>;
   if (!role) return <RoleSelect onSelect={setRole} />;
-  if (!authed) return <AccessGate roleKey={role} onSuccess={() => { setAuthed(true); writeSession(role); }} onBack={() => setRole(null)} />;
+  if (!authed) return <AccessGate roleKey={role} onSuccess={(token) => { setApiToken(token || ""); setAuthed(true); writeSession(role, token); }} onBack={() => setRole(null)} />;
 
   // Staff dashboards — each person sees their own leads only
   // "abigail" / "internB" roles are kept here ONLY so any lingering cached sessions
@@ -1957,6 +1962,7 @@ export default function App() {
         {tab === "activity" && <OutboundActivity leads={activeLeads} onOpenLead={setModal} />}
         {tab === "learning" && <LearningIntelligence />}
         {tab === "knowledge" && <KnowledgeBase />}
+        {tab === "agents" && role === "founder" && <AgentReviewQueue token={apiToken} leads={activeLeads} />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onLeadCommitted={applyCommittedLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
