@@ -68,6 +68,28 @@ async function getAuthoritativeLead(leadId: string): Promise<Lead | null> {
   return (result.rows[0]?.data as Lead | undefined) || null;
 }
 
+/** Persist explicit opt-outs as a durable safety control as soon as CRM inbound history is saved. */
+async function syncAgentDoNotContact(lead: Lead): Promise<void> {
+  const inboundTexts = [
+    lead.prospectInitialResponse || "",
+    lead.prospectLatestResponse || "",
+    ...(Array.isArray(lead.conversationLog) ? lead.conversationLog.filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "") : []),
+  ];
+  const optedOut = inboundTexts.some(raw => {
+    const text = String(raw).trim().toLowerCase().replace(/[.!?]+$/g, "").replace(/\\s+/g, " ");
+    return /^(stop|unsubscribe|remove me|do not contact me|don't contact me|dont contact me|no more messages|stop messaging me|please stop contacting me|not interested)( thanks| please)?$/.test(text) ||
+      /\\b(stop sending (?:me )?(?:messages|texts|whatsapp)|do not (?:message|contact) me|don't (?:message|contact) me|dont (?:message|contact) me|remove me from (?:your )?(?:list|contact list)|unsubscribe me)\\b/.test(text);
+  });
+  if (!optedOut) return;
+  await db.query(`
+    INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at)
+    VALUES ($1, TRUE, 'Explicit opt-out detected in saved inbound CRM conversation', 'inbound_detection', 'system', NOW())
+    ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source='inbound_detection', updated_by='system', updated_at=NOW()
+  `, [lead.id]);
+  await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: explicit opt-out detected', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [lead.id]);
+}
+
+
 // The regular lead form sends complete JSON documents. A Mark-as-Sent request
 // is different: its document may have been composed from an older client copy.
 // Preserve the database thread when an outbound crosses into SENT so a stale
@@ -1635,7 +1657,10 @@ app.post("/api/leads", async (req, res) => {
         const transactionResult = await runSnapshotReplaceTransaction(db, valid);
         // Backfill only deterministic outbound/conversation evidence after the
         // snapshot transaction has succeeded; never block or alter the import.
-        for (const imported of valid) void syncLearningForLead(imported as Lead).catch(error => console.error("Learning snapshot sync failed:", error));
+        for (const imported of valid) {
+          void syncLearningForLead(imported as Lead).catch(error => console.error("Learning snapshot sync failed:", error));
+          void syncAgentDoNotContact(imported as Lead).catch(error => console.error("Agent opt-out sync failed:", error));
+        }
 
         return res.json({
           ok: true,
@@ -1700,7 +1725,10 @@ app.post("/api/leads", async (req, res) => {
         updated_at = NOW() RETURNING id`;
       const result = await db.query(query, params);
       const importedIds = result.rows.map((row: any) => row.id);
-      for (const imported of valid) void syncLearningForLead(imported as Lead).catch(error => console.error("Learning bulk sync failed:", error));
+      for (const imported of valid) {
+        void syncLearningForLead(imported as Lead).catch(error => console.error("Learning bulk sync failed:", error));
+        void syncAgentDoNotContact(imported as Lead).catch(error => console.error("Agent opt-out sync failed:", error));
+      }
       return res.json({
         ok: true,
         count: importedIds.length,
@@ -1779,6 +1807,7 @@ app.post("/api/leads", async (req, res) => {
     // CRM persistence is authoritative. Learning is an idempotent, best-effort
     // projection keyed by outbound ID and can never prevent a lead save.
     void syncLearningForLead(mergedLead as Lead).catch(error => console.error("Learning lead sync failed:", error));
+    void syncAgentDoNotContact(mergedLead as Lead).catch(error => console.error("Agent opt-out sync failed:", error));
     res.json({ ok: true, lead: mergedLead, actionId: action?.id });
   } catch (err: any) {
     await client.query("ROLLBACK").catch(() => {});
