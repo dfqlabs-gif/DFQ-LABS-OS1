@@ -82,6 +82,16 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
   `);
   await db.query("CREATE INDEX IF NOT EXISTS agent_contact_controls_dnc_idx ON agent_contact_controls(do_not_contact) WHERE do_not_contact = TRUE");
   await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_phone_suppressions (
+      phone TEXT PRIMARY KEY,
+      reason TEXT NOT NULL,
+      source TEXT NOT NULL,
+      updated_by TEXT NOT NULL DEFAULT 'system',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
     CREATE TABLE IF NOT EXISTS agent_whatsapp_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       enabled BOOLEAN NOT NULL DEFAULT FALSE,
