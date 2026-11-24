@@ -11,6 +11,7 @@ export type WhatsAppInbound = {
   text: string;
   receivedAt: string;
   pushName?: string;
+  historical?: boolean;
 };
 
 export type WhatsAppBridgeStatus = {
