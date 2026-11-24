@@ -186,6 +186,9 @@ export function AgentReviewQueue({ token, leads }: Props) {
       <button onClick={refresh} style={{background:SURFACE2,border:`1px solid ${BORDER}`,color:TEXT,borderRadius:7,padding:"8px 13px",cursor:"pointer"}}>↻ Refresh</button>
     </div>
     {error && <div role="alert" style={{background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.35)",color:"#FCA5A5",padding:10,borderRadius:8,marginBottom:12,fontSize:12}}>{error}</div>}
+    <div style={{background:SURFACE2,border:`1px solid ${BORDER}`,borderRadius:8,padding:"9px 12px",marginBottom:14,fontSize:10,color:MUTED,lineHeight:1.7}}>
+      <b style={{color:G}}>LAGOS-TIME OPERATING SCHEDULE</b> · 08:00 Scout · 09:00 Writer · 10:00 LinkedIn (Mon/Thu) · 14:00 Closer · Dispatcher checks approved items every 45–90 seconds. Every generated item is staged; only founder-approved WhatsApp items can send.
+    </div>
     <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
       <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap"}}>
         <div><div style={{fontSize:11,fontWeight:900,color:TEXT}}>WhatsApp Web bridge</div><div style={{fontSize:10,color:MUTED,marginTop:4}}>QR-based connection · no Cloud API or paid provider</div></div>
