@@ -94,7 +94,7 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
   router.patch("/config", async (req, res) => {
     const actor = founder(req, res); if (!actor) return;
     const { automation_mode, daily_outreach_cap, daily_value_dm_cap, brand_voice, buyer_psychology_pillars } = req.body || {};
-    if (automation_mode !== undefined && automation_mode !== "queue_only" && automation_mode !== "autopilot") return res.status(400).json({ error: "Invalid automation mode" });
+    if (automation_mode !== undefined && automation_mode !== "queue_only") return res.status(409).json({ error: "Autopilot is locked until the dispatcher and WhatsApp bridge pass end-to-end verification." });
     for (const [key, value] of [["daily_outreach_cap",daily_outreach_cap],["daily_value_dm_cap",daily_value_dm_cap]] as const) {
       if (value !== undefined && (!Number.isInteger(value) || value < 1 || value > 100)) return res.status(400).json({ error: key + " must be an integer from 1 to 100" });
     }
@@ -118,7 +118,7 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
 
   router.get("/queue", async (req, res) => {
     if (!founder(req, res)) return;
-    const status = typeof req.query.status === "string" ? req.query.status : null;
+    const status = typeof req.query.status === "string" && req.query.status ? req.query.status : null;
     const actionType = typeof req.query.action_type === "string" ? req.query.action_type : null;
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
     try {
