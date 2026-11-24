@@ -1199,6 +1199,132 @@ app.post("/api/agents/generate", async (req, res) => {
   }
 });
 
+// Daily Closer: stages follow-ups for review only. PostgreSQL advisory lock + run ledger
+// prevent duplicate execution across restarts or multiple web instances.
+let agentSchedulerStarted = false;
+let closerSchedulerBusy = false;
+
+function lagosDateTimeParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Lagos", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map(part => [part.type, part.value])) as Record<string, string>;
+}
+
+async function runDailyCloserIfDue(): Promise<void> {
+  if (closerSchedulerBusy) return;
+  const local = lagosDateTimeParts();
+  const hour = Number(local.hour);
+  if (hour < 14) return;
+  const scheduledDate = `${local.year}-${local.month}-${local.day}`;
+  closerSchedulerBusy = true;
+  const client = await db.connect();
+  let locked = false;
+  try {
+    const lock = await client.query("SELECT pg_try_advisory_lock(hashtext($1)) AS locked", ["dfqlabs-os1-daily-closer"]);
+    locked = Boolean(lock.rows[0]?.locked);
+    if (!locked) return;
+    const runId = randomUUID();
+    const run = await client.query(`
+      INSERT INTO agent_schedule_runs (id, job_name, scheduled_date, status)
+      VALUES ($1, 'daily_closer', $2::date, 'started')
+      ON CONFLICT (job_name, scheduled_date) DO NOTHING RETURNING id
+    `, [runId, scheduledDate]);
+    if (!run.rowCount) return;
+
+    let staged = 0;
+    let failures = 0;
+    const configResult = await client.query("SELECT * FROM agent_config WHERE id=1");
+    const config = configResult.rows[0];
+    if (!config || config.automation_mode !== "queue_only") {
+      await client.query("UPDATE agent_schedule_runs SET status='blocked', summary='Review Queue mode is required.', completed_at=NOW() WHERE id=$1", [runId]);
+      return;
+    }
+    const count = await client.query(`
+      SELECT COUNT(*)::int AS count FROM agent_queue
+      WHERE action_type IN ('outreach_dm','follow_up')
+        AND created_at >= date_trunc('day', NOW())
+        AND status IN ('pending_approval','approved','sent')
+    `);
+    const remaining = Math.max(0, Number(config.daily_outreach_cap) - Number(count.rows[0]?.count || 0));
+    if (!remaining) {
+      await client.query("UPDATE agent_schedule_runs SET status='completed', summary='Daily outreach/follow-up cap already reached.', completed_at=NOW() WHERE id=$1", [runId]);
+      return;
+    }
+
+    const leadsResult = await client.query("SELECT data FROM leads");
+    const blockedResult = await client.query("SELECT lead_id FROM agent_contact_controls WHERE do_not_contact=TRUE");
+    const blockedIds = new Set(blockedResult.rows.map((row: any) => String(row.lead_id)));
+    const candidates = leadsResult.rows.map((row: any) => row.data as Lead).filter((lead: Lead) => {
+      if (!lead?.id || blockedIds.has(String(lead.id)) || ["Closed","Lost"].includes(lead.status)) return false;
+      if (!lead.awaitingReplySince) return false;
+      const hours = (Date.now() - new Date(lead.awaitingReplySince).getTime()) / 3600000;
+      if (!Number.isFinite(hours) || hours < 48 || hours > 72) return false;
+      const thread = (lead.conversationLog || []).filter((entry: any) => entry?.type === "dm" || entry?.type === "reply").sort((a,b) => String(a.ts).localeCompare(String(b.ts)));
+      return !thread.length || thread[thread.length - 1].direction !== "inbound";
+    }).slice(0, Math.min(10, remaining));
+
+    for (const storedLead of candidates) {
+      try {
+        const lead = await enrichLeadAttachments(storedLead);
+        const brain = await runSalesBrainWithGenerator(
+          lead,
+          {
+            requestedMessageType: "FOLLOW_UP",
+            task: `This is a scheduled closer review. The prospect has been awaiting a reply for approximately ${Math.round((Date.now() - new Date(lead.awaitingReplySince).getTime()) / 3600000)} hours. Draft one fresh, non-pushy follow-up that resumes the exact conversation context. Do not restart the sales sequence, repeat a prior angle, invent facts, or pressure the prospect. DFQ Labs voice: ${config.brand_voice}. Buyer psychology pillars: ${(config.buyer_psychology_pillars || []).join("; ")}.`,
+          },
+          (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
+        );
+        const draft = String(brain.message || "").trim();
+        if (!draft) throw new Error("Sales Brain returned an empty follow-up");
+        await client.query(`
+          INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
+          VALUES ($1,$2,'closer','follow_up',$3,$4::jsonb,$5,$6)
+          ON CONFLICT (idempotency_key) DO NOTHING
+        `, [
+          randomUUID(), lead.id, draft,
+          JSON.stringify({ company: lead.company, contact_name: lead.name, scheduled: true, message_type: "FOLLOW_UP" }),
+          String(brain.reasoningSummary || brain.recommendedAction || "Scheduled from the authoritative CRM thread.").slice(0,5000),
+          `closer:${lead.id}:${scheduledDate}`,
+        ]);
+        staged++;
+        failures = 0;
+      } catch (error: any) {
+        failures++;
+        await client.query(
+          "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'closer','error',$2,$3,$4,$5::jsonb)",
+          [randomUUID(), "Scheduled follow-up generation failed for " + (storedLead.company || storedLead.id), staged, failures, JSON.stringify({ leadId: storedLead.id })]
+        );
+        if (failures >= 2) break;
+      }
+    }
+    const status = failures >= 2 ? "halted_circuit_breaker" : failures > 0 ? "error" : "success";
+    const summary = `Daily closer staged ${staged} follow-up draft(s) for founder review.${failures ? ` ${failures} consecutive failure(s).` : ""}`;
+    await client.query(
+      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'closer',$2,$3,$4,$5,$6::jsonb)",
+      [randomUUID(), status, summary, staged, failures, JSON.stringify({ scheduledDate, candidateCount: candidates.length })]
+    );
+    await client.query("UPDATE agent_schedule_runs SET status=$1, summary=$2, completed_at=NOW() WHERE id=$3", [status, summary, runId]);
+  } catch (error: any) {
+    console.error("Daily closer scheduler failed:", error);
+  } finally {
+    if (locked) await client.query("SELECT pg_advisory_unlock(hashtext($1))", ["dfqlabs-os1-daily-closer"]).catch(() => {});
+    client.release();
+    closerSchedulerBusy = false;
+  }
+}
+
+function startAgentScheduler(): void {
+  if (agentSchedulerStarted) return;
+  agentSchedulerStarted = true;
+  const timer = setInterval(() => {
+    runDailyCloserIfDue().catch(error => console.error("Agent scheduler tick failed:", error));
+  }, 60_000);
+  timer.unref?.();
+  runDailyCloserIfDue().catch(error => console.error("Initial agent scheduler tick failed:", error));
+}
+
 // Safe deployment evidence for Render; intentionally exposes no configuration
 // values beyond the commit supplied by Render's build environment.
 app.get("/api/runtime/version", (_req, res) => {
@@ -2151,6 +2277,7 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`DFQ Labs OS — Gemini-powered server on port ${PORT} (model: ${GEMINI_MODEL})`);
   });
+  startAgentScheduler();
 }
 
 // ── Initialize database and start server ────────────────────────────────────────
