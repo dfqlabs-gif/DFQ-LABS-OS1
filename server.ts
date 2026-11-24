@@ -16,6 +16,7 @@ import { actionCanApply, applyActionFields, createLeadAction, type LeadAction } 
 import { commitOutboundSent } from "./lib/execution";
 import { markWhatsAppOpened } from "./lib/outbound";
 import { conversationEventId, removeConversationEvent, restoreConversationEvent, type ConversationEvent, type RemovedConversationEvent } from "./lib/conversationEvents";
+import { createAgentRouter, initializeAgentTables } from "./lib/agents";
 
 dotenv.config();
 
@@ -312,6 +313,9 @@ async function initializeDatabase() {
     throw new Error(`Attachment migration error: ${err}`);
   }
 
+  await initializeAgentTables(db);
+  console.log("✓ AI agent review queue tables initialized (queue_only default)");
+
   console.log("✓ Database initialization successful");
 }
 
@@ -380,6 +384,7 @@ async function refreshLearningInsights(): Promise<void> {
 
 // 25mb limit — bulk lead imports/exports can be large JSON payloads
 app.use(express.json({ limit: "25mb" }));
+app.use("/api/agents", createAgentRouter(db, getAuthUserFromReq));
 
 // ── Auth & User Management Endpoints ──────────────────────────────────────────
 app.post("/api/auth/login", async (req, res) => {
