@@ -1449,6 +1449,142 @@ async function runDailyCloserIfDue(): Promise<void> {
   }
 }
 
+let dispatcherBusy = false;
+
+async function dispatchApprovedQueue(): Promise<void> {
+  if (dispatcherBusy) return;
+  const bridgeStatus = await whatsappBridge.status();
+  if (bridgeStatus.status !== "connected") return;
+  dispatcherBusy = true;
+  let client: any = null;
+  let locked = false;
+  let claimedItem: any = null;
+  try {
+    client = await db.connect();
+    const lock = await client.query("SELECT pg_try_advisory_lock(hashtext($1)) AS locked", ["dfqlabs-os1-approved-dispatcher"]);
+    locked = Boolean(lock.rows[0]?.locked);
+    if (!locked) return;
+
+    await client.query("BEGIN");
+    const selected = await client.query(`
+      SELECT * FROM agent_queue
+      WHERE status='approved' AND action_type = ANY($1::text[])
+      ORDER BY created_at ASC
+      LIMIT 1 FOR UPDATE SKIP LOCKED
+    `, [["outreach_dm","value_dm","follow_up"]]);
+    if (!selected.rowCount) { await client.query("COMMIT"); return; }
+    claimedItem = selected.rows[0];
+    await client.query(
+      "UPDATE agent_queue SET status='sending', dispatch_attempts=dispatch_attempts+1, updated_at=NOW(), error_log=NULL WHERE id=$1",
+      [claimedItem.id]
+    );
+    await client.query("COMMIT");
+
+    await client.query("BEGIN");
+    const leadResult = await client.query("SELECT data FROM leads WHERE id=$1 FOR UPDATE", [claimedItem.lead_id]);
+    const lead = leadResult.rows[0]?.data as Lead | undefined;
+    if (!lead) {
+      await client.query("UPDATE agent_queue SET status='failed', error_log='Lead not found at dispatch time.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
+      await client.query("COMMIT");
+      return;
+    }
+
+    const control = await client.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1 FOR UPDATE", [lead.id]);
+    if (control.rows[0]?.do_not_contact) {
+      await client.query("UPDATE agent_queue SET status='rejected', error_log='Blocked at dispatch: do-not-contact flag is active.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
+      await client.query("COMMIT");
+      return;
+    }
+
+    const configResult = await client.query("SELECT daily_outreach_cap, daily_value_dm_cap FROM agent_config WHERE id=1");
+    const config = configResult.rows[0] || { daily_outreach_cap: 30, daily_value_dm_cap: 30 };
+    const isValue = claimedItem.action_type === "value_dm";
+    const cap = Number(isValue ? config.daily_value_dm_cap : config.daily_outreach_cap);
+    const capTypes = isValue ? ["value_dm"] : ["outreach_dm","follow_up"];
+    const sentCount = await client.query(`
+      SELECT COUNT(*)::int AS count FROM agent_queue
+      WHERE action_type = ANY($1::text[]) AND status='sent'
+        AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')
+    `, [capTypes]);
+    if (Number(sentCount.rows[0]?.count || 0) >= cap) {
+      await client.query("UPDATE agent_queue SET status='approved', error_log='Waiting for the next Lagos calendar day: daily send cap reached.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
+      await client.query("COMMIT");
+      return;
+    }
+
+    const phone = normalizePhone(getWhatsAppNumber(lead));
+    if (!phone.valid) {
+      await client.query("UPDATE agent_queue SET status='failed', error_log=$1, updated_at=NOW() WHERE id=$2", [phone.error || "Lead has no valid WhatsApp number.", claimedItem.id]);
+      await client.query("COMMIT");
+      return;
+    }
+
+    const messageType = String(claimedItem.metadata?.messageType ||
+      (claimedItem.action_type === "value_dm" ? "VALUE_DM" : claimedItem.action_type === "outreach_dm" ? "INTRODUCTION_DM" : "FOLLOW_UP")) as MessageType;
+    const outbound = newOutboundMessage({
+      leadId: lead.id,
+      userId: "DFQLABS AI",
+      messageType,
+      messageText: claimedItem.draft_content,
+      source: "agent_review_queue",
+      strategy: claimedItem.reasoning || undefined,
+    });
+    const existingOutbound = Array.isArray(lead.outboundMessages) ? lead.outboundMessages : [];
+    if (existingOutbound.some(item => item.id === outbound.id)) throw new Error("Generated outbound ID collision.");
+    const withGeneratedOutbound: Lead = { ...lead, outboundMessages: [...existingOutbound, outbound] };
+    await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(withGeneratedOutbound), lead.id]);
+
+    // Keep the lead row locked through the final DNC check and WhatsApp handoff.
+    // If delivery becomes uncertain, the queue is failed for manual verification and is never auto-retried.
+    const delivery = await whatsappBridge.sendText(phone.international, claimedItem.draft_content);
+    const sentAt = new Date().toISOString();
+    const updatedLead = commitOutboundSent(withGeneratedOutbound, outbound.id, sentAt);
+    await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(updatedLead), lead.id]);
+    await client.query(`
+      UPDATE agent_queue SET status='sent', external_message_id=$1, sent_at=$2::timestamptz, updated_at=NOW(), error_log=NULL
+      WHERE id=$3 AND status='sending'
+    `, [delivery.messageId, sentAt, claimedItem.id]);
+    await client.query(
+      "INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'system:dispatcher','outbound_sent',$2,$3::jsonb)",
+      [randomUUID(), claimedItem.id, JSON.stringify({ leadId: lead.id, phone: phone.digits, externalMessageId: delivery.messageId, messageType })]
+    );
+    await client.query("COMMIT");
+    void syncLearningForLead(updatedLead).catch(error => console.error("Agent outbound learning sync failed:", error));
+    await db.query(
+      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'dispatcher','success',$2,1,0,$3::jsonb)",
+      [randomUUID(), "Approved WhatsApp message sent and committed to the canonical outbound history.", JSON.stringify({ queueItemId: claimedItem.id, leadId: lead.id, externalMessageId: delivery.messageId })]
+    );
+  } catch (error: any) {
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    if (claimedItem?.id) {
+      const safeError = String(error?.message || "WhatsApp send failed; delivery outcome may be uncertain.").slice(0, 500);
+      await db.query("UPDATE agent_queue SET status='failed', error_log=$1, updated_at=NOW() WHERE id=$2 AND status='sending'", [safeError + " Verify the WhatsApp chat manually before any retry.", claimedItem.id]).catch(() => {});
+      await db.query(
+        "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'dispatcher','error',$2,0,1,$3::jsonb)",
+        [randomUUID(), "Approved message dispatch failed: " + safeError, JSON.stringify({ queueItemId: claimedItem.id })]
+      ).catch(() => {});
+    } else {
+      console.error("Approved dispatcher tick failed:", String(error?.message || error).slice(0, 300));
+    }
+  } finally {
+    if (client) {
+      if (locked) await client.query("SELECT pg_advisory_unlock(hashtext($1))", ["dfqlabs-os1-approved-dispatcher"]).catch(() => {});
+      client.release();
+    }
+    dispatcherBusy = false;
+  }
+}
+
+function scheduleDispatcherTick(): void {
+  const delay = 45_000 + Math.floor(Math.random() * 45_000);
+  const timer = setTimeout(async () => {
+    try { await dispatchApprovedQueue(); }
+    catch (error) { console.error("Dispatcher scheduler tick failed:", error); }
+    finally { scheduleDispatcherTick(); }
+  }, delay);
+  timer.unref?.();
+}
+
 function startAgentScheduler(): void {
   if (agentSchedulerStarted) return;
   agentSchedulerStarted = true;
@@ -1457,6 +1593,7 @@ function startAgentScheduler(): void {
   }, 60_000);
   timer.unref?.();
   runDailyCloserIfDue().catch(error => console.error("Initial agent scheduler tick failed:", error));
+  scheduleDispatcherTick();
 }
 
 // Safe deployment evidence for Render; intentionally exposes no configuration
