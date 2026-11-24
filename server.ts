@@ -427,32 +427,29 @@ async function initializeDatabase() {
     console.log("✓ Migrated legacy seeded founder credential to the current OS founder credential");
   }
 
-  // Seed default seats and Founder user if empty
+  // Seed only a founder account on a brand-new database. Never ship known default passwords.
   const userCountRes = await db.query("SELECT COUNT(*) FROM users");
   if (parseInt(userCountRes.rows[0].count) === 0) {
+    const initialFounderPassword = String(process.env.FOUNDER_INITIAL_PASSWORD || "");
+    if (initialFounderPassword.length < 16) {
+      throw new Error("FOUNDER_INITIAL_PASSWORD must be configured (at least 16 characters) before initializing an empty OS1 database.");
+    }
     const founderId = "user-founder";
-    const specialistId = "user-blessing";
-    const founderPass = hashPassword("War_Machine26");
-    const specialistPass = hashPassword("specialist2026!");
-
     await db.query(
       `INSERT INTO outreach_seats (seat_id, seat_name, status, current_user_id) VALUES
-       ('seat-outreach-a', 'Outreach Seat A', 'OCCUPIED', $1),
+       ('seat-outreach-a', 'Outreach Seat A', 'VACANT', NULL),
        ('seat-outreach-b', 'Outreach Seat B', 'VACANT', NULL),
        ('seat-outreach-c', 'Outreach Seat C', 'VACANT', NULL),
        ('seat-outreach-d', 'Outreach Seat D', 'VACANT', NULL)
-       ON CONFLICT DO NOTHING`,
-      [specialistId]
+       ON CONFLICT DO NOTHING`
     );
-
     await db.query(
       `INSERT INTO users (id, display_name, username, password_hash, role, status, seat_id) VALUES
-       ($1, 'Alex (Founder)', 'alex@dfqlabs.com', $2, 'FOUNDER', 'ACTIVE', NULL),
-       ($3, 'Blessing Mudi', 'blessing@dfqlabs.com', $4, 'OUTREACH_SPECIALIST', 'ACTIVE', 'seat-outreach-a')
+       ($1, 'Alex (Founder)', 'alex@dfqlabs.com', $2, 'FOUNDER', 'ACTIVE', NULL)
        ON CONFLICT DO NOTHING`,
-      [founderId, founderPass, specialistId, specialistPass]
+      [founderId, hashPassword(initialFounderPassword)]
     );
-    console.log("✓ Seeded default Founder and Outreach Specialist accounts");
+    console.log("✓ Seeded founder account using FOUNDER_INITIAL_PASSWORD");
   }
   await db.query(`CREATE TABLE IF NOT EXISTS crm_action_history (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE INDEX IF NOT EXISTS crm_action_history_actor_created_idx ON crm_action_history ((data->>'actorId'), created_at DESC)`);
