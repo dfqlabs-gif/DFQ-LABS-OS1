@@ -1910,7 +1910,7 @@ app.post("/api/agents/scout", async (req, res) => {
     const existingQueue = await db.query("SELECT metadata FROM agent_queue WHERE action_type='new_lead' AND status IN ('pending_approval','approved','completed')");
     const norm = (value: unknown) => String(value || "").trim().toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/$/,"");
     const domain = (value: unknown) => { try { return new URL(String(value)).hostname.toLowerCase().replace(/^www\./,""); } catch { return ""; } };
-    const phoneDigits = (value: unknown) => String(value || "").replace(/\D/g,"");
+    const phoneDigits = (value: unknown) => { const raw = String(value || ""); const normalized = normalizePhone(raw); return normalized.valid ? normalized.digits : raw.replace(/\D/g,""); };
     const known = [
       ...existingRows.rows.map((row: any) => row.data || {}),
       ...existingQueue.rows.map((row: any) => row.metadata || {}),
