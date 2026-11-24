@@ -81,6 +81,18 @@ export function AgentReviewQueue({ token, leads }: Props) {
   };
 
   const counts = useMemo(()=>ACTIONS.slice(1).reduce((acc,key)=>{acc[key]=items.filter(i=>i.action_type===key).length;return acc;},{} as Record<string,number>),[items]);
+  const latestAgentLogs = useMemo(() => {
+    const latest:Record<string,any> = {};
+    for (const log of logs) if (!latest[log.agent_name] || new Date(log.created_at) > new Date(latest[log.agent_name].created_at)) latest[log.agent_name] = log;
+    return Object.values(latest);
+  },[logs]);
+  const haltedAgents = latestAgentLogs.filter(log=>log.status==="halted_circuit_breaker");
+  const resetCircuitBreaker = async (agentName:string) => {
+    setBusy(agentName); setError("");
+    try { await request(`/api/agents/circuit-breakers/${agentName}/reset`,{method:"POST"}); await refresh(); }
+    catch(e:any){setError(e.message);}
+    finally{setBusy(null);}
+  };
   const pending = items.filter(i=>i.status==="pending_approval").length;
   const activeLeads=leads.filter(l=>!l.mergedInto);
 
@@ -136,6 +148,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
         {item.status==="pending_approval"&&<div style={{display:"flex",gap:7,flexWrap:"wrap",marginTop:10}}><button disabled={busy===item.id} onClick={()=>review(item,"approve",edits[item.id])} style={{background:G,color:"#001014",border:"none",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>Approve for Dispatch</button><button disabled={busy===item.id} onClick={()=>review(item,"reject")} style={{background:"transparent",color:"#FCA5A5",border:"1px solid rgba(239,68,68,.35)",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Reject</button>{item.lead_id&&<button disabled={busy===item.id} onClick={()=>markDoNotContact(item)} style={{background:"transparent",color:"#FCA5A5",border:"1px solid rgba(239,68,68,.35)",borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Mark Do Not Contact</button>}</div>}
       </article>)}
     </div>}
+    {haltedAgents.length>0&&<section style={{marginTop:18,background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.35)",borderRadius:10,padding:14}}><div style={{fontSize:11,fontWeight:900,color:"#FCA5A5",marginBottom:8}}>Circuit breaker — agent halted</div>{haltedAgents.map(log=><div key={log.agent_name} style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center",flexWrap:"wrap",padding:"6px 0"}}><span style={{fontSize:10,color:TEXT}}>{log.agent_name}: {log.summary}</span><button disabled={busy===log.agent_name} onClick={()=>resetCircuitBreaker(log.agent_name)} style={{background:"transparent",border:"1px solid rgba(239,68,68,.4)",color:"#FCA5A5",borderRadius:6,padding:"6px 9px",fontSize:9,fontWeight:800,cursor:"pointer"}}>Reset circuit breaker</button></div>)}</section>}
     <section style={{marginTop:20,background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14}}><div style={{fontSize:11,fontWeight:800,color:TEXT,marginBottom:8}}>Agent activity</div>{logs.length===0?<div style={{fontSize:10,color:MUTED}}>No agent runs recorded yet.</div>:logs.slice(0,8).map(log=><div key={log.id} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${BORDER}`,fontSize:10}}><span style={{color:TEXT}}>{log.agent_name} · {log.summary}</span><span style={{color:log.status==="error"||log.status==="halted_circuit_breaker"?"#FCA5A5":MUTED,whiteSpace:"nowrap"}}>{new Date(log.created_at).toLocaleString()}</span></div>)}</section>
   </div>;
 }
