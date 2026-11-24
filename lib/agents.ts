@@ -272,18 +272,25 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
   router.post("/leads/:leadId/do-not-contact", async (req, res) => {
     const actor = founder(req, res); if (!actor) return;
     const reason = typeof req.body?.reason === "string" ? req.body.reason.slice(0,500) : "Founder marked do-not-contact";
+    const client = await db.connect();
     try {
-      const result = await db.query("SELECT id FROM leads WHERE id=$1", [req.params.leadId]);
-      if (!result.rowCount) return res.status(404).json({ error: "Lead not found" });
-      await db.query(`
+      await client.query("BEGIN");
+      const result = await client.query("SELECT id FROM leads WHERE id=$1 FOR UPDATE", [req.params.leadId]);
+      if (!result.rowCount) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Lead not found" }); }
+      await client.query(`
         INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at)
         VALUES ($1, TRUE, $2, 'founder', $3, NOW())
         ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source='founder', updated_by=EXCLUDED.updated_by, updated_at=NOW()
       `, [req.params.leadId, reason, actor.userId]);
-      await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: lead is on the do-not-contact list', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [req.params.leadId]);
+      await client.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: lead is on the do-not-contact list', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [req.params.leadId]);
+      await client.query("COMMIT");
       await audit(actor, "lead_marked_do_not_contact", null, { leadId: req.params.leadId, reason });
       res.json({ ok: true, leadId: req.params.leadId, doNotContact: true });
-    } catch (error) { console.error("Do-not-contact update failed", error); res.status(500).json({ error: "Could not update contact control" }); }
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      console.error("Do-not-contact update failed", error);
+      res.status(500).json({ error: "Could not update contact control" });
+    } finally { client.release(); }
   });
 
   router.delete("/leads/:leadId/do-not-contact", async (req, res) => {
