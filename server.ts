@@ -148,6 +148,8 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   await syncAgentDoNotContact(updatedLead);
   const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [updatedLead.id]);
   if (contactControl.rows[0]?.do_not_contact || message.historical) return;
+  const inboxState = await db.query("SELECT status FROM agent_logs WHERE agent_name='inbox_sync' ORDER BY created_at DESC LIMIT 1");
+  if (inboxState.rows[0]?.status === "halted_circuit_breaker") return;
 
   try {
     const cfgResult = await db.query("SELECT brand_voice, buyer_psychology_pillars FROM agent_config WHERE id=1");
@@ -178,9 +180,12 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
       [randomUUID(), "Logged inbound WhatsApp reply and staged a contextual response.", JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
     );
   } catch (error: any) {
+    const prior = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='inbox_sync' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
+    const failures = prior.rows[0]?.status === "error" ? Number(prior.rows[0].consecutive_failures || 0) + 1 : 1;
+    const status = failures >= 2 ? "halted_circuit_breaker" : "error";
     await db.query(
-      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'inbox_sync','error',$2,0,1,$3::jsonb)",
-      [randomUUID(), "Inbound reply was saved, but response drafting failed: " + String(error?.message || error).slice(0,250), JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
+      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'inbox_sync',$2,$3,0,$4,$5::jsonb)",
+      [randomUUID(), status, "Inbound reply was saved, but response drafting failed: " + String(error?.message || error).slice(0,250), failures, JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
     );
   }
 }
@@ -1493,6 +1498,8 @@ async function dispatchApprovedQueue(): Promise<void> {
   if (dispatcherBusy) return;
   const bridgeStatus = await whatsappBridge.status();
   if (bridgeStatus.status !== "connected") return;
+  const dispatcherState = await db.query("SELECT status FROM agent_logs WHERE agent_name='dispatcher' ORDER BY created_at DESC LIMIT 1");
+  if (dispatcherState.rows[0]?.status === "halted_circuit_breaker") return;
   dispatcherBusy = true;
   let client: any = null;
   let locked = false;
@@ -1601,9 +1608,12 @@ async function dispatchApprovedQueue(): Promise<void> {
     if (claimedItem?.id) {
       const safeError = String(error?.message || "WhatsApp send failed; delivery outcome may be uncertain.").slice(0, 500);
       await db.query("UPDATE agent_queue SET status='failed', error_log=$1, updated_at=NOW() WHERE id=$2 AND status='sending'", [safeError + " Verify the WhatsApp chat manually before any retry.", claimedItem.id]).catch(() => {});
+      const prior = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='dispatcher' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
+      const failures = prior.rows[0]?.status === "error" ? Number(prior.rows[0].consecutive_failures || 0) + 1 : 1;
+      const status = failures >= 2 ? "halted_circuit_breaker" : "error";
       await db.query(
-        "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'dispatcher','error',$2,0,1,$3::jsonb)",
-        [randomUUID(), "Approved message dispatch failed: " + safeError, JSON.stringify({ queueItemId: claimedItem.id })]
+        "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'dispatcher',$2,$3,0,$4,$5::jsonb)",
+        [randomUUID(), status, "Approved message dispatch failed: " + safeError, failures, JSON.stringify({ queueItemId: claimedItem.id })]
       ).catch(() => {});
     } else {
       console.error("Approved dispatcher tick failed:", String(error?.message || error).slice(0, 300));
