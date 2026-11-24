@@ -1085,8 +1085,8 @@ app.post("/api/agents/generate", async (req, res) => {
     const cfgResult = await db.query("SELECT * FROM agent_config WHERE id = 1");
     const config = cfgResult.rows[0];
     if (!config || config.automation_mode !== "queue_only") return res.status(409).json({ error: "Drafting requires Review Queue mode." });
-    const cap = actionType === "outreach_dm" ? config.daily_outreach_cap : config.daily_value_dm_cap;
-    const capActionTypes = actionType === "outreach_dm" ? ["outreach_dm"] : actionType === "value_dm" ? ["value_dm"] : ["follow_up"];
+    const cap = actionType === "value_dm" ? config.daily_value_dm_cap : config.daily_outreach_cap;
+    const capActionTypes = actionType === "value_dm" ? ["value_dm"] : ["outreach_dm", "follow_up"];
     const capCount = await db.query(
       "SELECT COUNT(*)::int AS count FROM agent_queue WHERE action_type = ANY($1::text[]) AND created_at >= date_trunc('day', NOW()) AND status IN ('pending_approval','approved','sent')",
       [capActionTypes]
