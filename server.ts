@@ -1287,7 +1287,7 @@ app.post("/api/agents/generate", async (req, res) => {
     const cap = actionType === "value_dm" ? config.daily_value_dm_cap : config.daily_outreach_cap;
     const capActionTypes = actionType === "value_dm" ? ["value_dm"] : ["outreach_dm", "follow_up"];
     const capCount = await db.query(
-      "SELECT COUNT(*)::int AS count FROM agent_queue WHERE action_type = ANY($1::text[]) AND created_at >= date_trunc('day', NOW()) AND status IN ('pending_approval','approved','sent')",
+      "SELECT COUNT(*)::int AS count FROM agent_queue WHERE action_type = ANY($1::text[]) AND created_at >= date_trunc('day', NOW()) AND status IN ('pending_approval','approved','sending','sent')",
       [capActionTypes]
     );
     let remaining = Math.max(0, cap - Number(capCount.rows[0]?.count || 0));
