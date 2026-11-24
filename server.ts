@@ -80,13 +80,19 @@ async function syncAgentDoNotContact(lead: Lead): Promise<void> {
     ...(Array.isArray(lead.conversationLog) ? lead.conversationLog.filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "") : []),
   ];
   const optedOut = containsExplicitOptOut(inboundTexts);
-  if (!optedOut) return;
+  const phone = normalizePhone(getWhatsAppNumber(lead));
+  const phoneSuppression = phone.valid
+    ? await db.query("SELECT reason FROM agent_phone_suppressions WHERE phone=$1", [phone.digits])
+    : { rows: [] as any[] };
+  if (!optedOut && !phoneSuppression.rows[0]) return;
+  const reason = phoneSuppression.rows[0]?.reason || "Explicit opt-out detected in saved inbound CRM conversation";
+  const source = phoneSuppression.rows[0] ? "phone_suppression" : "inbound_detection";
   await db.query(`
     INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at)
-    VALUES ($1, TRUE, 'Explicit opt-out detected in saved inbound CRM conversation', 'inbound_detection', 'system', NOW())
-    ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source='inbound_detection', updated_by='system', updated_at=NOW()
-  `, [lead.id]);
-  await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: explicit opt-out detected', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [lead.id]);
+    VALUES ($1, TRUE, $2, $3, 'system', NOW())
+    ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source=EXCLUDED.source, updated_by='system', updated_at=NOW()
+  `, [lead.id, reason, source]);
+  await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: lead is on the do-not-contact list', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [lead.id]);
 }
 
 async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
