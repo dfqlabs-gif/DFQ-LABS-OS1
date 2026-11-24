@@ -512,6 +512,30 @@ async function refreshLearningInsights(): Promise<void> {
 app.use(express.json({ limit: "25mb" }));
 app.use("/api/agents", createAgentRouter(db, getAuthUserFromReq));
 
+app.get("/api/agents/whatsapp/status", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(user ? 403 : 401).json({ error: "Founder access required" });
+  try { res.json({ status: await whatsappBridge.status() }); }
+  catch (error) { console.error("WhatsApp status read failed:", error); res.status(500).json({ error: "Could not read WhatsApp bridge status." }); }
+});
+
+app.post("/api/agents/whatsapp/connect", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(user ? 403 : 401).json({ error: "Founder access required" });
+  try { res.json({ status: await whatsappBridge.connect() }); }
+  catch (error: any) {
+    console.error("WhatsApp connect failed:", String(error?.message || error).slice(0, 250));
+    res.status(503).json({ error: String(error?.message || "Could not start WhatsApp bridge.") });
+  }
+});
+
+app.post("/api/agents/whatsapp/disconnect", async (req, res) => {
+  const user = getAuthUserFromReq(req);
+  if (!user || user.role !== "FOUNDER") return res.status(user ? 403 : 401).json({ error: "Founder access required" });
+  try { res.json({ status: await whatsappBridge.disconnect() }); }
+  catch (error) { console.error("WhatsApp disconnect failed:", error); res.status(500).json({ error: "Could not disconnect WhatsApp." }); }
+});
+
 // ── Auth & User Management Endpoints ──────────────────────────────────────────
 app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body || {};
@@ -2393,6 +2417,7 @@ async function startServer() {
 (async () => {
   try {
     await initializeDatabase();
+  await whatsappBridge.initialize();
     await startServer();
   } catch (err) {
     console.error("✗ Failed to start application:", err);
