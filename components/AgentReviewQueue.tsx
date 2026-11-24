@@ -28,6 +28,8 @@ export function AgentReviewQueue({ token, leads }: Props) {
   const [bulkMyName,setBulkMyName] = useState("You");
   const [bulkBusy,setBulkBusy] = useState(false);
   const [bulkResult,setBulkResult] = useState<any>(null);
+  const [articleTopic,setArticleTopic] = useState("");
+  const [articleBusy,setArticleBusy] = useState(false);
   const headers = useMemo(() => ({ "Content-Type":"application/json", Authorization:`Bearer ${token}` }),[token]);
 
   const request = useCallback(async (url:string, init:RequestInit = {}) => {
@@ -81,6 +83,14 @@ export function AgentReviewQueue({ token, leads }: Props) {
       setBulkResult(result); setBulkExport(""); await refresh();
     } catch(e:any) { setError(e.message); }
     finally { setBulkBusy(false); }
+  };
+
+  const generateLinkedInArticle = async () => {
+    if (!articleTopic.trim()) { setError("Enter a LinkedIn article topic."); return; }
+    setArticleBusy(true); setError("");
+    try { await request("/api/agents/linkedin-article",{method:"POST",body:JSON.stringify({topic:articleTopic})}); setArticleTopic(""); await refresh(); }
+    catch(e:any){setError(e.message);}
+    finally{setArticleBusy(false);}
   };
 
   const generateDrafts = async (actionType:"outreach_dm"|"value_dm"|"follow_up") => {
@@ -191,6 +201,11 @@ export function AgentReviewQueue({ token, leads }: Props) {
         <button disabled={busy==="generate"||!selectedLeadIds.length} onClick={()=>generateDrafts("follow_up")} style={{background:SURFACE2,border:`1px solid ${BORDER}`,color:TEXT,borderRadius:6,padding:"8px 11px",fontSize:10,fontWeight:800,cursor:"pointer"}}>Generate Follow-ups</button>
         {busy==="generate"&&<span style={{fontSize:10,color:G,alignSelf:"center"}}>Gemini is reading CRM context…</span>}
       </div>
+    </section>
+    <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
+      <div style={{fontSize:11,fontWeight:900,color:TEXT,marginBottom:5}}>LinkedIn thought leadership</div>
+      <div style={{fontSize:10,color:MUTED,marginBottom:10}}>Generate a 600–900 word DFQ Labs article. It will be staged for founder review; nothing is published automatically.</div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input value={articleTopic} onChange={e=>setArticleTopic(e.target.value)} placeholder="e.g. Why high-ticket property buyers hesitate after viewing" style={{...iStyle,flex:"1 1 300px"}}/><button disabled={articleBusy||!articleTopic.trim()} onClick={generateLinkedInArticle} style={{background:G_DIM,border:`1px solid ${G_BORDER}`,color:G,borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>{articleBusy?"Writing…":"Generate LinkedIn Article"}</button></div>
     </section>
     {config && <section style={{background:SURFACE,border:`1px solid ${BORDER}`,borderRadius:10,padding:14,marginBottom:18}}>
       <div style={{fontSize:11,fontWeight:800,color:TEXT,marginBottom:12}}>Agent operating rules</div>
