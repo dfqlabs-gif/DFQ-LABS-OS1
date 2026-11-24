@@ -55,7 +55,7 @@ export function AgentReviewQueue({ token, leads }: Props) {
         request("/api/agents/contact-controls"),
         request("/api/agents/phone-suppressions")
       ]);
-      setConfig(c.config); setItems(q.items || []); setLogs(l.logs || []); setContactControls(dnc.controls || []); setPhoneSuppressions(phones.suppressions || []);
+      setConfig(c.config); setCounters(c.counters || {}); setItems(q.items || []); setLogs(l.logs || []); setContactControls(dnc.controls || []); setPhoneSuppressions(phones.suppressions || []);
     } catch(e:any) { setError(e.message || "Could not load agent workspace"); }
     finally { setLoading(false); }
   },[request,status]);
@@ -224,6 +224,10 @@ export function AgentReviewQueue({ token, leads }: Props) {
       <textarea value={bulkExport} onChange={e=>setBulkExport(e.target.value)} rows={5} placeholder="Paste the exported WhatsApp chat text here…" style={{...iStyle,width:"100%",lineHeight:1.6,marginBottom:9}} />
       <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}><button disabled={bulkBusy||!bulkPhone.trim()||!bulkExport.trim()} onClick={syncWhatsAppExport} style={{background:G_DIM,border:`1px solid ${G_BORDER}`,color:G,borderRadius:6,padding:"8px 12px",fontSize:10,fontWeight:900,cursor:"pointer"}}>{bulkBusy?"Parsing and syncing…":"Parse & Sync Export"}</button>{bulkResult&&<span style={{fontSize:10,color:G}}>Imported {bulkResult.inbound} inbound · {bulkResult.outbound} outbound · {bulkResult.unmatched} unmatched · {bulkResult.skipped} skipped</span>}</div>
     </section>
+    {config&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10,marginBottom:14}}>
+      <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:8,padding:12}}><div style={{fontSize:9,color:MUTED,fontWeight:800}}>OUTREACH / FOLLOW-UP CAP</div><div style={{fontSize:19,color:TEXT,fontWeight:900,marginTop:4}}>{Number(counters.outreach_sent||0)} <span style={{fontSize:11,color:MUTED,fontWeight:500}}>/ {config.daily_outreach_cap} sent today</span></div><div style={{fontSize:10,color:MUTED,marginTop:4}}>{Number(counters.outreach_queued||0)} queued / awaiting approval / sending</div><div style={{fontSize:9,color:G,marginTop:4}}>{Math.max(0,Number(config.daily_outreach_cap)-Number(counters.outreach_sent||0)-Number(counters.outreach_queued||0))} remaining capacity</div></div>
+      <div style={{background:SURFACE,border:"1px solid "+BORDER,borderRadius:8,padding:12}}><div style={{fontSize:9,color:MUTED,fontWeight:800}}>VALUE DM CAP</div><div style={{fontSize:19,color:TEXT,fontWeight:900,marginTop:4}}>{Number(counters.value_sent||0)} <span style={{fontSize:11,color:MUTED,fontWeight:500}}>/ {config.daily_value_dm_cap} sent today</span></div><div style={{fontSize:10,color:MUTED,marginTop:4}}>{Number(counters.value_queued||0)} queued / awaiting approval / sending</div><div style={{fontSize:9,color:G,marginTop:4}}>{Math.max(0,Number(config.daily_value_dm_cap)-Number(counters.value_sent||0)-Number(counters.value_queued||0))} remaining capacity</div></div>
+    </div>}
     {config && <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginBottom:18}}>
       <div style={{background:SURFACE,border:`1px solid ${G_BORDER}`,borderRadius:10,padding:14}}>
         <div style={{fontSize:9,color:MUTED,letterSpacing:".12em",fontWeight:800}}>AUTOMATION MODE</div>
