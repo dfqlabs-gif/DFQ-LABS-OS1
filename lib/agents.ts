@@ -275,6 +275,11 @@ export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
         try {
           await client.query("BEGIN");
           await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["dfqlabs-scout-company:" + company.toLowerCase()]);
+          const currentQueue = await client.query("SELECT status FROM agent_queue WHERE id=$1 FOR UPDATE", [req.params.id]);
+          if (!currentQueue.rowCount || currentQueue.rows[0].status !== "pending_approval") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "Scout item was already reviewed." });
+          }
           const existing = await client.query("SELECT id, data FROM leads FOR UPDATE");
           const domain = (value: string) => { try { return new URL(value).hostname.toLowerCase().replace(/^www\./,""); } catch { return ""; } };
           const phone = String(metadata.phone || metadata.whatsapp || "").replace(/\D/g,"");
