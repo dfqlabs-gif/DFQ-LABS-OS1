@@ -597,6 +597,10 @@ async function runManagerNurtureBatch(): Promise<string> {
     if (["Closed","Lost","Booked","Meeting Scheduled","Converted","Not Interested","DNC"].includes(lead.status) || lead.meetingScheduledAt) return false;
     const inbound = [lead.prospectInitialResponse, lead.prospectLatestResponse, ...(lead.conversationLog || []).filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "")].join(" ");
     if (containsExplicitOptOut([inbound])) return false;
+    // Replies need a contextual response workflow, not a generic nurture touch.
+    if (lead.prospectLatestResponse) return false;
+    const thread = (lead.conversationLog || []).filter((entry: any) => entry?.type === "dm" || entry?.type === "reply").sort((a: any,b: any) => String(a.ts).localeCompare(String(b.ts)));
+    if (thread.length && thread[thread.length - 1].direction === "inbound") return false;
     const lastTouch = lead.lastMeaningfulTouchpoint || lead.lastContacted || lead.dateAdded;
     const ageDays = lastTouch ? (now - new Date(lastTouch).getTime()) / 86400000 : 999;
     return Number.isFinite(ageDays) && ageDays >= 3 && Number(lead.followUpCount || 0) < 6;
