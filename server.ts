@@ -1439,6 +1439,7 @@ app.post("/api/agents/generate", async (req, res) => {
     return res.status(400).json({ error: "Select between 1 and 10 leads." });
   }
   if (!actionMap[actionType]) return res.status(400).json({ error: "Choose outreach_dm, value_dm or follow_up." });
+  const agentName = actionType === "follow_up" ? "closer" : "writer";
   try {
     const cfgResult = await db.query("SELECT * FROM agent_config WHERE id = 1");
     const config = cfgResult.rows[0];
@@ -1457,9 +1458,9 @@ app.post("/api/agents/generate", async (req, res) => {
     const uniqueIds = [...new Set(leadIds)].slice(0, Math.min(10, remaining));
     const staged: any[] = [];
     const skipped: string[] = [];
-    const priorWriterLog = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='writer' ORDER BY created_at DESC LIMIT 1");
-    if (priorWriterLog.rows[0]?.status === "halted_circuit_breaker") return res.status(423).json({ error: "Writer circuit breaker is active. A founder must reset it before more drafts can be generated." });
-    let consecutiveFailures = priorWriterLog.rows[0]?.status === "error" ? Number(priorWriterLog.rows[0].consecutive_failures || 0) : 0;
+    const priorAgentLog = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name=$1 ORDER BY created_at DESC LIMIT 1", [agentName]);
+    if (priorAgentLog.rows[0]?.status === "halted_circuit_breaker") return res.status(423).json({ error: agentName[0].toUpperCase() + agentName.slice(1) + " circuit breaker is active. A founder must reset it before more drafts can be generated." });
+    let consecutiveFailures = priorAgentLog.rows[0]?.status === "error" ? Number(priorAgentLog.rows[0].consecutive_failures || 0) : 0;
     for (const leadId of uniqueIds) {
       try {
         const stored = await getAuthoritativeLead(leadId);
@@ -1501,14 +1502,14 @@ app.post("/api/agents/generate", async (req, res) => {
         const idempotencyKey = "agent-draft:" + leadId + ":" + actionType + ":" + new Date().toISOString().slice(0,10);
         const saved = await db.query(`
           INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
-          VALUES ($1,$2,'writer',$3,$4,$5::jsonb,$6,$7)
+          VALUES ($1,$2,$8,$3,$4,$5::jsonb,$6,$7)
           ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
           RETURNING *
         `, [
           id, leadId, actionType, draft,
           JSON.stringify({ company: lead.company, contact_name: lead.name, message_type: actionMap[actionType], model: GEMINI_MODEL }),
           String(brain.reasoningSummary || brain.recommendedAction || "Generated from the authoritative CRM record and conversation history.").slice(0,5000),
-          idempotencyKey
+          idempotencyKey, agentName
         ]);
         staged.push(saved.rows[0]);
         consecutiveFailures = 0;
@@ -1516,21 +1517,21 @@ app.post("/api/agents/generate", async (req, res) => {
         consecutiveFailures++;
         skipped.push(leadId + ": " + String(error?.message || "generation failed").slice(0,180));
         await db.query(
-          "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer','error',$2,0,$3,$4::jsonb)",
-          [randomUUID(), "Draft generation failed for " + leadId, consecutiveFailures, JSON.stringify({ leadId })]
+          "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,$2,'error',$3,0,$4,$5::jsonb)",
+          [randomUUID(), agentName, "Draft generation failed for " + leadId, consecutiveFailures, JSON.stringify({ leadId })]
         );
         if (consecutiveFailures >= 2) {
           await db.query(
-            "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer','halted_circuit_breaker',$2,$3,$4,$5::jsonb)",
-            [randomUUID(), "Writer halted after two consecutive generation failures.", staged.length, consecutiveFailures, JSON.stringify({ actionType })]
+            "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,$2,'halted_circuit_breaker',$3,$4,$5,$6::jsonb)",
+            [randomUUID(), agentName, agentName[0].toUpperCase() + agentName.slice(1) + " halted after two consecutive generation failures.", staged.length, consecutiveFailures, JSON.stringify({ actionType })]
           );
           break;
         }
       }
     }
     await db.query(
-      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'writer',$2,$3,$4,$5,$6::jsonb)",
-      [randomUUID(), consecutiveFailures >= 2 ? "halted_circuit_breaker" : consecutiveFailures > 0 ? "error" : "success", "Staged " + staged.length + " draft(s) for founder review.", staged.length, consecutiveFailures, JSON.stringify({ actionType, requested: uniqueIds.length, skipped })]
+      "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)",
+      [randomUUID(), agentName, consecutiveFailures >= 2 ? "halted_circuit_breaker" : consecutiveFailures > 0 ? "error" : "success", "Staged " + staged.length + " draft(s) for founder review.", staged.length, consecutiveFailures, JSON.stringify({ actionType, requested: uniqueIds.length, skipped })]
     );
     await db.query(
       "INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,$2,'draft_batch_generated',$3::jsonb)",
