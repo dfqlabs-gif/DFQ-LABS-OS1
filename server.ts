@@ -1881,7 +1881,7 @@ app.post("/api/agents/scout", async (req, res) => {
     const ai = new GoogleGenAI({ apiKey });
     const prompt = `Use Google Search to discover up to ${limit} real-estate businesses based in or actively serving ${city}, Nigeria. Focus on property developers, established real-estate brokerages, luxury realtor brands, and architecture/construction firms with a credible high-ticket property presence. Prefer companies with a verifiable website or strong public business profile. Return ONLY a JSON array. Each object must contain: company_name, city, category, website, phone, whatsapp, instagram_url, linkedin_url, source_url, buyer_psychology_observation, evidence_summary. Only include businesses you can verify from the search results. Never invent or infer URLs, phone numbers, contacts, projects, budgets or facts. Use null for unavailable contact fields. source_url must be a direct public source URL that supports the company's existence or positioning. buyer_psychology_observation must be one concise, specific observation about how the brand currently signals trust, reduces buyer hesitation, communicates risk, or positions status/identity; if evidence is insufficient, say "Needs manual review" rather than speculate. Do not include duplicate companies. Return at most ${limit} objects.`;
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: process.env.GEMINI_SCOUT_MODEL || "gemini-3.8-flash",
       contents: prompt,
       config: { tools: [{ googleSearch: {} }], maxOutputTokens: 7000, temperature: 0.2 } as any,
     });
