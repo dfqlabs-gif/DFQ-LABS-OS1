@@ -21,6 +21,8 @@ import { createAgentRouter, initializeAgentTables } from "./lib/agents";
 import { containsExplicitOptOut } from "./lib/agentSafety";
 import { createWhatsAppBridge, type WhatsAppInbound } from "./lib/whatsappBridge";
 import { getWhatsAppNumber, normalizePhone } from "./lib/phone";
+import { getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, verifyTelegramWebhookSecret } from "./lib/telegram";
+import { buildManagerDailyReport, buildManagerKnowledgeContext } from "./lib/manager";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
 
 dotenv.config();
@@ -564,6 +566,142 @@ async function refreshLearningInsights(): Promise<void> {
 // 25mb limit — bulk lead imports/exports can be large JSON payloads
 app.use(express.json({ limit: "25mb" }));
 app.use("/api/agents", createAgentRouter(db, getAuthUserFromReq));
+
+const telegramConfig = getTelegramConfig();
+
+async function callInternalFounderRoute(route: string, body: Record<string, unknown>): Promise<any> {
+  if (!agentSystemToken) throw new Error("Manager execution service is not initialized.");
+  const response = await fetch(`http://127.0.0.1:${PORT}${route}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + agentSystemToken },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(180000),
+  });
+  const payload: any = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(String(payload?.error || `Internal agent returned HTTP ${response.status}`).slice(0,400));
+  return payload;
+}
+
+async function runManagerNurtureBatch(): Promise<string> {
+  const [leads, controls, queued] = await Promise.all([
+    db.query("SELECT id, data FROM leads"),
+    db.query("SELECT lead_id FROM agent_contact_controls WHERE do_not_contact=TRUE"),
+    db.query("SELECT DISTINCT lead_id FROM agent_queue WHERE action_type IN ('outreach_dm','value_dm','follow_up') AND status IN ('pending_approval','approved','sending','sent') AND created_at >= NOW() - INTERVAL '3 days'"),
+  ]);
+  const blocked = new Set(controls.rows.map((row: any) => String(row.lead_id)));
+  const activeQueue = new Set(queued.rows.map((row: any) => String(row.lead_id)));
+  const now = Date.now();
+  const candidates = leads.rows.map((row: any) => row.data as Lead).filter((lead: Lead) => {
+    if (!lead?.id || blocked.has(String(lead.id)) || activeQueue.has(String(lead.id))) return false;
+    if (["Closed","Lost","Booked","Meeting Scheduled","Converted","Not Interested","DNC"].includes(lead.status) || lead.meetingScheduledAt) return false;
+    const inbound = [lead.prospectInitialResponse, lead.prospectLatestResponse, ...(lead.conversationLog || []).filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "")].join(" ");
+    if (containsExplicitOptOut([inbound])) return false;
+    const lastTouch = lead.lastMeaningfulTouchpoint || lead.lastContacted || lead.dateAdded;
+    const ageDays = lastTouch ? (now - new Date(lastTouch).getTime()) / 86400000 : 999;
+    return Number.isFinite(ageDays) && ageDays >= 3 && Number(lead.followUpCount || 0) < 6;
+  }).sort((a: Lead, b: Lead) => {
+    const aTime = new Date(a.lastMeaningfulTouchpoint || a.lastContacted || a.dateAdded || 0).getTime();
+    const bTime = new Date(b.lastMeaningfulTouchpoint || b.lastContacted || b.dateAdded || 0).getTime();
+    return aTime - bTime;
+  }).slice(0,10);
+  if (!candidates.length) return "I checked the CRM. There are no eligible, unsuppressed leads currently due for a nurture draft.";
+  const dueFollowUps = candidates.filter((lead: Lead) => !!lead.awaitingReplySince && !lead.prospectLatestResponse);
+  const actionType = dueFollowUps.length ? "follow_up" : "value_dm";
+  const selected = (dueFollowUps.length ? dueFollowUps : candidates).slice(0,10);
+  const result = await callInternalFounderRoute("/api/agents/generate", { leadIds: selected.map((lead: Lead) => lead.id), actionType });
+  return `Nurture task completed. I asked the ${actionType === "follow_up" ? "Closer" : "Writer"} to prepare drafts for ${selected.length} existing CRM leads. ${result.staged?.length || 0} draft(s) are now in the founder review queue; ${result.skipped?.length || 0} skipped. Nothing was sent. Open OS1's AI Review Queue to review and approve drafts.`;
+}
+
+async function processManagerTelegramMessage(chatId: string, textValue: string): Promise<void> {
+  if (!telegramConfig) return;
+  const message = textValue.trim().slice(0,4000);
+  try {
+    if (/^\\/start(?:\\s|$)/i.test(message) || /^\\/help(?:\\s|$)/i.test(message)) {
+      await sendTelegramMessage(telegramConfig, chatId,
+        "DFQLABS OS1 — Head of Business online.\n\nCommands:\n/report — daily business report\n/status — agent, CRM and knowledge status\n/nurture — prepare follow-up/value drafts for eligible existing leads\n/scout [city] — discover new prospects\n/linkedin [topic] — prepare a LinkedIn draft\n\nYou can also send a normal instruction. I coordinate the specialist agents; you only speak with me. All outbound messages remain subject to founder approval.");
+      return;
+    }
+    if (/^\\/report(?:@\\w+)?$/i.test(message)) {
+      await sendTelegramMessage(telegramConfig, chatId, await buildManagerDailyReport(db));
+      return;
+    }
+    if (/^\\/status(?:@\\w+)?$/i.test(message)) {
+      const context = await buildManagerKnowledgeContext(db);
+      const answer = await callGemini(SYSTEM_PROMPT, "You are the DFQLABS OS1 Head of Business. Give a concise operational status report using only these OS1 facts. Clearly identify blocked agents, pending approvals, knowledge coverage and immediate next actions. Do not invent data.\n\n" + context, GEMINI_MODEL, 1400, 0.3);
+      await sendTelegramMessage(telegramConfig, chatId, answer);
+      return;
+    }
+    if (/^\\/nurture(?:@\\w+)?$/i.test(message) || /\\b(nurture|follow.?up)\\b/i.test(message)) {
+      await sendTelegramMessage(telegramConfig, chatId, "Understood. I'm checking the existing CRM, opt-out controls and recent queue before delegating a nurture batch.");
+      await sendTelegramMessage(telegramConfig, chatId, await runManagerNurtureBatch());
+      return;
+    }
+    const scoutMatch = message.match(/^\\/scout(?:@\\w+)?(?:\\s+(.+))?$/i);
+    if (scoutMatch || /\\b(find|discover|scout|prospect)\\b/i.test(message)) {
+      const city = (scoutMatch?.[1] || (message.match(/\\b(Abuja|Lagos|Port Harcourt|Delta State|Edo State)\\b/i)?.[0]) || "Abuja").trim();
+      const result = await callInternalFounderRoute("/api/agents/scout", { city, limit: 10 });
+      await sendTelegramMessage(telegramConfig, chatId, `Scout completed for ${city}. ${result.staged?.length || 0} verified candidate(s) staged; ${result.skipped?.length || 0} skipped. New leads are awaiting founder review.`);
+      return;
+    }
+    const linkedinMatch = message.match(/^\\/linkedin(?:@\\w+)?(?:\\s+(.+))?$/i);
+    if (linkedinMatch || /\\b(linkedin post|linkedin article)\\b/i.test(message)) {
+      const topic = linkedinMatch?.[1] || message.replace(/.*\\b(?:linkedin post|linkedin article)\\b[:\\s-]*/i, "").trim();
+      const result = await callInternalFounderRoute("/api/agents/linkedin-article", { topic: topic || "A practical buyer-psychology insight for Nigerian real-estate brands" });
+      await sendTelegramMessage(telegramConfig, chatId, "The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
+      return;
+    }
+    const context = await buildManagerKnowledgeContext(db);
+    const answer = await callGemini(SYSTEM_PROMPT,
+      "You are the DFQLABS OS1 Head of Business and sole interface to the founder. Coordinate Scout, Writer, Closer, Research and Dispatcher. Be direct and operational. Use the system context below. If the request asks for nurturing/follow-ups, delegate using the nurture workflow; if it asks for prospect discovery, delegate to Scout; if it asks for a LinkedIn article, delegate to Writer. Never claim an action was completed unless an execution result confirms it. Never authorize or send outbound messages. Ask one concise clarification only when necessary.\n\nSYSTEM CONTEXT:\n" + context + "\n\nFOUNDER MESSAGE:\n" + message,
+      GEMINI_MODEL, 1400, 0.35);
+    await sendTelegramMessage(telegramConfig, chatId, answer);
+  } catch (error: any) {
+    await sendTelegramMessage(telegramConfig, chatId, "I couldn't complete that task: " + String(error?.message || error).slice(0,700) + "\n\nYour existing CRM and review queue remain unchanged.").catch(() => {});
+  }
+}
+
+app.post("/api/telegram/webhook", async (req, res) => {
+  if (!telegramConfig) return res.status(503).json({ error: "Telegram is not configured." });
+  const secret = req.headers["x-telegram-bot-api-secret-token"];
+  if (!verifyTelegramWebhookSecret(typeof secret === "string" ? secret : undefined, telegramConfig.webhookSecret)) {
+    return res.status(401).json({ error: "Invalid Telegram webhook secret." });
+  }
+  const message = req.body?.message;
+  const chatId = message?.chat?.id === undefined ? "" : String(message.chat.id);
+  const textValue = typeof message?.text === "string" ? message.text : "";
+  if (!chatId || chatId !== telegramConfig.allowedChatId || !textValue) return res.status(200).json({ ok: true, ignored: true });
+  res.status(200).json({ ok: true });
+  setImmediate(() => { void processManagerTelegramMessage(chatId, textValue); });
+});
+
+let managerDailyReportBusy = false;
+async function maybeSendManagerDailyReport(): Promise<void> {
+  if (!telegramConfig || managerDailyReportBusy) return;
+  const local = lagosDateTimeParts();
+  if (Number(local.hour) < 7 || (Number(local.hour) === 7 && Number(local.minute) < 30)) return;
+  const scheduledDate = `${local.year}-${local.month}-${local.day}`;
+  managerDailyReportBusy = true;
+  try {
+    const run = await db.query(`
+      INSERT INTO agent_schedule_runs (id, job_name, scheduled_date, status)
+      VALUES ($1,'manager_daily_report',$2::date,'started')
+      ON CONFLICT (job_name, scheduled_date) DO UPDATE
+      SET status=CASE WHEN agent_schedule_runs.status='completed' THEN 'completed' ELSE 'started' END
+      RETURNING id, status
+    `, [randomUUID(), scheduledDate]);
+    if (run.rows[0]?.status === "completed") return;
+    try {
+      await sendTelegramMessage(telegramConfig, telegramConfig.allowedChatId, await buildManagerDailyReport(db));
+      await db.query("UPDATE agent_schedule_runs SET status='completed', summary='Daily Head of Business report delivered to Telegram.', completed_at=NOW() WHERE id=$1", [run.rows[0].id]);
+    } catch (error: any) {
+      await db.query("UPDATE agent_schedule_runs SET status='error', summary=$1, completed_at=NOW() WHERE id=$2", [String(error?.message || error).slice(0,500), run.rows[0].id]);
+      throw error;
+    }
+  } catch (error) {
+    console.error("Manager daily report delivery failed:", error);
+  } finally { managerDailyReportBusy = false; }
+}
+
 
 app.get("/api/agents/whatsapp/status", async (req, res) => {
   const user = getAuthUserFromReq(req);
