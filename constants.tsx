@@ -26,7 +26,7 @@ export const RELATIONSHIP_WARNING_DAYS = 75;
 export const RESPONSE_GUARD_HOURS = 24;
 export const MEETING_WINDOW_HOURS = 24;
 
-export const CEO_PASSWORD = "War_Machine26";
+export const CEO_PASSWORD = ""; // Founder authentication is server-side only.
 export const INTERN_A_PASSWORD = "InternA_2607";
 export const INTERN_B_PASSWORD = "InternB_2607";
 export const SAADATU_PASSWORD = "Saadatu_2607";
