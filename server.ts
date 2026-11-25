@@ -21,6 +21,7 @@ import { createAgentRouter, initializeAgentTables } from "./lib/agents";
 import { containsExplicitOptOut } from "./lib/agentSafety";
 import { createWhatsAppBridge, type WhatsAppInbound } from "./lib/whatsappBridge";
 import { getWhatsAppNumber, normalizePhone } from "./lib/phone";
+import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
 
 dotenv.config();
 
@@ -761,20 +762,40 @@ export async function callGemini(
   temperature: number = 0.7,
   retries: number = 2
 ): Promise<string> {
-  let lastError: any;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  let primaryError: any = null;
+  if (getGeminiApiKey()) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, temperature);
+      } catch (err: any) {
+        primaryError = err;
+        const msg = String(err?.message ?? "");
+        const isRetryable = msg.includes("429") || msg.includes("503") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("UNAVAILABLE");
+        if (!isRetryable || attempt === retries) break;
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  } else {
+    primaryError = new Error("GEMINI_API_KEY is not configured; trying configured fallback providers.");
+  }
+
+  const fallbackProviders = configuredFallbackProviders();
+  const fallbackErrors: string[] = [];
+  for (const config of fallbackProviders) {
     try {
-      return await callGeminiRaw(systemPrompt, userPrompt, model, maxTokens, temperature);
-    } catch (err: any) {
-      lastError = err;
-      const msg = String(err?.message ?? "");
-      const isRetryable = msg.includes("429") || msg.includes("503") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("UNAVAILABLE");
-      if (!isRetryable || attempt === retries) break;
-      // Exponential backoff: 1s, 2s
-      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      const result = await generateWithCompatibleProvider({
+        config, systemPrompt, userPrompt, maxTokens, temperature,
+      });
+      aiHealth.lastModelUsed = result.provider + ":" + result.model;
+      return result.text;
+    } catch (error: any) {
+      fallbackErrors.push(String(error?.message || error).slice(0, 240));
     }
   }
-  throw lastError;
+  if (fallbackErrors.length) {
+    throw new Error("Primary Gemini provider unavailable. Fallback attempts: " + fallbackErrors.join(" | "));
+  }
+  throw primaryError || new Error("No AI provider is configured. Add Gemini or a compatible fallback API key.");
 }
 
 function friendlyError(error: any): string {
