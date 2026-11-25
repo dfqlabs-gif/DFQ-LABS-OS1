@@ -24,7 +24,7 @@ export interface CompatibleGenerationResult {
 
 const DEFAULTS: Record<CompatibleProvider, { baseUrl: string; model: string }> = {
   groq: { baseUrl: "https://api.groq.com/openai/v1", model: "openai/gpt-oss-120b" },
-  openrouter: { baseUrl: "https://openrouter.ai/api/v1", model: "meta-llama/llama-3.3-70b-instruct:free" },
+  openrouter: { baseUrl: "https://openrouter.ai/api/v1", model: "openrouter/free" },
   cerebras: { baseUrl: "https://api.cerebras.ai/v1", model: "gpt-oss-120b" },
 };
 
