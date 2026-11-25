@@ -84,7 +84,19 @@ export async function generateWithCompatibleProvider(input: CompatibleGeneration
     const detail = String(payload?.error?.message || payload?.message || response.statusText || "Provider request failed").slice(0, 240);
     throw new Error(config.provider + " " + response.status + ": " + detail);
   }
-  const text = payload?.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || !text.trim()) throw new Error(config.provider + " returned an empty completion.");
-  return { text: text.trim(), provider: config.provider, model: config.model };
+  const message = payload?.choices?.[0]?.message;
+  const content = message?.content;
+  // OpenAI-compatible APIs may return plain text or typed content blocks.
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.map((part: any) => typeof part === "string" ? part : typeof part?.text === "string" ? part.text : "").filter(Boolean).join("\n")
+      : "";
+  const normalized = text.trim();
+  if (!normalized) {
+    const refusal = typeof message?.refusal === "string" ? message.refusal : "";
+    const finishReason = String(payload?.choices?.[0]?.finish_reason || "unknown");
+    throw new Error(config.provider + " returned no usable text (finish_reason=" + finishReason + ")" + (refusal ? ": " + refusal.slice(0,160) : ""));
+  }
+  return { text: normalized, provider: config.provider, model: config.model };
 }
