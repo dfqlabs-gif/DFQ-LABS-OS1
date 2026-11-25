@@ -1932,6 +1932,7 @@ function startAgentScheduler(): void {
     runDailyWriterSchedule().catch(error => console.error("Writer schedule failed:", error));
     runLinkedInArticleSchedule().catch(error => console.error("LinkedIn schedule failed:", error));
     runDailyCloserIfDue().catch(error => console.error("Closer schedule failed:", error));
+    maybeSendManagerDailyReport().catch(error => console.error("Manager report schedule failed:", error));
   };
   const timer = setInterval(runAllScheduledJobs, 60_000);
   timer.unref?.();
@@ -3110,7 +3111,13 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`DFQ Labs OS — Gemini-powered server on port ${PORT} (model: ${GEMINI_MODEL})`);
+    console.log(`DFQ Labs OS — multi-provider AI server on port ${PORT} (primary model: ${GEMINI_MODEL})`);
+    const publicBaseUrl = process.env.APP_BASE_URL || process.env.RENDER_EXTERNAL_URL;
+    if (telegramConfig && publicBaseUrl) {
+      registerTelegramWebhook(telegramConfig, publicBaseUrl).then(() => console.log("✓ Telegram Manager webhook registered")).catch(error => console.error("Telegram webhook registration failed:", error));
+    } else if (telegramConfig) {
+      console.warn("Telegram configured but APP_BASE_URL / RENDER_EXTERNAL_URL is missing; webhook was not registered.");
+    }
   });
   startAgentScheduler();
 }
