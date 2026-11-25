@@ -43,6 +43,24 @@ test("provider generation sends OpenAI-compatible chat completions request", asy
   assert.equal(body.model, "openrouter/free");
 });
 
+test("provider generation normalizes typed content blocks", async () => {
+  const result = await generateWithCompatibleProvider({
+    config: {
+      provider: "openrouter",
+      apiKey: "test-key",
+      baseUrl: "https://openrouter.ai/api/v1",
+      model: "openrouter/free",
+    },
+    userPrompt: "test",
+    maxTokens: 32,
+    temperature: 0,
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: "stop", message: { content: [{ type: "text", text: "Manager " }, { type: "text", text: "online." }] } }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  });
+  assert.equal(result.text, "Manager \\nonline.".replace("\\n", "\n"));
+});
+
 test("provider errors are surfaced with provider and status for fallback decisions", async () => {
   await assert.rejects(
     () => generateWithCompatibleProvider({
