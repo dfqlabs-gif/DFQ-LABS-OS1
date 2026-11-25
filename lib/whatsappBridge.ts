@@ -1,4 +1,3 @@
-import makeWASocket, { DisconnectReason, initAuthCreds } from "@whiskeysockets/baileys";
 import * as QRCode from "qrcode";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { Pool } from "pg";
@@ -25,6 +24,34 @@ export type WhatsAppBridgeStatus = {
 };
 
 type InboundHandler = (message: WhatsAppInbound) => Promise<void>;
+
+// The server bundle is emitted as CommonJS while Baileys ships ESM builds.
+// Load it dynamically and normalize both legacy and newer export shapes.
+let baileysModulePromise: Promise<any> | null = null;
+async function getBaileysModule(): Promise<{ makeWASocket: (...args: any[]) => any; DisconnectReason: any; initAuthCreds: () => any }> {
+  if (!baileysModulePromise) {
+    baileysModulePromise = import("@whiskeysockets/baileys").then((loaded: any) => {
+      const namespace = loaded?.default && typeof loaded.default === "object"
+        ? { ...loaded.default, ...loaded }
+        : loaded;
+      const socketFactory = typeof namespace?.default === "function"
+        ? namespace.default
+        : typeof namespace?.makeWASocket === "function"
+          ? namespace.makeWASocket
+          : typeof loaded?.default?.default === "function"
+            ? loaded.default.default
+            : null;
+      if (!socketFactory || typeof namespace?.initAuthCreds !== "function" || !namespace?.DisconnectReason) {
+        throw new Error("Baileys module exports are incompatible. Expected makeWASocket, initAuthCreds and DisconnectReason.");
+      }
+      return { makeWASocket: socketFactory, initAuthCreds: namespace.initAuthCreds, DisconnectReason: namespace.DisconnectReason };
+    }).catch(error => {
+      baileysModulePromise = null;
+      throw error;
+    });
+  }
+  return baileysModulePromise;
+}
 
 function encryptionKey(): Buffer {
   const secret = process.env.WHATSAPP_SESSION_ENCRYPTION_KEY || "";
@@ -101,6 +128,7 @@ export function createWhatsAppBridge(db: Pool, onInbound: InboundHandler) {
 
   const loadAuthState = async () => {
     const credsResult = await db.query("SELECT ciphertext, iv, auth_tag FROM agent_whatsapp_auth_state WHERE state_key='creds'");
+    const { initAuthCreds } = await getBaileysModule();
     const creds = credsResult.rows[0] ? decrypt<any>(credsResult.rows[0]) : initAuthCreds();
     const keys = {
       get: async (type: string, ids: string[]) => {
@@ -193,6 +221,7 @@ export function createWhatsAppBridge(db: Pool, onInbound: InboundHandler) {
     }
     await updateSettings({ enabled: true, status: "connecting", last_error: null });
     const auth = await loadAuthState();
+    const { makeWASocket, DisconnectReason } = await getBaileysModule();
     const nextSocket = makeWASocket({
       auth: auth.state,
       printQRInTerminal: false,
