@@ -419,16 +419,11 @@ async function initializeDatabase() {
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_events (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, outbound_id TEXT UNIQUE NOT NULL, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE TABLE IF NOT EXISTS sales_learning_insights (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMP DEFAULT NOW())`);
 
-  // Existing founder credentials are preserved; legacy hashes upgrade after successful login.
-
-  // Seed only a founder account on a brand-new database. Never ship known default passwords.
+  // Synchronize the founder credential from a server-only environment secret.
+  // This updates the existing staging account hash as well as seeding a fresh DB.
+  const founderPassword = String(process.env.FOUNDER_PASSWORD || process.env.FOUNDER_INITIAL_PASSWORD || "");
   const userCountRes = await db.query("SELECT COUNT(*) FROM users");
-  if (parseInt(userCountRes.rows[0].count) === 0) {
-    const initialFounderPassword = String(process.env.FOUNDER_INITIAL_PASSWORD || "");
-    if (initialFounderPassword.length < 16) {
-      throw new Error("FOUNDER_INITIAL_PASSWORD must be configured (at least 16 characters) before initializing an empty OS1 database.");
-    }
-    const founderId = "user-founder";
+  if (founderPassword.length >= 16) {
     await db.query(
       `INSERT INTO outreach_seats (seat_id, seat_name, status, current_user_id) VALUES
        ('seat-outreach-a', 'Outreach Seat A', 'VACANT', NULL),
@@ -439,11 +434,17 @@ async function initializeDatabase() {
     );
     await db.query(
       `INSERT INTO users (id, display_name, username, password_hash, role, status, seat_id) VALUES
-       ($1, 'Alex (Founder)', 'alex@dfqlabs.com', $2, 'FOUNDER', 'ACTIVE', NULL)
-       ON CONFLICT DO NOTHING`,
-      [founderId, hashPassword(initialFounderPassword)]
+       ('user-founder', 'Alex (Founder)', 'alex@dfqlabs.com', $1, 'FOUNDER', 'ACTIVE', NULL)
+       ON CONFLICT (username) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         password_hash = EXCLUDED.password_hash,
+         role = 'FOUNDER',
+         status = 'ACTIVE'`,
+      [hashPassword(founderPassword)]
     );
-    console.log("✓ Seeded founder account using FOUNDER_INITIAL_PASSWORD");
+    console.log("✓ Founder account synchronized from server-side password configuration");
+  } else if (parseInt(userCountRes.rows[0].count) === 0) {
+    throw new Error("Set FOUNDER_PASSWORD (or FOUNDER_INITIAL_PASSWORD) to a value of at least 16 characters before initializing an empty OS1 database.");
   }
   await db.query(`CREATE TABLE IF NOT EXISTS crm_action_history (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE INDEX IF NOT EXISTS crm_action_history_actor_created_idx ON crm_action_history ((data->>'actorId'), created_at DESC)`);
