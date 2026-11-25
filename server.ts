@@ -651,7 +651,7 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
       await sendTelegramMessage(telegramConfig, chatId, "The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
       return;
     }
-    const context = await buildManagerKnowledgeContext(db);
+    const context = await buildManagerKnowledgeContext(db, message);
     const answer = await callGemini(SYSTEM_PROMPT,
       "You are the DFQLABS OS1 Head of Business and sole interface to the founder. Coordinate Scout, Writer, Closer, Research and Dispatcher. Be direct and operational. Use the system context below. If the request asks for nurturing/follow-ups, delegate using the nurture workflow; if it asks for prospect discovery, delegate to Scout; if it asks for a LinkedIn article, delegate to Writer. Never claim an action was completed unless an execution result confirms it. Never authorize or send outbound messages. Ask one concise clarification only when necessary.\n\nSYSTEM CONTEXT:\n" + context + "\n\nFOUNDER MESSAGE:\n" + message,
       GEMINI_MODEL, 1400, 0.35);
