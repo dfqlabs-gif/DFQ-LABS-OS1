@@ -4,12 +4,12 @@ export async function buildManagerKnowledgeContext(db: Pool): Promise<string> {
   const [leadCounts, queueCounts, knowledge, insights, logs] = await Promise.all([
     db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE LOWER(COALESCE(data->>'status','')) NOT IN ('closed','lost','converted','not interested','dnc'))::int AS active FROM leads"),
     db.query("SELECT status, action_type, COUNT(*)::int AS count FROM agent_queue GROUP BY status, action_type ORDER BY status, action_type"),
-    db.query("SELECT title, category, source_url, LEFT(content, 1100) AS excerpt FROM knowledge_sources ORDER BY updated_at DESC NULLS LAST LIMIT 12"),
+    db.query("SELECT data FROM knowledge_sources ORDER BY created_at DESC LIMIT 12"),
     db.query("SELECT data FROM sales_learning_insights WHERE data->>'status'='VALIDATED' ORDER BY (data->>'confidence')::int DESC LIMIT 12"),
     db.query("SELECT agent_name, status, summary, created_at FROM agent_logs ORDER BY created_at DESC LIMIT 12"),
   ]);
   const queue = queueCounts.rows.map((row: any) => `${row.action_type}/${row.status}: ${row.count}`).join("; ") || "No queue records";
-  const sources = knowledge.rows.map((row: any) => `[${row.category || "Knowledge"}] ${row.title}: ${String(row.excerpt || "").slice(0,900)} (source: ${row.source_url || "internal"})`).join("\n");
+  const sources = knowledge.rows.map((row: any) => { const data = row.data || {}; return `[${data.category || "Knowledge"}] ${data.title || data.name || "Untitled source"}: ${String(data.content || data.extractedText || data.text || "").slice(0,900)} (source: ${data.sourceUrl || data.url || "internal"})`; }).join("\n");
   const patterns = insights.rows.map((row: any) => {
     const data = row.data || {};
     return `- ${data.pattern} Confidence ${data.confidence}; sample ${data.evidenceCount}.`;
