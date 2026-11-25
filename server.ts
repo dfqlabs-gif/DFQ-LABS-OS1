@@ -2069,7 +2069,8 @@ app.post("/api/agents/scout", async (req, res) => {
     } else {
       googleFailure = new Error("GEMINI_API_KEY is not configured.");
     }
-    if (!raw.trim()) {
+    if (!raw.trim() || !groundingSources.length) {
+      raw = "";
       const queries = [
         `real estate property developers ${city} Nigeria official website`,
         `luxury real estate companies brokerages ${city} Nigeria`,
@@ -2192,7 +2193,7 @@ app.post("/api/agents/scout", async (req, res) => {
     const summary = "Scout staged " + staged.length + " verified real-estate lead candidate(s) for founder review.";
     await db.query("INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'scout','success',$2,$3,0,$4::jsonb)", [randomUUID(), summary, staged.length, JSON.stringify({ city, discovered: discovered.length, skipped, searchProvider, webSearchQueries })]);
     await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,$2,'scout_discovery_run',$3::jsonb)", [randomUUID(), actor.userId, JSON.stringify({ city, staged: staged.length, skipped })]);
-    res.json({ ok: true, city, staged, skipped, groundingSources, searchEntryPoint });
+    res.json({ ok: true, city, staged, skipped, groundingSources, searchEntryPoint, searchProvider, webSearchQueries });
   } catch (error: any) {
     console.error("Scout discovery failed:", String(error?.message || error).slice(0,300));
     const prior = await db.query("SELECT consecutive_failures FROM agent_logs WHERE agent_name='scout' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
