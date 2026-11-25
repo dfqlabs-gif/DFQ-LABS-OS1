@@ -11,7 +11,7 @@ export async function buildManagerKnowledgeContext(db: Pool, query = ""): Promis
     db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE LOWER(COALESCE(data->>'status','')) NOT IN ('closed','lost','converted','not interested','dnc'))::int AS active FROM leads"),
     db.query("SELECT status, action_type, COUNT(*)::int AS count FROM agent_queue GROUP BY status, action_type ORDER BY status, action_type"),
     db.query("SELECT data FROM knowledge_sources ORDER BY created_at DESC"),
-    db.query("SELECT data FROM sales_learning_insights WHERE data->>'status'='VALIDATED' ORDER BY (data->>'confidence')::int DESC LIMIT 20"),
+    db.query("SELECT data FROM sales_learning_insights WHERE data->>'status'='VALIDATED' ORDER BY COALESCE((data->>'confidence')::numeric,0) DESC LIMIT 20"),
     db.query("SELECT agent_name, status, summary, created_at FROM agent_logs ORDER BY created_at DESC LIMIT 20"),
     db.query("SELECT id, data FROM leads"),
   ]);
