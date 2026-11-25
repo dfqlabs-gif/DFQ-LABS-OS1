@@ -2184,6 +2184,7 @@ function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess
   const cfg = ROLE_ACCESS[roleKey as keyof typeof ROLE_ACCESS] || ROLE_ACCESS.founder;
   const Icon = cfg.Icon;
   const [username, setUsername] = useState("alex@dfqlabs.com");
+  const [username, setUsername] = useState("alex@dfqlabs.com");
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [submitting, setSubmitting] = useState(false);
