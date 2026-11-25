@@ -616,36 +616,36 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
   if (!telegramConfig) return;
   const message = textValue.trim().slice(0,4000);
   try {
-    if (/^\\/start(?:\\s|$)/i.test(message) || /^\\/help(?:\\s|$)/i.test(message)) {
+    if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
       await sendTelegramMessage(telegramConfig, chatId,
         "DFQLABS OS1 — Head of Business online.\n\nCommands:\n/report — daily business report\n/status — agent, CRM and knowledge status\n/nurture — prepare follow-up/value drafts for eligible existing leads\n/scout [city] — discover new prospects\n/linkedin [topic] — prepare a LinkedIn draft\n\nYou can also send a normal instruction. I coordinate the specialist agents; you only speak with me. All outbound messages remain subject to founder approval.");
       return;
     }
-    if (/^\\/report(?:@\\w+)?$/i.test(message)) {
+    if (/^\/report(?:@\w+)?$/i.test(message)) {
       await sendTelegramMessage(telegramConfig, chatId, await buildManagerDailyReport(db));
       return;
     }
-    if (/^\\/status(?:@\\w+)?$/i.test(message)) {
+    if (/^\/status(?:@\w+)?$/i.test(message)) {
       const context = await buildManagerKnowledgeContext(db);
       const answer = await callGemini(SYSTEM_PROMPT, "You are the DFQLABS OS1 Head of Business. Give a concise operational status report using only these OS1 facts. Clearly identify blocked agents, pending approvals, knowledge coverage and immediate next actions. Do not invent data.\n\n" + context, GEMINI_MODEL, 1400, 0.3);
       await sendTelegramMessage(telegramConfig, chatId, answer);
       return;
     }
-    if (/^\\/nurture(?:@\\w+)?$/i.test(message) || /\\b(nurture|follow.?up)\\b/i.test(message)) {
+    if (/^\/nurture(?:@\w+)?$/i.test(message) || /\b(nurture|follow.?up)\b/i.test(message)) {
       await sendTelegramMessage(telegramConfig, chatId, "Understood. I'm checking the existing CRM, opt-out controls and recent queue before delegating a nurture batch.");
       await sendTelegramMessage(telegramConfig, chatId, await runManagerNurtureBatch());
       return;
     }
-    const scoutMatch = message.match(/^\\/scout(?:@\\w+)?(?:\\s+(.+))?$/i);
-    if (scoutMatch || /\\b(find|discover|scout|prospect)\\b/i.test(message)) {
-      const city = (scoutMatch?.[1] || (message.match(/\\b(Abuja|Lagos|Port Harcourt|Delta State|Edo State)\\b/i)?.[0]) || "Abuja").trim();
+    const scoutMatch = message.match(/^\/scout(?:@\w+)?(?:\s+(.+))?$/i);
+    if (scoutMatch || /\b(find|discover|scout|prospect)\b/i.test(message)) {
+      const city = (scoutMatch?.[1] || (message.match(/\b(Abuja|Lagos|Port Harcourt|Delta State|Edo State)\b/i)?.[0]) || "Abuja").trim();
       const result = await callInternalFounderRoute("/api/agents/scout", { city, limit: 10 });
       await sendTelegramMessage(telegramConfig, chatId, `Scout completed for ${city}. ${result.staged?.length || 0} verified candidate(s) staged; ${result.skipped?.length || 0} skipped. New leads are awaiting founder review.`);
       return;
     }
-    const linkedinMatch = message.match(/^\\/linkedin(?:@\\w+)?(?:\\s+(.+))?$/i);
-    if (linkedinMatch || /\\b(linkedin post|linkedin article)\\b/i.test(message)) {
-      const topic = linkedinMatch?.[1] || message.replace(/.*\\b(?:linkedin post|linkedin article)\\b[:\\s-]*/i, "").trim();
+    const linkedinMatch = message.match(/^\/linkedin(?:@\w+)?(?:\s+(.+))?$/i);
+    if (linkedinMatch || /\b(linkedin post|linkedin article)\b/i.test(message)) {
+      const topic = linkedinMatch?.[1] || message.replace(/.*\b(?:linkedin post|linkedin article)\b[:\s-]*/i, "").trim();
       const result = await callInternalFounderRoute("/api/agents/linkedin-article", { topic: topic || "A practical buyer-psychology insight for Nigerian real-estate brands" });
       await sendTelegramMessage(telegramConfig, chatId, "The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
       return;
