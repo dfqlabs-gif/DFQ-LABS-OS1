@@ -632,8 +632,14 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
     }
     if (/^\/status(?:@\w+)?$/i.test(message)) {
       const context = await buildManagerKnowledgeContext(db);
-      const answer = await callGemini(SYSTEM_PROMPT, "You are the DFQLABS OS1 Head of Business. Give a concise operational status report using only these OS1 facts. Clearly identify blocked agents, pending approvals, knowledge coverage and immediate next actions. Do not invent data.\n\n" + context, GEMINI_MODEL, 1400, 0.3);
-      await sendTelegramMessage(telegramConfig, chatId, answer);
+      await sendTelegramMessage(telegramConfig, chatId,
+        "DFQLABS OS1 — Live operational context\\n\\n" + context +
+        "\\n\\nStatus is compiled directly from OS1 records. AI-generated interpretation is temporarily unavailable if a model provider is degraded.");
+      return;
+    }
+    if (/^(hi|hello|hey|good morning|good afternoon|good evening)(?:\\s+manager)?[!. ]*$/i.test(message)) {
+      await sendTelegramMessage(telegramConfig, chatId,
+        "Hello. DFQLABS OS1 Head of Business is online. I can coordinate prospect discovery, nurture drafts, LinkedIn drafts and operational reporting. AI model health is monitored separately; all outbound messages remain in founder approval.");
       return;
     }
     if (/^\/nurture(?:@\w+)?$/i.test(message) || /\b(nurture|follow.?up)\b/i.test(message)) {
@@ -964,11 +970,6 @@ app.post("/api/ai", async (req, res) => {
     res.status(400).json({ error: "userPrompt is required" });
     return;
   }
-  if (!getGeminiApiKey()) {
-    res.status(500).json({ error: "GEMINI_API_KEY is not configured on the server." });
-    return;
-  }
-
   const activeModel = model || GEMINI_MODEL;
   const start = Date.now();
   try {
@@ -1003,10 +1004,6 @@ app.get("/api/ai-status", (req, res) => {
 
 app.post("/api/ai-status", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
-  if (!getGeminiApiKey()) {
-    res.json({ ok: false, error: "GEMINI_API_KEY is not configured on the server." });
-    return;
-  }
   const { model } = req.body || {};
   const testModel = model || GEMINI_MODEL;
   const start = Date.now();
