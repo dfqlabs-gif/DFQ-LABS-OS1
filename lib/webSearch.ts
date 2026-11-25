@@ -37,7 +37,7 @@ async function searchWithProvider(config: WebSearchConfig, query: string, fetchI
       url: String(item.url || ""),
       snippet: String(item.description || "").slice(0,1200),
       provider: "brave" as const,
-    })).filter((item: WebSearchResult) => /^https?:\\/\\//i.test(item.url));
+    })).filter((item: WebSearchResult) => /^https?:\/\//i.test(item.url));
   }
   const response = await fetchImpl("https://api.tavily.com/search", {
     method: "POST",
@@ -52,7 +52,7 @@ async function searchWithProvider(config: WebSearchConfig, query: string, fetchI
     url: String(item.url || ""),
     snippet: String(item.content || "").slice(0,1200),
     provider: "tavily" as const,
-  })).filter((item: WebSearchResult) => /^https?:\\/\\//i.test(item.url));
+  })).filter((item: WebSearchResult) => /^https?:\/\//i.test(item.url));
 }
 
 export async function searchWebWithFallback(
@@ -68,7 +68,7 @@ export async function searchWebWithFallback(
       const batches = await Promise.all(queries.slice(0,5).map(query => searchWithProvider(config, query, fetchImpl)));
       const seen = new Set<string>();
       const results = batches.flat().filter(item => {
-        const key = item.url.toLowerCase().replace(/\\/$/, "");
+        const key = item.url.toLowerCase().replace(/\/$/, "");
         if (!key || seen.has(key)) return false;
         seen.add(key);
         return true;
