@@ -34,7 +34,7 @@ export function configuredFallbackProviders(env: Record<string, string | undefin
     openrouter: env.OPENROUTER_API_KEY,
     cerebras: env.CEREBRAS_API_KEY,
   };
-  const requested = (env.AI_FALLBACK_ORDER || "groq,openrouter,cerebras")
+  const requested = (env.AI_FALLBACK_ORDER || "openrouter,groq,cerebras")
     .split(",")
     .map(value => value.trim().toLowerCase())
     .filter((value): value is CompatibleProvider => value === "groq" || value === "openrouter" || value === "cerebras");
