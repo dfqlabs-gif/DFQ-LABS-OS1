@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 const STOP_WORDS = new Set(["about","after","again","agent","also","and","are","can","could","from","have","help","into","just","more","need","please","that","them","then","there","this","with","would","your","what","when","where","which","who"]);
 
 function terms(value: string): string[] {
-  return [...new Set(value.toLowerCase().replace(/[^a-z0-9\\s-]/g, " ").split(/\\s+/).filter(word => word.length > 2 && !STOP_WORDS.has(word)))].slice(0,40);
+  return [...new Set(value.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter(word => word.length > 2 && !STOP_WORDS.has(word)))].slice(0,40);
 }
 
 export async function buildManagerKnowledgeContext(db: Pool, query = ""): Promise<string> {
@@ -24,20 +24,20 @@ export async function buildManagerKnowledgeContext(db: Pool, query = ""): Promis
   }).sort((a: any, b: any) => b.relevance - a.relevance).slice(0,12);
   const sources = rankedSources.map(({data}: any) =>
     `[${data.category || "Knowledge"}] ${data.title || data.name || "Untitled source"}: ${String(data.content || data.extractedText || data.text || "").slice(0,900)} (source: ${data.sourceUrl || data.url || "internal"})`
-  ).join("\\n");
+  ).join("\n");
   const patterns = insights.rows.map((row: any) => {
     const data = row.data || {};
     return `- ${data.pattern} Confidence ${data.confidence}; sample ${data.evidenceCount}.`;
-  }).join("\\n");
-  const activity = logs.rows.slice(0,12).map((row: any) => `- ${row.agent_name} ${row.status}: ${row.summary}`).join("\\n");
+  }).join("\n");
+  const activity = logs.rows.slice(0,12).map((row: any) => `- ${row.agent_name} ${row.status}: ${row.summary}`).join("\n");
   const relevantLeads = leads.rows.map((row: any) => row.data || {}).map((lead: any) => {
-    const thread = Array.isArray(lead.conversationLog) ? lead.conversationLog.slice(-4).map((entry: any) => `${entry.direction || entry.type || "message"}: ${String(entry.text || "").slice(0,260)}`).join("\\n") : "";
+    const thread = Array.isArray(lead.conversationLog) ? lead.conversationLog.slice(-4).map((entry: any) => `${entry.direction || entry.type || "message"}: ${String(entry.text || "").slice(0,260)}`).join("\n") : "";
     const text = [lead.company, lead.name, lead.status, lead.clientType, lead.notes, lead.nextAction, lead.prospectLatestResponse, thread].filter(Boolean).join(" ");
     return { lead, thread, relevance: score(text) };
   }).filter((item: any) => item.relevance > 0).sort((a: any,b: any) => b.relevance - a.relevance).slice(0,8);
   const crmContext = relevantLeads.map(({lead,thread}: any) =>
-    `- ${lead.company || lead.name || lead.id} | status: ${lead.status || "unknown"} | segment: ${lead.clientType || "unknown"} | next action: ${lead.nextAction || "not recorded"} | notes: ${String(lead.notes || "").slice(0,400)}\\nRecent thread:\\n${thread || "No conversation events recorded"}`
-  ).join("\\n\\n");
+    `- ${lead.company || lead.name || lead.id} | status: ${lead.status || "unknown"} | segment: ${lead.clientType || "unknown"} | next action: ${lead.nextAction || "not recorded"} | notes: ${String(lead.notes || "").slice(0,400)}\nRecent thread:\n${thread || "No conversation events recorded"}`
+  ).join("\n\n");
   return [
     `CRM: ${leadCounts.rows[0]?.total || 0} total leads; ${leadCounts.rows[0]?.active || 0} active.`,
     `Review queue: ${queue}.`,
@@ -45,7 +45,7 @@ export async function buildManagerKnowledgeContext(db: Pool, query = ""): Promis
     "Validated learning insights:", patterns || "No validated insights yet.",
     "Relevant Knowledge Base excerpts:", sources || "No indexed knowledge sources found.",
     "Recent agent activity:", activity || "No agent activity recorded.",
-  ].join("\\n\\n").slice(0,22000);
+  ].join("\n\n").slice(0,22000);
 }
 
 export async function buildManagerDailyReport(db: Pool): Promise<string> {
@@ -70,7 +70,7 @@ export async function buildManagerDailyReport(db: Pool): Promise<string> {
   ]);
   const recent = agents.rows.slice(0,8).map((row: any) =>
     `• ${row.agent_name}: ${row.status} — ${row.summary} (${row.items_processed} items)`
-  ).join("\\n") || "• No agent runs recorded in the last 24 hours.";
+  ).join("\n") || "• No agent runs recorded in the last 24 hours.";
   const l = learning.rows[0] || {};
   const day = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Lagos", dateStyle: "full" }).format(new Date());
   return [
@@ -86,5 +86,5 @@ export async function buildManagerDailyReport(db: Pool): Promise<string> {
     recent,
     "",
     "Governance: outbound messaging remains founder-approval-only. Figures reflect recorded OS1 data; missing CRM events are not inferred.",
-  ].join("\\n");
+  ].join("\n");
 }
