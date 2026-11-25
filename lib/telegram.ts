@@ -27,7 +27,7 @@ export async function sendTelegramMessage(
   text: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  const chunks = text.match(/[\\s\\S]{1,3900}/g) || [" "];
+  const chunks = text.match(/[\s\S]{1,3900}/g) || [" "];
   for (const chunk of chunks) {
     const response = await fetchImpl(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
       method: "POST",
@@ -51,7 +51,7 @@ export async function registerTelegramWebhook(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      url: publicBaseUrl.replace(/\\/+$/, "") + "/api/telegram/webhook",
+      url: publicBaseUrl.replace(/\/+$/, "") + "/api/telegram/webhook",
       secret_token: config.webhookSecret,
       allowed_updates: ["message"],
       drop_pending_updates: false,
