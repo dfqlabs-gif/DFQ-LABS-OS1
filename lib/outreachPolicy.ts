@@ -60,13 +60,13 @@ export function formatProspectGreeting(lead: Pick<Lead, "name" | "company">, now
   const salutation = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const contact = String(lead.name || "").trim();
   const companyRaw = String(lead.company || "").trim();
-  const company = /^(unknown company|unknown|n\\/a|not available|unassigned|none)$/i.test(companyRaw) ? "" : companyRaw;
-  const genericContact = !contact || /^(unknown|n\\/a|not available|unassigned|none)$/i.test(contact) ||
+  const company = /^(unknown company|unknown|n\/a|not available|unassigned|none)$/i.test(companyRaw) ? "" : companyRaw;
+  const genericContact = !contact || /^(unknown|n\/a|not available|unassigned|none)$/i.test(contact) ||
     (company && normalizeCompanyIdentity(contact) === normalizeCompanyIdentity(company));
-  const teamContact = /^team\\s+/i.test(contact);
+  const teamContact = /^team\s+/i.test(contact);
   const recipient = teamContact && genericContact
-    ? "Team " + contact.replace(/^team\\s+/i, "")
-    : genericContact ? (company ? "Team " + company.replace(/^team\\s+/i, "") : "there") : contact;
+    ? "Team " + contact.replace(/^team\s+/i, "")
+    : genericContact ? (company ? "Team " + company.replace(/^team\s+/i, "") : "there") : contact;
   return salutation + ", " + recipient + ".";
 }
 
@@ -74,14 +74,17 @@ export function ensureProspectGreeting(lead: Pick<Lead, "name" | "company">, mes
   let clean = String(message || "").trim();
   const person = String(lead.name || "").trim();
   const companyRaw = String(lead.company || "").trim();
-  const company = /^(unknown company|unknown|n\\/a|not available|unassigned|none)$/i.test(companyRaw) ? "" : companyRaw.replace(/^team\\s+/i, "");
-  const recipient = /^team\\s+/i.test(person) ? "Team " + person.replace(/^team\\s+/i, "") : person || (company ? "Team " + company : "there");
-  const greeting = clean.match(/^(hi|hello|good morning|good afternoon|good evening|dear)\\b[,.]?\\s*(.*)$/i);
+  const company = /^(unknown company|unknown|n\/a|not available|unassigned|none)$/i.test(companyRaw) ? "" : companyRaw.replace(/^team\s+/i, "");
+  const recipient = /^team\s+/i.test(person) ? "Team " + person.replace(/^team\s+/i, "") : person || (company ? "Team " + company : "there");
+  const greeting = clean.match(/^(hi|hello|good morning|good afternoon|good evening|dear)\b[,.]?\s*(.*)$/i);
   if (greeting) clean = greeting[2].trim();
   for (const prefix of [recipient, company, person, "there", "team"]) {
     if (!prefix) continue;
-    const pattern = new RegExp("^" + prefix.replace(/[.*+?^\\$\\{\\}()|[\\]\\\\]/g, "\\\\$&") + "[,.]?\\\\s*", "i");
-    clean = clean.replace(pattern, "");
+    const lower = clean.toLowerCase();
+    const target = prefix.toLowerCase();
+    if (lower.startsWith(target) && (!lower[target.length] || /[,.:\s]/.test(lower[target.length]))) {
+      clean = clean.slice(prefix.length).replace(/^[,.:]\s*/, "").trim();
+    }
   }
   clean = clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : "";
   return formatProspectGreeting(lead, now) + (clean ? " " + clean : "");
