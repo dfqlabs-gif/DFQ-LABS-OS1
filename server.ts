@@ -402,6 +402,9 @@ async function initializeDatabase() {
     throw new Error(`Failed to create lead_attachments table: ${err}`);
   }
 
+  await db.query("CREATE TABLE IF NOT EXISTS manager_greeting_state (id INTEGER PRIMARY KEY CHECK (id=1), last_greeting_key TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+  await db.query("INSERT INTO manager_greeting_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+
   // 5. Create users and outreach_seats tables
   try {
     await db.query(`
@@ -669,58 +672,69 @@ async function handleTelegramReviewCallback(query: any): Promise<void> {
   finally { client.release(); }
 }
 
+async function sendManagerReply(chatId: string, message: string): Promise<void> {
+  if (!telegramConfig) return;
+  const local = lagosDateTimeParts();
+  const hour = Number(local.hour);
+  const period = hour >= 5 && hour < 12 ? 'morning' : hour >= 12 && hour < 17 ? 'afternoon' : 'evening';
+  const key = local.year + '-' + local.month + '-' + local.day + ':' + period;
+  const result = await db.query('UPDATE manager_greeting_state SET last_greeting_key=$1,updated_at=NOW() WHERE id=1 AND last_greeting_key<>$1 RETURNING id',[key]).catch(()=>({rowCount:0}));
+  const greeting = result.rowCount ? (period === 'morning' ? 'Good morning, Sir.\\n\\n' : period === 'afternoon' ? 'Good afternoon, Sir.\\n\\n' : 'Good evening, Sir.\\n\\n') : '';
+  await sendTelegramMessage(telegramConfig,chatId,greeting+message);
+}
+
 async function processManagerTelegramMessage(chatId: string, textValue: string): Promise<void> {
   if (!telegramConfig) return;
   const message = textValue.trim().slice(0,4000);
   try {
  
     if (/^\/review(?:@\w+)?$/i.test(message)) { const count = await sendTelegramReviewCards(chatId,10); await sendTelegramMessage(telegramConfig,chatId,count ? "Pending message drafts are shown below. Approve or reject each one." : "There are no pending WhatsApp drafts."); return; }   if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
-      await sendTelegramMessage(telegramConfig, chatId,
+      await sendManagerReply(chatId,
         "DFQLABS OS1 — Head of Business online.\n\nCommands:\n/report — daily business report\n/status — agent, CRM and knowledge status\n/nurture — prepare follow-up/value drafts for eligible existing leads\n/scout [city] — discover new prospects\n/linkedin [topic] — prepare a LinkedIn draft\n\nYou can also send a normal instruction. I coordinate the specialist agents; you only speak with me. All outbound messages remain subject to founder approval.");
       return;
     }
     if (/^\/report(?:@\w+)?$/i.test(message)) {
-      await sendTelegramMessage(telegramConfig, chatId, await buildManagerDailyReport(db));
+      await sendManagerReply(chatId, await buildManagerDailyReport(db));
       return;
     }
     if (/^\/status(?:@\w+)?$/i.test(message)) {
       const context = await buildManagerKnowledgeContext(db);
-      await sendTelegramMessage(telegramConfig, chatId,
+      await sendManagerReply(chatId,
         "DFQLABS OS1 — Live operational context\\n\\n" + context +
         "\\n\\nStatus is compiled directly from OS1 records. AI-generated interpretation is temporarily unavailable if a model provider is degraded.");
       return;
     }
     if (/^(hi|hello|hey|good morning|good afternoon|good evening)(?:\\s+manager)?[!. ]*$/i.test(message)) {
-      await sendTelegramMessage(telegramConfig, chatId,
+      await sendManagerReply(chatId,
         "Hello. DFQLABS OS1 Head of Business is online. I can coordinate prospect discovery, nurture drafts, LinkedIn drafts and operational reporting. AI model health is monitored separately; all outbound messages remain in founder approval.");
       return;
     }
     if (/^\/nurture(?:@\w+)?$/i.test(message) || /\b(nurture|follow.?up)\b/i.test(message)) {
-      await sendTelegramMessage(telegramConfig, chatId, "Understood. I'm checking the existing CRM, opt-out controls and recent queue before delegating a nurture batch.");
-      await sendTelegramMessage(telegramConfig, chatId, await runManagerNurtureBatch());
+      await sendManagerReply(chatId, "Understood. I'm checking the existing CRM, opt-out controls and recent queue before delegating a nurture batch.");
+      await sendManagerReply(chatId, await runManagerNurtureBatch());
       return;
     }
     const scoutMatch = message.match(/^\/scout(?:@\w+)?(?:\s+(.+))?$/i);
     if (scoutMatch || /\b(find|discover|scout|prospect)\b/i.test(message)) {
       const city = (scoutMatch?.[1] || (message.match(/\b(Abuja|Lagos|Port Harcourt|Delta State|Edo State)\b/i)?.[0]) || "Abuja").trim();
       const result = await callInternalFounderRoute("/api/agents/scout", { city, limit: 10 });
-      await sendTelegramMessage(telegramConfig, chatId, `Scout completed for ${city}. ${result.staged?.length || 0} verified candidate(s) staged; ${result.skipped?.length || 0} skipped. New leads are awaiting founder review.`);
+      await sendManagerReply(chatId, `Scout completed for ${city}. ${result.staged?.length || 0} verified candidate(s) staged; ${result.skipped?.length || 0} skipped. New leads are awaiting founder review.`);
       return;
     }
     const linkedinMatch = message.match(/^\/linkedin(?:@\w+)?(?:\s+(.+))?$/i);
     if (linkedinMatch || /\b(linkedin post|linkedin article)\b/i.test(message)) {
       const topic = linkedinMatch?.[1] || message.replace(/.*\b(?:linkedin post|linkedin article)\b[:\s-]*/i, "").trim();
       const result = await callInternalFounderRoute("/api/agents/linkedin-article", { topic: topic || "A practical buyer-psychology insight for Nigerian real-estate brands" });
-      await sendTelegramMessage(telegramConfig, chatId, "The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
+      await sendManagerReply(chatId, "The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
       return;
     }
     const context = await buildManagerKnowledgeContext(db, message);
     const answer = await callGemini(SYSTEM_PROMPT,
       "You are the DFQLABS OS1 Head of Business and sole interface to the founder. Coordinate Scout, Writer, Closer, Research and Dispatcher. Be direct and operational. Use the system context below. If the request asks for nurturing/follow-ups, delegate using the nurture workflow; if it asks for prospect discovery, delegate to Scout; if it asks for a LinkedIn article, delegate to Writer. Never claim an action was completed unless an execution result confirms it. Never authorize or send outbound messages. Ask one concise clarification only when necessary.\n\nSYSTEM CONTEXT:\n" + context + "\n\nFOUNDER MESSAGE:\n" + message,
       GEMINI_MODEL, 1400, 0.35);
-    await sendTelegramMessage(telegramConfig, chatId, answer);
+    await sendManagerReply(chatId, answer);
   } catch (error: any) {
-    await sendTelegramMessage(telegramConfig, chatId, "I couldn't complete that task: " + String(error?.message || error).slice(0,700) + "\n\nYour existing CRM and review queue remain unchanged.").catch(() => {});
+    await sendManagerReply(chatId, "I couldn't complete that task: " + String(error?.message || error).slice(0,700) + "\n\nYour existing CRM and review queue remain unchanged.").catch(() => {});
   }
 }
 
