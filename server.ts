@@ -657,17 +657,19 @@ function telegramDraftHash(content: string): string {
 async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
   if (!telegramConfig) return 0;
   const result = await db.query("SELECT q.id, q.action_type, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(10, limit))]);
+  let greeting = result.rows.length ? await claimTelegramGreeting(chatId) : "";
   for (const row of result.rows) {
     const hash = telegramDraftHash(String(row.draft_content || ""));
     const recipient = [row.lead_name, row.lead_company].filter(Boolean).join(" · ") || "Unassigned prospect";
     const type = String(row.action_type || "").replace(/_/g, " ").toUpperCase();
     const phone = row.lead_phone ? "\nWhatsApp: " + row.lead_phone : "";
     const body = ["DFQLABS OS1 — FOUNDER REVIEW", type + " · " + recipient + phone, "", String(row.draft_content || "").slice(0, 2800), "", row.reasoning ? "WHY THIS MESSAGE: " + String(row.reasoning).slice(0, 700) : "", "", "Approve to authorize this exact draft for WhatsApp dispatch. Editing invalidates this approval version.", "Queue ID: " + row.id].filter(Boolean).join("\n");
-    await sendTelegramMessage(telegramConfig, chatId, body, fetch, { inline_keyboard: [[
+    await sendTelegramMessage(telegramConfig, chatId, greeting + body, fetch, { inline_keyboard: [[
       { text: "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
       { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
       { text: "Reject", callback_data: "q|r|" + row.id + "|" + hash },
     ]] });
+    greeting = "";
   }
   return result.rows.length;
 }
@@ -860,7 +862,7 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
     }
     if (/^\/queue(?:@\w+)?$/i.test(message)) {
       const count = await sendTelegramPendingApprovals(chatId, 10);
-      await reply(count ? "I sent " + count + " pending review card(s) above. Each approval is tied to the exact draft version." : "There are no pending DM/follow-up drafts awaiting approval.");
+      if (!count) await reply("There are no pending DM/follow-up drafts awaiting approval.");
       return;
     }
     if (/^\/report(?:@\w+)?$/i.test(message)) {
