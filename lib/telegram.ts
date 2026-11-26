@@ -111,6 +111,8 @@ export async function transcribeTelegramVoice(config: TelegramConfig, fileId: st
     env.GROQ_API_KEY ? { name: "Groq", url: "https://api.groq.com/openai/v1/audio/transcriptions", key: env.GROQ_API_KEY, model: env.GROQ_STT_MODEL || "whisper-large-v3-turbo" } : null,
     env.OPENAI_API_KEY ? { name: "OpenAI", url: "https://api.openai.com/v1/audio/transcriptions", key: env.OPENAI_API_KEY, model: env.OPENAI_STT_MODEL || "whisper-1" } : null,
   ].filter(Boolean) as Array<{name:string;url:string;key:string;model:string}>;
+  const geminiKey = env.GEMINI_API_KEY?.trim();
+  if (!providers.length && !geminiKey) throw new Error("Voice transcription is not configured. Add GROQ_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY to staging.");
   if (!providers.length) throw new Error("Voice transcription is not configured. Add GROQ_API_KEY or OPENAI_API_KEY to the staging service.");
   const errors: string[] = [];
   for (const provider of providers) {
@@ -135,5 +137,26 @@ export async function transcribeTelegramVoice(config: TelegramConfig, fileId: st
       return transcript.slice(0, 4000);
     } catch (error: any) { errors.push(String(error?.message || error).slice(0, 160)); }
   }
-  throw new Error("Voice transcription failed across configured providers: " + errors.join("; "));
+  if (geminiKey) {
+    try {
+      const base64 = Buffer.from(bytes).toString("base64");
+      const model = env.GEMINI_STT_MODEL || "gemini-2.5-flash";
+      const response = await fetchImpl("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(geminiKey), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [
+          { inline_data: { mime_type: contentType === "application/octet-stream" ? "audio/ogg" : contentType, data: base64 } },
+          { text: "Transcribe this voice note accurately. Return only the spoken words, without commentary, labels or explanations." },
+        ] }], generationConfig: { temperature: 0 } }),
+        signal: AbortSignal.timeout(60000),
+      });
+      const body = await response.text();
+      let payload: any = {};
+      try { payload = body ? JSON.parse(body) : {}; } catch {}
+      if (!response.ok) throw new Error("Gemini transcription HTTP " + response.status + ": " + String(payload?.error?.message || response.statusText).slice(0, 160));
+      const transcript = String(payload?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join(" ") || "").trim();
+      if (!transcript) throw new Error("Gemini returned an empty transcript.");
+      return transcript.slice(0, 4000);
+    } catch (error: any) { errors.push(String(error?.message || error).slice(0, 160)); }
+  }
+  throw new Error("Voice transcription failed: " + (errors.join("; ") || "No configured transcription provider responded."));
 }
