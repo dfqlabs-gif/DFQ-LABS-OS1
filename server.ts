@@ -1812,6 +1812,7 @@ app.post("/api/agents/generate", async (req, res) => {
           idempotencyKey, agentName
         ]);
         staged.push(saved.rows[0]);
+        sameDayQueue.push({ leadId: String(leadId), company: String(lead.company || ""), phone: String(lead.phone || lead.whatsapp || "") });
         consecutiveFailures = 0;
       } catch (error: any) {
         consecutiveFailures++;
