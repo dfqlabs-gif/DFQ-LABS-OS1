@@ -618,6 +618,18 @@ async function runManagerNurtureBatch(): Promise<string> {
 }
 
 
+
+async function sendTelegramReviewCards(chatId: string, limit = 10): Promise<number> {
+  if (!telegramConfig) return 0;
+  const result = await db.query("SELECT q.id,q.action_type,q.draft_content,q.updated_at,l.data->>'company' AS company,l.data->>'name' AS lead_name,COALESCE(l.data->>'whatsapp',l.data->>'phone') AS phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [limit]);
+  for (const item of result.rows) {
+    const version = new Date(item.updated_at).getTime();
+    const text = "DFQLABS MESSAGE REVIEW\\nProspect: "+(item.company||item.lead_name||"Unknown")+"\\nType: "+item.action_type+"\\nWhatsApp: "+(item.phone||"Not recorded")+"\\n\\nEXACT DRAFT\\n"+String(item.draft_content||"").slice(0,2500)+"\\n\\nTo edit: /edit "+item.id+" [complete revised message]. Editing invalidates this approval; approve the new version again.";
+    await sendTelegramMessage(telegramConfig,chatId,text,fetch,{inline_keyboard:[[{text:"Approve & Send",callback_data:"qa:"+item.id+":"+version},{text:"Reject",callback_data:"qr:"+item.id+":"+version}]]});
+  }
+  return result.rowCount||0;
+}
+
 async function handleTelegramReviewCallback(query: any): Promise<void> {
   if (!telegramConfig) return;
   const chatId = String(query?.message?.chat?.id || "");
