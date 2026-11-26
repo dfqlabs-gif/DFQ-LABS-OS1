@@ -520,7 +520,7 @@ async function initializeDatabase() {
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 5000;
 const LEARNING_ENABLED = process.env.SALES_BRAIN_LEARNING_ENABLED !== "false";
-const LEARNING_INFLUENCE_ENABLED = process.env.SALES_BRAIN_LEARNING_INFLUENCE_ENABLED === "true";
+const LEARNING_INFLUENCE_ENABLED = process.env.SALES_BRAIN_LEARNING_INFLUENCE_ENABLED !== "false";
 
 // ── AI Provider configuration — change GEMINI_MODEL env var to swap models ──
 // gemini-3.1-flash-lite: fastest confirmed working model for high-volume free-tier
@@ -1743,6 +1743,9 @@ app.post("/api/agents/generate", async (req, res) => {
     const sameDayQueue = sameDayQueueResult.rows.map((row: any) => ({
       leadId: String(row.lead_id || ""), company: String(row.company || ""), phone: String(row.phone || ""),
     }));
+    const storedLearningInsights = LEARNING_INFLUENCE_ENABLED
+      ? (await db.query("SELECT data FROM sales_learning_insights")).rows.map((row: any) => row.data as LearningInsight)
+      : [];
     for (const leadId of uniqueIds) {
       try {
         const stored = await getAuthoritativeLead(leadId);
@@ -1786,6 +1789,10 @@ app.post("/api/agents/generate", async (req, res) => {
           {
             requestedMessageType: effectiveMessageType as any,
             task: `DFQ Labs agent configuration — brand voice: ${config.brand_voice}. Buyer psychology pillars: ${(config.buyer_psychology_pillars || []).join("; ")}. Stay grounded in the verified CRM facts and full conversation history. Do not invent observations, projects, budgets or outcomes.`,
+            learningInsights: relevantInsights(storedLearningInsights, lead, effectiveMessageType).map(insight => ({
+              insightId: insight.id, pattern: insight.pattern, relevance: insight.segment + " / " + insight.strategyType,
+              confidence: insight.confidence, evidenceSummary: insight.evidenceCount + " sent; " + Math.round(insight.positiveResponseRate * 100) + "% positive; " + insight.meetingCount + " meetings",
+            })),
           },
           (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
         );
