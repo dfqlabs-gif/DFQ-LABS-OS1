@@ -66,8 +66,12 @@ export function formatProspectGreeting(lead: Pick<Lead, "name" | "company">, now
 }
 
 export function ensureProspectGreeting(lead: Pick<Lead, "name" | "company">, message: string, now = new Date()): string {
-  const clean = String(message || "").trim();
+  let clean = String(message || "").trim();
   if (/^(hi|hello|good morning|good afternoon|good evening|dear)\\b/i.test(clean)) return clean;
+  const recipient = String(lead.name || lead.company || "").trim().replace(/^team\\s+/i, "");
+  if (recipient) clean = clean.replace(new RegExp("^" + recipient.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\  const clean = String(message || "").trim();
+  if (/^(hi|hello|good morning|good afternoon|good evening|dear)\\b/i.test(clean)) return clean;
+  return formatProspectGreeting(lead, now) + " " + clean;") + "[,.:]\\s*", "i"), "");
   return formatProspectGreeting(lead, now) + " " + clean;
 }
 
