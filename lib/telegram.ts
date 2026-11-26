@@ -1,5 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 
+export type TelegramInlineButton = { text: string; callback_data: string };
+
 export interface TelegramConfig {
   botToken: string;
   webhookSecret: string;
@@ -26,13 +28,14 @@ export async function sendTelegramMessage(
   chatId: string,
   text: string,
   fetchImpl: typeof fetch = fetch,
+  replyMarkup?: { inline_keyboard: TelegramInlineButton[][] },
 ): Promise<void> {
   const chunks = text.match(/[\s\S]{1,3900}/g) || [" "];
   for (const chunk of chunks) {
     const response = await fetchImpl(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: chunk, disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: chatId, text: chunk, disable_web_page_preview: true, ...(replyMarkup && chunk === (text.match(/[\\s\\S]{1,3900}/g) || [" "]).slice(-1)[0] ? { reply_markup: replyMarkup } : {}) }),
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
@@ -53,7 +56,7 @@ export async function registerTelegramWebhook(
     body: JSON.stringify({
       url: publicBaseUrl.replace(/\/+$/, "") + "/api/telegram/webhook",
       secret_token: config.webhookSecret,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "callback_query"],
       drop_pending_updates: false,
     }),
     signal: AbortSignal.timeout(15000),
@@ -62,4 +65,52 @@ export async function registerTelegramWebhook(
   if (!response.ok || payload?.ok !== true) {
     throw new Error("Telegram webhook registration failed: " + String(payload?.description || response.statusText).slice(0,200));
   }
+}
+
+
+export async function answerTelegramCallback(config: TelegramConfig, callbackQueryId: string, text = "", fetchImpl: typeof fetch = fetch): Promise<void> {
+  const response = await fetchImpl(`https://api.telegram.org/bot${config.botToken}/answerCallbackQuery`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId, ...(text ? { text: text.slice(0, 180) } : {}) }),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) throw new Error("Telegram callback acknowledgement failed.");
+}
+
+export async function transcribeTelegramVoice(config: TelegramConfig, fileId: string, fileSize?: number, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): Promise<string> {
+  if (fileSize && fileSize > 20 * 1024 * 1024) throw new Error("Voice note is too large. Please send an audio clip under 20 MB.");
+  const metaResponse = await fetchImpl(`https://api.telegram.org/bot${config.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, { signal: AbortSignal.timeout(15000) });
+  const meta: any = await metaResponse.json().catch(() => ({}));
+  const filePath = meta?.result?.file_path;
+  if (!metaResponse.ok || meta?.ok !== true || typeof filePath !== "string") throw new Error("Telegram could not retrieve that voice note.");
+  const audioResponse = await fetchImpl(`https://api.telegram.org/file/bot${config.botToken}/${filePath}`, { signal: AbortSignal.timeout(30000) });
+  if (!audioResponse.ok) throw new Error("Could not download the Telegram voice note.");
+  const bytes = await audioResponse.arrayBuffer();
+  if (!bytes.byteLength || bytes.byteLength > 20 * 1024 * 1024) throw new Error("Voice note is empty or exceeds the 20 MB limit.");
+  const contentType = audioResponse.headers.get("content-type") || (filePath.endsWith(".ogg") ? "audio/ogg" : "audio/mpeg");
+  const providers = [
+    env.GROQ_API_KEY ? { name: "Groq", url: "https://api.groq.com/openai/v1/audio/transcriptions", key: env.GROQ_API_KEY, model: env.GROQ_STT_MODEL || "whisper-large-v3-turbo" } : null,
+    env.OPENAI_API_KEY ? { name: "OpenAI", url: "https://api.openai.com/v1/audio/transcriptions", key: env.OPENAI_API_KEY, model: env.OPENAI_STT_MODEL || "whisper-1" } : null,
+  ].filter(Boolean) as Array<{name:string;url:string;key:string;model:string}>;
+  if (!providers.length) throw new Error("Voice transcription is not configured. Add GROQ_API_KEY or OPENAI_API_KEY to the staging service.");
+  const errors: string[] = [];
+  for (const provider of providers) {
+    try {
+      const form = new FormData();
+      const extension = filePath.split(".").pop()?.toLowerCase() || "ogg";
+      form.append("file", new Blob([bytes], { type: contentType }), "telegram-voice." + extension);
+      form.append("model", provider.model);
+      form.append("response_format", "json");
+      const response = await fetchImpl(provider.url, {
+        method: "POST", headers: { Authorization: "Bearer " + provider.key }, body: form,
+        signal: AbortSignal.timeout(60000),
+      });
+      const payload: any = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(provider.name + " transcription HTTP " + response.status);
+      const transcript = String(payload?.text || "").trim();
+      if (!transcript) throw new Error(provider.name + " returned an empty transcript.");
+      return transcript.slice(0, 4000);
+    } catch (error: any) { errors.push(String(error?.message || error).slice(0, 160)); }
+  }
+  throw new Error("Voice transcription failed across configured providers: " + errors.join("; "));
 }
