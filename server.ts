@@ -617,6 +617,35 @@ async function runManagerNurtureBatch(): Promise<string> {
   return `Nurture task completed. I asked the ${actionType === "follow_up" ? "Closer" : "Writer"} to prepare drafts for ${selected.length} existing CRM leads. ${result.staged?.length || 0} draft(s) are now in the founder review queue; ${result.skipped?.length || 0} skipped. Nothing was sent. Open OS1's AI Review Queue to review and approve drafts.`;
 }
 
+
+async function handleTelegramReviewCallback(query: any): Promise<void> {
+  if (!telegramConfig) return;
+  const chatId = String(query?.message?.chat?.id || "");
+  if (chatId !== telegramConfig.allowedChatId) { await answerTelegramCallback(telegramConfig, String(query?.id || ""), "Not authorized."); return; }
+  const match = String(query?.data || "").match(/^(qa|qr):([0-9a-f-]{36}):(\\d{13})$/i);
+  if (!match) { await answerTelegramCallback(telegramConfig, String(query?.id || ""), "Invalid or expired action."); return; }
+  const action = match[1], id = match[2], version = Number(match[3]);
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query("SELECT * FROM agent_queue WHERE id=$1 FOR UPDATE", [id]);
+    const item = result.rows[0];
+    if (!item || item.status !== "pending_approval" || new Date(item.updated_at).getTime() !== version) { await client.query("ROLLBACK"); await answerTelegramCallback(telegramConfig, String(query.id), "Draft changed or already reviewed."); await sendTelegramMessage(telegramConfig, chatId, "This approval card is stale. Please request /review for the latest version."); return; }
+    if (!item.lead_id || !["outreach_dm","value_dm","follow_up"].includes(item.action_type)) { await client.query("ROLLBACK"); await answerTelegramCallback(telegramConfig, String(query.id), "Not a dispatchable message."); return; }
+    if (action === "qa") {
+      const dnc = await client.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1 FOR UPDATE", [item.lead_id]);
+      if (dnc.rows[0]?.do_not_contact) { await client.query("UPDATE agent_queue SET status='rejected', error_log='Blocked by Do Not Contact', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW() WHERE id=$1", [id]); await client.query("COMMIT"); await answerTelegramCallback(telegramConfig,String(query.id),"Blocked by DNC."); return; }
+      await client.query("UPDATE agent_queue SET status='approved', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log=NULL WHERE id=$1 AND status='pending_approval'", [id]);
+    } else { await client.query("UPDATE agent_queue SET status='rejected', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW() WHERE id=$1 AND status='pending_approval'", [id]); }
+    await client.query("INSERT INTO agent_audit_log (id,actor_id,action,queue_item_id,details) VALUES ($1,'telegram-founder',$2,$3,$4::jsonb)", [randomUUID(), action === "qa" ? "telegram_queue_approved" : "telegram_queue_rejected", id, JSON.stringify({version:version})]);
+    await client.query("COMMIT");
+    await answerTelegramCallback(telegramConfig, String(query.id), action === "qa" ? "Approved." : "Rejected.");
+    await sendTelegramMessage(telegramConfig, chatId, action === "qa" ? "Approved, Sir. The Dispatcher will send this exact draft and record the outcome." : "Rejected, Sir. This draft will not be sent.");
+    if (action === "qa") void dispatchApprovedQueue();
+  } catch (error:any) { await client.query("ROLLBACK").catch(()=>{}); await answerTelegramCallback(telegramConfig,String(query?.id||""),"Could not apply action."); await sendTelegramMessage(telegramConfig,chatId,"Review failed: "+String(error?.message||error).slice(0,200)); }
+  finally { client.release(); }
+}
+
 async function processManagerTelegramMessage(chatId: string, textValue: string): Promise<void> {
   if (!telegramConfig) return;
   const message = textValue.trim().slice(0,4000);
