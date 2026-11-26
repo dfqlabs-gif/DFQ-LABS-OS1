@@ -974,7 +974,7 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
     const reply = (text: string, markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }) =>
       managerTelegramReply(chatId, text, markup);
     if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
-      await reply("DFQLABS OS1 — Head of Business online.\n\nCommands:\n/report — daily business report\n/status — agent, CRM and knowledge status\n/queue — show pending DM approvals\n/nurture — prepare follow-up/value drafts for eligible existing leads\n/scout [city] — discover new prospects\n/linkedin [topic] — prepare a LinkedIn draft\n/cancel_edit — cancel a draft edit\n\nYou can send text or voice notes. I coordinate the specialist agents; you only speak with me. Approving a Telegram review card authorizes that exact message for WhatsApp dispatch. Nothing else is sent automatically.");
+      await reply("DFQLABS OS1 — Head of Business online.\n\nShortcuts (optional): /report, /status, /queue, /nurture, /scout [city], /linkedin [topic].\n\nYou can simply tell me what outcome you want in ordinary text or a voice note. I will interpret it, coordinate the relevant agents, execute permitted internal work and report the result. Routine factual inbound FAQs may be answered automatically only from enabled DFQLABS Knowledge Base sources. Sensitive, commercial or uncertain replies remain in your founder approval queue. Cold outreach still requires your approval.");
       return;
     }
     if (/^\/queue(?:@\w+)?$/i.test(message)) {
@@ -982,7 +982,7 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
       if (!count) await reply("There are no pending DM/follow-up drafts awaiting approval.");
       return;
     }
-    if (/^\/report(?:@\w+)?$/i.test(message)) {
+    if (/^\/report(?:@\w+)?$/i.test(message) || /\b(daily report|executive report|business report|how did we do today|today.?s performance|end.?of.?day report)\b/i.test(message)) {
       await reply(await buildManagerDailyReport(db));
       return;
     }
