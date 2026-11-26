@@ -1078,13 +1078,13 @@ let managerDailyReportBusy = false;
 async function maybeSendManagerDailyReport(): Promise<void> {
   if (!telegramConfig || managerDailyReportBusy) return;
   const local = lagosDateTimeParts();
-  if (Number(local.hour) < 7 || (Number(local.hour) === 7 && Number(local.minute) < 30)) return;
+  if (Number(local.hour) < 18) return;
   const scheduledDate = `${local.year}-${local.month}-${local.day}`;
   managerDailyReportBusy = true;
   try {
     const run = await db.query(`
       INSERT INTO agent_schedule_runs (id, job_name, scheduled_date, status)
-      VALUES ($1,'manager_daily_report',$2::date,'started')
+      VALUES ($1,'manager_evening_report',$2::date,'started')
       ON CONFLICT (job_name, scheduled_date) DO UPDATE
       SET status=CASE WHEN agent_schedule_runs.status='completed' THEN 'completed' ELSE 'started' END
       RETURNING id, status
