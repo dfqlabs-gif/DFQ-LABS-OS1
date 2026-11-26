@@ -47,3 +47,33 @@ test("Telegram voice transcription rejects oversized voice notes before network 
     /too large/i,
   );
 });
+
+
+test("Telegram OGG voice notes upload with normalized MIME type and useful Groq diagnostics", async () => {
+  const calls: Array<{ url: string; body?: BodyInit | null; headers?: HeadersInit }> = [];
+  const fetchMock: typeof fetch = async (input, init) => {
+    const url = String(input);
+    calls.push({ url, body: init?.body, headers: init?.headers });
+    if (url.includes("getFile")) {
+      return new Response(JSON.stringify({ ok: true, result: { file_path: "voice/file.oga" } }), { status: 200 });
+    }
+    if (url.includes("/file/bot")) {
+      return new Response(new Uint8Array([79, 103, 103, 83]), {
+        status: 200, headers: { "content-type": "application/octet-stream" },
+      });
+    }
+    return new Response(JSON.stringify({ error: { message: "Invalid file format" } }), { status: 400 });
+  };
+  await assert.rejects(
+    () => transcribeTelegramVoice(
+      { botToken: "x", webhookSecret: "y", allowedChatId: "1" },
+      "file-id", 4, { GROQ_API_KEY: "test-key" }, fetchMock,
+    ),
+    /Groq transcription HTTP 400: Invalid file format/i,
+  );
+  const form = calls[2].body as FormData;
+  const audio = form.get("file") as File;
+  assert.equal(audio.name, "telegram-voice.ogg");
+  assert.equal(audio.type, "audio/ogg");
+  assert.equal(form.get("model"), "whisper-large-v3-turbo");
+});
