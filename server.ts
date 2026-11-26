@@ -26,6 +26,7 @@ import { buildManagerDailyReport, buildManagerKnowledgeContext } from "./lib/man
 import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
 import { chooseOutboundMessageType, ensureProspectGreeting, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
+import { isRoutineInboundFaq } from "./lib/inboundPolicy";
 
 dotenv.config();
 
@@ -99,13 +100,6 @@ async function syncAgentDoNotContact(lead: Lead): Promise<void> {
   `, [lead.id, reason, source]);
   await db.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: lead is on the do-not-contact list', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [lead.id]);
   await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,'system:optout','inbound_dnc_applied',$2::jsonb)", [randomUUID(), JSON.stringify({ leadId: lead.id, reason, source })]);
-}
-
-function isRoutineInboundFaq(text: string): boolean {
-  const value = String(text || "").trim();
-  if (value.length < 8 || value.length > 700) return false;
-  if (/\b(price|pricing|cost|quote|quotation|discount|budget|proposal|contract|agreement|invoice|payment|refund|complaint|complain|angry|lawsuit|legal|negotiate|negotiation|book a call|schedule a meeting|appointment|urgent|stop|unsubscribe|remove me|not interested|cancel)\b/i.test(value)) return false;
-  return /\b(what do you do|what does dfq ?labs do|what services|your services|what is included|what's included|what does the audit cover|what is the audit|how does the audit work|how does it work|how long does (?:the )?(?:audit|process|project) take|where are you based|who are you|tell me about (?:your|dfq)|what can you help with)\b/i.test(value);
 }
 
 async function attemptRoutineInboundAutoReply(lead: Lead, inbound: WhatsAppInbound): Promise<boolean> {
