@@ -685,7 +685,7 @@ async function callInternalFounderRoute(route: string, body: Record<string, unkn
   return payload;
 }
 
-async function runManagerNurtureBatch(): Promise<string> {
+async function runManagerNurtureBatch(targetName?: string): Promise<string> {
   const [leads, controls, queued] = await Promise.all([
     db.query("SELECT id, data FROM leads"),
     db.query("SELECT lead_id FROM agent_contact_controls WHERE do_not_contact=TRUE"),
@@ -694,29 +694,42 @@ async function runManagerNurtureBatch(): Promise<string> {
   const blocked = new Set(controls.rows.map((row: any) => String(row.lead_id)));
   const activeQueue = new Set(queued.rows.map((row: any) => String(row.lead_id)));
   const now = Date.now();
-  const candidates = leads.rows.map((row: any) => row.data as Lead).filter((lead: Lead) => {
+  const allLeads = leads.rows.map((row: any) => row.data as Lead);
+  const matching = targetName ? allLeads.filter((lead: Lead) => [lead.name, (lead as any).contactName, (lead as any).decisionMaker, lead.company].filter(Boolean).join(" ").toLowerCase().includes(targetName.toLowerCase())) : allLeads;
+  if (targetName && matching.length !== 1) return matching.length
+    ? "I found " + matching.length + " possible CRM matches for “" + targetName + "”. No drafts were created; please identify the correct contact or company."
+    : "I couldn't find “" + targetName + "” in the CRM. No draft was created.";
+  const candidates = matching.filter((lead: Lead) => {
     if (!lead?.id || blocked.has(String(lead.id)) || activeQueue.has(String(lead.id))) return false;
     if (["Closed","Lost","Booked","Meeting Scheduled","Converted","Not Interested","DNC"].includes(lead.status) || lead.meetingScheduledAt) return false;
     const inbound = [lead.prospectInitialResponse, lead.prospectLatestResponse, ...(lead.conversationLog || []).filter((entry: any) => entry?.direction === "inbound" || entry?.type === "reply").map((entry: any) => entry.text || "")].join(" ");
-    if (containsExplicitOptOut([inbound])) return false;
-    // Replies need a contextual response workflow, not a generic nurture touch.
-    if (lead.prospectLatestResponse) return false;
+    if (containsExplicitOptOut([inbound]) || lead.prospectLatestResponse) return false;
     const thread = (lead.conversationLog || []).filter((entry: any) => entry?.type === "dm" || entry?.type === "reply").sort((a: any,b: any) => String(a.ts).localeCompare(String(b.ts)));
     if (thread.length && thread[thread.length - 1].direction === "inbound") return false;
     const lastTouch = lead.lastMeaningfulTouchpoint || lead.lastContacted || lead.dateAdded;
     const ageDays = lastTouch ? (now - new Date(lastTouch).getTime()) / 86400000 : 999;
     return Number.isFinite(ageDays) && ageDays >= 3 && Number(lead.followUpCount || 0) < 6;
-  }).sort((a: Lead, b: Lead) => {
-    const aTime = new Date(a.lastMeaningfulTouchpoint || a.lastContacted || a.dateAdded || 0).getTime();
-    const bTime = new Date(b.lastMeaningfulTouchpoint || b.lastContacted || b.dateAdded || 0).getTime();
-    return aTime - bTime;
-  }).slice(0,10);
-  if (!candidates.length) return "I checked the CRM. There are no eligible, unsuppressed leads currently due for a nurture draft.";
+  }).sort((a: Lead, b: Lead) => new Date(a.lastMeaningfulTouchpoint || a.lastContacted || a.dateAdded || 0).getTime() - new Date(b.lastMeaningfulTouchpoint || b.lastContacted || b.dateAdded || 0).getTime()).slice(0, targetName ? 1 : 10);
+  if (!candidates.length) return targetName
+    ? "I found the CRM record, but it is not eligible for a follow-up right now. It may have a recent reply, active draft, opt-out, closed stage or recent contact. No changes were made."
+    : "I checked the CRM. There are no eligible, unsuppressed leads currently due for a nurture draft.";
   const dueFollowUps = candidates.filter((lead: Lead) => !!lead.awaitingReplySince && !lead.prospectLatestResponse);
   const actionType = dueFollowUps.length ? "follow_up" : "value_dm";
-  const selected = (dueFollowUps.length ? dueFollowUps : candidates).slice(0,10);
-  const result = await callInternalFounderRoute("/api/agents/generate", { leadIds: selected.map((lead: Lead) => lead.id), actionType });
-  return `Nurture task completed. I asked the ${actionType === "follow_up" ? "Closer" : "Writer"} to prepare drafts for ${selected.length} existing CRM leads. ${result.staged?.length || 0} draft(s) are now in the founder review queue; ${result.skipped?.length || 0} skipped. Nothing was sent. I will surface the drafts here in Telegram for your review and approval.`;
+  const staged: any[] = [], skipped: string[] = [];
+  // Isolate each prospect's model work so one slow request cannot abort the full batch.
+  for (const lead of candidates) {
+    try {
+      const result = await callInternalFounderRoute("/api/agents/generate", { leadIds: [lead.id], actionType });
+      staged.push(...(result.staged || []));
+      skipped.push(...(result.skipped || []));
+    } catch (error: any) {
+      skipped.push((lead.company || lead.name || lead.id) + ": timed out or failed; no outbound message was sent (" + String(error?.message || "unknown error").slice(0,120) + ")");
+    }
+  }
+  return "Nurture task finished. " + (targetName ? "Contact: " + targetName + ". " : "") +
+    "Eligible records checked: " + candidates.length + ". Drafts staged: " + staged.length + ". Not completed/skipped: " + skipped.length +
+    (skipped.length ? "\n\nDetails:\n• " + skipped.join("\n• ") : "") +
+    "\n\nNothing was sent. Any generated draft remains in the founder approval queue.";
 }
 
 
@@ -990,9 +1003,14 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
       await reply("I’m online and coordinating the DFQLABS OS1 operation. I can review pipeline health, delegate prospect discovery, prepare nurture drafts and surface opportunities. What would you like me to prioritize?");
       return;
     }
-    if (/^\/nurture(?:@\w+)?$/i.test(message) || /\b(nurture|follow.?up)\b/i.test(message)) {
-      await reply("Understood. I’m checking the existing CRM, opt-out controls and recent queue before delegating a nurture batch.");
-      await reply(await runManagerNurtureBatch());
+    if (/^\\/nurture(?:@\\w+)?$/i.test(message) || /\\b(nurture|follow.?up)\\b/i.test(message)) {
+      const target = message.match(/\\bsend\\s+(.+?)\\s+(?:a\\s+)?follow.?up\\b/i)?.[1]?.trim()
+        || message.match(/\\bfollow.?up\\s+(?:with|for)\\s+(.+)$/i)?.[1]?.trim()
+        || message.match(/\\bnurture\\s+(.+)$/i)?.[1]?.trim();
+      await reply(target
+        ? "Understood. I’m locating " + target + " in the CRM and checking contact history, eligibility and opt-out controls. I’ll prepare a draft for your approval."
+        : "Understood. I’m checking the CRM, opt-out controls and recent queue before preparing eligible nurture drafts.");
+      await reply(await runManagerNurtureBatch(target));
       await sendTelegramPendingApprovals(chatId, 8);
       return;
     }
