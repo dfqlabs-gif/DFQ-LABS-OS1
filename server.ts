@@ -101,6 +101,97 @@ async function syncAgentDoNotContact(lead: Lead): Promise<void> {
   await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,'system:optout','inbound_dnc_applied',$2::jsonb)", [randomUUID(), JSON.stringify({ leadId: lead.id, reason, source })]);
 }
 
+function isRoutineInboundFaq(text: string): boolean {
+  const value = String(text || "").trim();
+  if (value.length < 8 || value.length > 700) return false;
+  if (/\b(price|pricing|cost|quote|quotation|discount|budget|proposal|contract|agreement|invoice|payment|refund|complaint|complain|angry|lawsuit|legal|negotiate|negotiation|book a call|schedule a meeting|appointment|urgent|stop|unsubscribe|remove me|not interested|cancel)\b/i.test(value)) return false;
+  return /\b(what do you do|what does dfq ?labs do|what services|your services|what is included|what's included|what does the audit cover|what is the audit|how does the audit work|how does it work|how long does (?:the )?(?:audit|process|project) take|where are you based|who are you|tell me about (?:your|dfq)|what can you help with)\b/i.test(value);
+}
+
+async function attemptRoutineInboundAutoReply(lead: Lead, inbound: WhatsAppInbound): Promise<boolean> {
+  const configResult = await db.query("SELECT inbound_auto_reply_enabled FROM agent_config WHERE id=1");
+  if (!configResult.rows[0]?.inbound_auto_reply_enabled || !isRoutineInboundFaq(inbound.text)) return false;
+  const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [lead.id]);
+  if (contactControl.rows[0]?.do_not_contact) return false;
+  const knowledge = await db.query("SELECT data FROM knowledge_sources ORDER BY created_at DESC");
+  const sources = knowledge.rows.map((row: any) => row.data || {}).filter((data: any) =>
+    data.enabled !== false && data.status !== "disabled" &&
+    String(data.content || data.extractedText || data.text || "").trim().length >= 40
+  ).slice(0, 12);
+  if (!sources.length) return false;
+  const knowledgeContext = sources.map((data: any) =>
+    "[" + String(data.category || "Knowledge") + "] " + String(data.title || data.name || "Untitled") + ": " +
+    String(data.content || data.extractedText || data.text).slice(0, 1400)
+  ).join("\n\n");
+  const brain = await runSalesBrainWithGenerator(
+    lead,
+    {
+      requestedMessageType: "RESPONSE_DM" as any,
+      task: "A prospect has asked a routine factual question: " + inbound.text +
+        ". Answer only using the approved DFQLABS Knowledge Base excerpts below. Do not invent facts or use general model knowledge. " +
+        "If the exact answer is not supported, reply with exactly ESCALATE. Do not discuss pricing, discounts, proposals, contracts, guarantees, or make commitments. " +
+        "Keep a courteous, direct 1-3 sentence WhatsApp answer. Approved Knowledge Base:\n" + knowledgeContext,
+    },
+    (prompt, maxTokens) => callGemini(
+      "You are DFQLABS' customer-response specialist. Treat the supplied Knowledge Base as the sole source of business facts. If the answer is not explicitly supported, output ESCALATE and nothing else.",
+      prompt, GEMINI_MODEL, maxTokens
+    ),
+  );
+  const draft = String(brain.message || "").trim();
+  if (!draft || /^ESCALATE[.! ]*$/i.test(draft) || /\b(price|pricing|cost|quote|discount|proposal|contract|guarantee|guaranteed)\b/i.test(draft)) return false;
+
+  const client = await db.connect();
+  const queueId = randomUUID();
+  let outboundId = "";
+  try {
+    await client.query("BEGIN");
+    const current = await client.query("SELECT data FROM leads WHERE id=$1 FOR UPDATE", [lead.id]);
+    if (!current.rows[0]?.data) throw new Error("Lead disappeared before routine reply.");
+    const latest = current.rows[0].data as Lead;
+    const duplicate = await client.query("SELECT id FROM agent_queue WHERE idempotency_key=$1", ["whatsapp-response:" + inbound.messageId]);
+    if (duplicate.rowCount) { await client.query("ROLLBACK"); return true; }
+    const suppression = await client.query("SELECT reason FROM agent_phone_suppressions WHERE phone=$1 FOR UPDATE", [inbound.phone]);
+    if (suppression.rowCount) { await client.query("ROLLBACK"); return false; }
+    const outbound = newOutboundMessage({
+      leadId: latest.id,
+      userId: "DFQLABS Harry — approved FAQ policy",
+      messageType: "RESPONSE_DM" as any,
+      messageText: draft,
+      source: "inbound_faq_autopilot",
+      strategy: "Routine inbound FAQ answered exclusively from enabled DFQLABS Knowledge Base sources.",
+    });
+    outboundId = outbound.id;
+    const withOutbound: Lead = { ...latest, outboundMessages: [...(latest.outboundMessages || []), outbound] };
+    await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(withOutbound), latest.id]);
+    await client.query(
+      "INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key, status) VALUES ($1,$2,'inbox_sync','follow_up',$3,$4::jsonb,$5,$6,'sending')",
+      [queueId, latest.id, draft, JSON.stringify({ messageType: "RESPONSE_DM", inboundMessageId: inbound.messageId, channel: "whatsapp_web", autonomous: true, outboundId }), "Routine inbound FAQ; response grounded in enabled DFQLABS Knowledge Base sources.", "whatsapp-response:" + inbound.messageId]
+    );
+    const phone = normalizePhone(getWhatsAppNumber(latest));
+    if (!phone.valid) throw new Error(phone.error || "Lead has no valid WhatsApp number.");
+    const delivery = await whatsappBridge.sendText(phone.international, draft);
+    const sentAt = new Date().toISOString();
+    const committed = commitOutboundSent(withOutbound, outbound.id, sentAt);
+    await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(committed), latest.id]);
+    await client.query("UPDATE agent_queue SET status='sent', external_message_id=$1, sent_at=$2::timestamptz, updated_at=NOW() WHERE id=$3", [delivery.messageId, sentAt, queueId]);
+    await client.query(
+      "INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'system:inbox_autopilot','routine_faq_auto_reply_sent',$2,$3::jsonb)",
+      [randomUUID(), queueId, JSON.stringify({ leadId: latest.id, inboundMessageId: inbound.messageId, externalMessageId: delivery.messageId, outboundId })]
+    );
+    await client.query("COMMIT");
+    void syncLearningForLead(committed).catch(error => console.error("Inbound FAQ learning sync failed:", String(error?.message || error).slice(0,180)));
+    return true;
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    await db.query(
+      "INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key, status, error_log) VALUES ($1,$2,'inbox_sync','follow_up',$3,$4::jsonb,$5,$6,'failed',$7) ON CONFLICT (idempotency_key) DO UPDATE SET status='failed', error_log=EXCLUDED.error_log, updated_at=NOW()",
+      [queueId, lead.id, "", JSON.stringify({ messageType: "RESPONSE_DM", inboundMessageId: inbound.messageId, autonomous: true }), "Routine FAQ auto-reply failed; no automatic retry is permitted.", "whatsapp-response:" + inbound.messageId, String(error?.message || error).slice(0,300)]
+    ).catch(() => {});
+    console.error("Routine inbound auto-reply failed; escalated for founder review:", String(error?.message || error).slice(0,200));
+    return false;
+  } finally { client.release(); }
+}
+
 async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   const allLeads = await db.query("SELECT id, data FROM leads");
   const matched = allLeads.rows.find((row: any) => {
@@ -186,22 +277,21 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
       },
       (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
     );
-    const draft = String(brain.message || "").trim();
-    if (!draft) throw new Error("Sales Brain returned an empty inbound response draft.");
-    await db.query(`
-      INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
-      VALUES ($1,$2,'inbox_sync','follow_up',$3,$4::jsonb,$5,$6)
-      ON CONFLICT (idempotency_key) DO NOTHING
-    `, [
-      randomUUID(), updatedLead.id, draft,
-      JSON.stringify({ messageType: "RESPONSE_DM", inboundMessageId: message.messageId, channel: "whatsapp_web" }),
-      String(brain.reasoningSummary || brain.recommendedAction || "Generated from the latest inbound reply and full CRM conversation.").slice(0,5000),
-      `whatsapp-response:${message.messageId}`,
-    ]);
-    if (telegramConfig) await sendTelegramPendingApprovals(telegramConfig.allowedChatId, 8);
+    const autoReplied = await attemptRoutineInboundAutoReply(updatedLead, message);
+    if (!autoReplied) {
+      const draft = String(brain.message || "").trim();
+      if (!draft) throw new Error("Sales Brain returned an empty inbound response draft.");
+      await db.query("INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key) VALUES ($1,$2,'inbox_sync','follow_up',$3,$4::jsonb,$5,$6) ON CONFLICT (idempotency_key) DO NOTHING", [
+        randomUUID(), updatedLead.id, draft,
+        JSON.stringify({ messageType: "RESPONSE_DM", inboundMessageId: message.messageId, channel: "whatsapp_web", founderApprovalRequired: true }),
+        String(brain.reasoningSummary || brain.recommendedAction || "Generated from the latest inbound reply and full CRM conversation.").slice(0,5000),
+        "whatsapp-response:" + message.messageId,
+      ]);
+      if (telegramConfig) await sendTelegramPendingApprovals(telegramConfig.allowedChatId, 8);
+    }
     await db.query(
       "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'inbox_sync','success',$2,1,0,$3::jsonb)",
-      [randomUUID(), "Logged inbound WhatsApp reply and staged a contextual response.", JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
+      [randomUUID(), autoReplied ? "Automatically answered a routine inbound FAQ using enabled DFQLABS Knowledge Base sources and recorded the sent message on the CRM lead." : "Logged inbound reply and staged a contextual response for founder approval.", JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId, autoReplied })]
     );
   } catch (error: any) {
     const prior = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='inbox_sync' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
