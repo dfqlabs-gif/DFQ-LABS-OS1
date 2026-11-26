@@ -45,8 +45,9 @@ test("prospect greeting is respectful, personalized and Lagos-time aware", () =>
 
 test("greeting enforcement corrects missing addressees and duplicate company openings", () => {
   const now = new Date("2026-11-26T13:00:00+01:00");
-  assert.equal(ensureProspectGreeting({ name: "", company: "Abode" }, "Abode, here is the breakdown I mentioned.", now), "Good afternoon, Team Abode. here is the breakdown I mentioned.");
+  assert.equal(ensureProspectGreeting({ name: "", company: "Abode" }, "Abode, here is the breakdown I mentioned.", now), "Good afternoon, Team Abode. Here is the breakdown I mentioned.");
   assert.equal(ensureProspectGreeting({ name: "", company: "Abode" }, "Hi, I noticed an opportunity in your content.", now), "Good afternoon, Team Abode. I noticed an opportunity in your content.");
+  assert.equal(ensureProspectGreeting({ name: "", company: "Abode" }, "Hi Abode, here is the breakdown.", now), "Good afternoon, Team Abode. Here is the breakdown.");
   assert.equal(ensureProspectGreeting({ name: "Ifeanyi", company: "Abode" }, "Good morning, Ifeanyi. I have completed the review.", now), "Good afternoon, Ifeanyi. I have completed the review.");
 });
 
