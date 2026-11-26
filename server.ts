@@ -1947,6 +1947,7 @@ async function dispatchApprovedQueue(): Promise<void> {
   let locked = false;
   let claimedItem: any = null;
   let sentSuccessfully = false;
+  let shouldDrainQueue = false;
   try {
     client = await db.connect();
     const lock = await client.query("SELECT pg_try_advisory_lock(hashtext($1)) AS locked", ["dfqlabs-os1-approved-dispatcher"]);
@@ -1974,6 +1975,7 @@ async function dispatchApprovedQueue(): Promise<void> {
     if (!lead) {
       await client.query("UPDATE agent_queue SET status='failed', error_log='Lead not found at dispatch time.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
       await client.query("COMMIT");
+      shouldDrainQueue = true;
       return;
     }
 
@@ -1981,6 +1983,7 @@ async function dispatchApprovedQueue(): Promise<void> {
     if (control.rows[0]?.do_not_contact) {
       await client.query("UPDATE agent_queue SET status='rejected', error_log='Blocked at dispatch: do-not-contact flag is active.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
       await client.query("COMMIT");
+      shouldDrainQueue = true;
       return;
     }
 
@@ -2008,12 +2011,14 @@ async function dispatchApprovedQueue(): Promise<void> {
     if (!phone.valid) {
       await client.query("UPDATE agent_queue SET status='failed', error_log=$1, updated_at=NOW() WHERE id=$2", [phone.error || "Lead has no valid WhatsApp number.", claimedItem.id]);
       await client.query("COMMIT");
+      shouldDrainQueue = true;
       return;
     }
     const phoneSuppression = await client.query("SELECT reason FROM agent_phone_suppressions WHERE phone=$1 FOR UPDATE", [phone.digits]);
     if (phoneSuppression.rows[0]) {
       await client.query("UPDATE agent_queue SET status='rejected', error_log='Blocked at dispatch: phone-level opt-out suppression is active.', updated_at=NOW() WHERE id=$1", [claimedItem.id]);
       await client.query("COMMIT");
+      shouldDrainQueue = true;
       return;
     }
 
@@ -2074,7 +2079,7 @@ async function dispatchApprovedQueue(): Promise<void> {
       client.release();
     }
     dispatcherBusy = false;
-    if (sentSuccessfully) {
+    if (sentSuccessfully || shouldDrainQueue) {
       const timer = setTimeout(() => { void dispatchApprovedQueue(); }, 1800);
       timer.unref?.();
     }
