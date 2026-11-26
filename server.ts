@@ -678,8 +678,9 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
   if (!telegramConfig) return;
   const chatId = callback?.message?.chat?.id === undefined ? "" : String(callback.message.chat.id);
   const callbackId = String(callback?.id || "");
-  if (!chatId || chatId !== telegramConfig.allowedChatId || !callbackId) return;
-  const match = String(callback?.data || "").match(/^q\|(a|e|r)\|([0-9a-f-]{36})\|([a-f0-9]{10})$/i);
+  const senderId = callback?.from?.id === undefined ? "" : String(callback.from.id);
+  if (!chatId || chatId !== telegramConfig.allowedChatId || !callbackId || (senderId && senderId !== telegramConfig.allowedChatId)) return;
+  const match = String(callback?.data || "").match(/^q\|(a|e|r)\|([0-9a-f-]{36})\|([a-f0-9]{16})$/i);
   if (!match) {
     await answerTelegramCallback(telegramConfig, callbackId, "This action is invalid or expired.").catch(() => {});
     return;
