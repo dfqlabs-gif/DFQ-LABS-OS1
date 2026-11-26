@@ -30,7 +30,7 @@ export async function sendTelegramMessage(
   fetchImpl: typeof fetch = fetch,
   replyMarkup?: { inline_keyboard: TelegramInlineButton[][] },
 ): Promise<void> {
-  const chunks = text.match(/[\\s\\S]{1,3900}/g) || [" "];
+  const chunks = text.match(/[\s\S]{1,3900}/g) || [" "];
   for (let index = 0; index < chunks.length; index++) {
     const response = await fetchImpl(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
       method: "POST",
