@@ -25,6 +25,7 @@ import { answerTelegramCallback, getTelegramConfig, registerTelegramWebhook, sen
 import { buildManagerDailyReport, buildManagerKnowledgeContext } from "./lib/manager";
 import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
+import { chooseOutboundMessageType, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
 
 dotenv.config();
 
@@ -1730,12 +1731,35 @@ app.post("/api/agents/generate", async (req, res) => {
     const priorAgentLog = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name=$1 ORDER BY created_at DESC LIMIT 1", [agentName]);
     if (priorAgentLog.rows[0]?.status === "halted_circuit_breaker") return res.status(423).json({ error: agentName[0].toUpperCase() + agentName.slice(1) + " circuit breaker is active. A founder must reset it before more drafts can be generated." });
     let consecutiveFailures = priorAgentLog.rows[0]?.status === "error" ? Number(priorAgentLog.rows[0].consecutive_failures || 0) : 0;
+    const lagosStart = await db.query("SELECT (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos') AS start_at");
+    const sameDayQueueResult = await db.query(`
+      SELECT q.lead_id, COALESCE(l.data->>'company','') AS company,
+        COALESCE(l.data->>'phone', l.data->>'whatsapp','') AS phone
+      FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id
+      WHERE q.action_type IN ('outreach_dm','value_dm','follow_up')
+        AND q.status IN ('pending_approval','approved','sending','sent')
+        AND (q.created_at >= $1 OR q.sent_at >= $1)
+    `, [lagosStart.rows[0]?.start_at]);
+    const sameDayQueue = sameDayQueueResult.rows.map((row: any) => ({
+      leadId: String(row.lead_id || ""), company: String(row.company || ""), phone: String(row.phone || ""),
+    }));
     for (const leadId of uniqueIds) {
       try {
         const stored = await getAuthoritativeLead(leadId);
         if (!stored) { skipped.push(leadId + ": lead not found"); continue; }
         if (["Closed", "Lost"].includes(stored.status)) { skipped.push((stored.company || stored.name || leadId) + ": closed/lost"); continue; }
         const lead = await enrichLeadAttachments(stored);
+        const previousTouch = latestOutboundTouch(lead);
+        if (previousTouch && isSameLagosDay(previousTouch.at)) {
+          skipped.push((lead.company || lead.name || leadId) + ": already contacted today; duplicate outreach suppressed");
+          continue;
+        }
+        if (hasSameDayContactIdentity(lead, sameDayQueue)) {
+          skipped.push((lead.company || lead.name || leadId) + ": this company/contact already has an outreach draft or send today; duplicate suppressed");
+          continue;
+        }
+        const effectiveMessageType = chooseOutboundMessageType(lead, actionMap[actionType]);
+
         const inboundTexts = [
           lead.prospectInitialResponse || "",
           lead.prospectLatestResponse || "",
@@ -1760,7 +1784,7 @@ app.post("/api/agents/generate", async (req, res) => {
         const brain = await runSalesBrainWithGenerator(
           lead,
           {
-            requestedMessageType: actionMap[actionType] as any,
+            requestedMessageType: effectiveMessageType as any,
             task: `DFQ Labs agent configuration — brand voice: ${config.brand_voice}. Buyer psychology pillars: ${(config.buyer_psychology_pillars || []).join("; ")}. Stay grounded in the verified CRM facts and full conversation history. Do not invent observations, projects, budgets or outcomes.`,
           },
           (prompt, maxTokens) => callGemini(SYSTEM_PROMPT, prompt, GEMINI_MODEL, maxTokens),
@@ -1776,7 +1800,7 @@ app.post("/api/agents/generate", async (req, res) => {
           RETURNING *
         `, [
           id, leadId, actionType, draft,
-          JSON.stringify({ company: lead.company, contact_name: lead.name, message_type: actionMap[actionType], model: GEMINI_MODEL }),
+          JSON.stringify({ company: lead.company, contact_name: lead.name, message_type: effectiveMessageType, model: GEMINI_MODEL, chronologyAware: true }),
           String(brain.reasoningSummary || brain.recommendedAction || "Generated from the authoritative CRM record and conversation history.").slice(0,5000),
           idempotencyKey, agentName
         ]);
