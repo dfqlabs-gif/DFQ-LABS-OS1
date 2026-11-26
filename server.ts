@@ -657,12 +657,12 @@ function telegramDraftHash(content: string): string {
 
 async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
   if (!telegramConfig) return 0;
-  const result = await db.query("SELECT q.id, q.action_type, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(10, limit))]);
+  const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(10, limit))]);
   let greeting = result.rows.length ? await claimTelegramGreeting(chatId) : "";
   for (const row of result.rows) {
     const hash = telegramDraftHash(String(row.draft_content || ""));
     const recipient = [row.lead_name, row.lead_company].filter(Boolean).join(" · ") || "Unassigned prospect";
-    const type = String(row.action_type || "").replace(/_/g, " ").toUpperCase();
+    const type = String(row.metadata?.messageType || row.action_type || "").replace(/_/g, " ").toUpperCase();
     const phone = row.lead_phone ? "\nWhatsApp: " + row.lead_phone : "";
     const body = ["DFQLABS OS1 — FOUNDER REVIEW", type + " · " + recipient + phone, "", String(row.draft_content || "").slice(0, 2800), "", row.reasoning ? "WHY THIS MESSAGE: " + String(row.reasoning).slice(0, 700) : "", "", "Approve to authorize this exact draft for WhatsApp dispatch. Editing invalidates this approval version.", "Queue ID: " + row.id].filter(Boolean).join("\n");
     await sendTelegramMessage(telegramConfig, chatId, greeting + body, fetch, { inline_keyboard: [[
@@ -1807,7 +1807,7 @@ app.post("/api/agents/generate", async (req, res) => {
           RETURNING *
         `, [
           id, leadId, actionType, draft,
-          JSON.stringify({ company: lead.company, contact_name: lead.name, message_type: effectiveMessageType, model: GEMINI_MODEL, chronologyAware: true }),
+          JSON.stringify({ company: lead.company, contact_name: lead.name, messageType: effectiveMessageType, message_type: effectiveMessageType, model: GEMINI_MODEL, chronologyAware: true }),
           String(brain.reasoningSummary || brain.recommendedAction || "Generated from the authoritative CRM record and conversation history.").slice(0,5000),
           idempotencyKey, agentName
         ]);
