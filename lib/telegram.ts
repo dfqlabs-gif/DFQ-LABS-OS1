@@ -92,7 +92,21 @@ export async function transcribeTelegramVoice(config: TelegramConfig, fileId: st
   if (!audioResponse.ok) throw new Error("Could not download the Telegram voice note.");
   const bytes = await audioResponse.arrayBuffer();
   if (!bytes.byteLength || bytes.byteLength > 20 * 1024 * 1024) throw new Error("Voice note is empty or exceeds the 20 MB limit.");
-  const contentType = audioResponse.headers.get("content-type") || (filePath.endsWith(".ogg") ? "audio/ogg" : "audio/mpeg");
+  const rawContentType = (audioResponse.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  const rawExtension = filePath.split(".").pop()?.toLowerCase() || "oga";
+  // Telegram voice notes are commonly OGG/Opus and may be named .oga or served
+  // with application/octet-stream. Normalize these to Groq's supported .ogg upload.
+  const extension = rawExtension === "oga" ? "ogg" : rawExtension;
+  const mimeByExtension: Record<string, string> = {
+    ogg: "audio/ogg", opus: "audio/ogg", mp3: "audio/mpeg", mpeg: "audio/mpeg",
+    mpga: "audio/mpeg", m4a: "audio/mp4", mp4: "audio/mp4", wav: "audio/wav",
+    webm: "audio/webm", flac: "audio/flac",
+  };
+  const contentType = (!rawContentType || rawContentType === "application/octet-stream" || rawContentType === "binary/octet-stream")
+    ? (mimeByExtension[extension] || "audio/ogg")
+    : rawContentType;
+  const uploadExtension = mimeByExtension[extension] ? extension : "ogg";
+  const uploadMime = mimeByExtension[uploadExtension];
   const providers = [
     env.GROQ_API_KEY ? { name: "Groq", url: "https://api.groq.com/openai/v1/audio/transcriptions", key: env.GROQ_API_KEY, model: env.GROQ_STT_MODEL || "whisper-large-v3-turbo" } : null,
     env.OPENAI_API_KEY ? { name: "OpenAI", url: "https://api.openai.com/v1/audio/transcriptions", key: env.OPENAI_API_KEY, model: env.OPENAI_STT_MODEL || "whisper-1" } : null,
@@ -102,16 +116,20 @@ export async function transcribeTelegramVoice(config: TelegramConfig, fileId: st
   for (const provider of providers) {
     try {
       const form = new FormData();
-      const extension = filePath.split(".").pop()?.toLowerCase() || "ogg";
-      form.append("file", new Blob([bytes], { type: contentType }), "telegram-voice." + extension);
+      form.append("file", new Blob([bytes], { type: uploadMime || contentType }), "telegram-voice." + uploadExtension);
       form.append("model", provider.model);
       form.append("response_format", "json");
       const response = await fetchImpl(provider.url, {
         method: "POST", headers: { Authorization: "Bearer " + provider.key }, body: form,
         signal: AbortSignal.timeout(60000),
       });
-      const payload: any = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(provider.name + " transcription HTTP " + response.status);
+      const responseBody = await response.text();
+      let payload: any = {};
+      try { payload = responseBody ? JSON.parse(responseBody) : {}; } catch { /* provider may return plain text */ }
+      if (!response.ok) {
+        const detail = String(payload?.error?.message || payload?.message || response.statusText || "request rejected").slice(0, 180);
+        throw new Error(provider.name + " transcription HTTP " + response.status + (detail ? ": " + detail : ""));
+      }
       const transcript = String(payload?.text || "").trim();
       if (!transcript) throw new Error(provider.name + " returned an empty transcript.");
       return transcript.slice(0, 4000);
