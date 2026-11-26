@@ -662,7 +662,8 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
   if (!telegramConfig) return;
   const message = textValue.trim().slice(0,4000);
   try {
-    if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
+ 
+    if (/^\/review(?:@\w+)?$/i.test(message)) { const count = await sendTelegramReviewCards(chatId,10); await sendTelegramMessage(telegramConfig,chatId,count ? "Pending message drafts are shown below. Approve or reject each one." : "There are no pending WhatsApp drafts."); return; }   if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
       await sendTelegramMessage(telegramConfig, chatId,
         "DFQLABS OS1 — Head of Business online.\n\nCommands:\n/report — daily business report\n/status — agent, CRM and knowledge status\n/nurture — prepare follow-up/value drafts for eligible existing leads\n/scout [city] — discover new prospects\n/linkedin [topic] — prepare a LinkedIn draft\n\nYou can also send a normal instruction. I coordinate the specialist agents; you only speak with me. All outbound messages remain subject to founder approval.");
       return;
@@ -718,11 +719,30 @@ app.post("/api/telegram/webhook", async (req, res) => {
   if (!verifyTelegramWebhookSecret(typeof secret === "string" ? secret : undefined, telegramConfig.webhookSecret)) {
     return res.status(401).json({ error: "Invalid Telegram webhook secret." });
   }
+  const callback = req.body?.callback_query;
+  if (callback) {
+    if (String(callback?.message?.chat?.id || "") !== telegramConfig.allowedChatId) return res.status(200).json({ok:true,ignored:true});
+    res.status(200).json({ok:true});
+    setImmediate(() => { void handleTelegramReviewCallback(callback); });
+    return;
+  }
   const message = req.body?.message;
   const chatId = message?.chat?.id === undefined ? "" : String(message.chat.id);
+  if (!chatId || chatId !== telegramConfig.allowedChatId) return res.status(200).json({ok:true,ignored:true});
+  res.status(200).json({ok:true});
+  const voice = message?.voice || message?.audio;
+  if (voice?.file_id) {
+    setImmediate(async () => {
+      try {
+        const transcript = await transcribeTelegramVoice(telegramConfig, String(voice.file_id), Number(voice.file_size || 0));
+        await sendTelegramMessage(telegramConfig, chatId, "Voice note transcribed: " + transcript);
+        await processManagerTelegramMessage(chatId, transcript);
+      } catch (error:any) { await sendTelegramMessage(telegramConfig, chatId, "Voice note could not be processed: " + String(error?.message || error).slice(0,250)); }
+    });
+    return;
+  }
   const textValue = typeof message?.text === "string" ? message.text : "";
-  if (!chatId || chatId !== telegramConfig.allowedChatId || !textValue) return res.status(200).json({ ok: true, ignored: true });
-  res.status(200).json({ ok: true });
+  if (!textValue) return;
   setImmediate(() => { void processManagerTelegramMessage(chatId, textValue); });
 });
 
