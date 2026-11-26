@@ -715,7 +715,7 @@ async function runManagerNurtureBatch(targetName?: string): Promise<string> {
     : "I checked the CRM. There are no eligible, unsuppressed leads currently due for a nurture draft.";
   const dueFollowUps = candidates.filter((lead: Lead) => !!lead.awaitingReplySince && !lead.prospectLatestResponse);
   const selected = dueFollowUps.length ? dueFollowUps : candidates;
-  const actionType = dueFollowUps.length ? "follow_up" : "value_dm";
+  const actionType = targetName || dueFollowUps.length ? "follow_up" : "value_dm";
   const staged: any[] = [], skipped: string[] = [];
   // Isolate each prospect's model work so one slow request cannot abort the full batch.
   for (const lead of selected) {
@@ -724,7 +724,16 @@ async function runManagerNurtureBatch(targetName?: string): Promise<string> {
       staged.push(...(result.staged || []));
       skipped.push(...(result.skipped || []));
     } catch (error: any) {
-      skipped.push((lead.company || lead.name || lead.id) + ": timed out or failed; no outbound message was sent (" + String(error?.message || "unknown error").slice(0,120) + ")");
+      // A client-side timeout does not cancel the Express handler. Reconcile the
+      // deterministic daily idempotency key before reporting the outcome.
+      const key = "agent-draft:" + lead.id + ":" + actionType + ":" + new Date().toISOString().slice(0,10);
+      const existing = await db.query("SELECT id, draft_content, status FROM agent_queue WHERE idempotency_key=$1 LIMIT 1", [key]).catch(() => ({ rows: [] as any[] }));
+      if (existing.rows[0]) {
+        staged.push(existing.rows[0]);
+        skipped.push((lead.company || lead.name || lead.id) + ": response timed out, but the draft was found in the review queue and reconciled.");
+      } else {
+        skipped.push((lead.company || lead.name || lead.id) + ": request timed out; no draft was found at reconciliation time. Check the review queue before retrying (" + String(error?.message || "unknown error").slice(0,100) + ")");
+      }
     }
   }
   return "Nurture task finished. " + (targetName ? "Contact: " + targetName + ". " : "") +
