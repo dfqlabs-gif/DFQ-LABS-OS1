@@ -648,7 +648,7 @@ async function handleTelegramReviewCallback(query: any): Promise<void> {
   if (!telegramConfig) return;
   const chatId = String(query?.message?.chat?.id || "");
   if (chatId !== telegramConfig.allowedChatId) { await answerTelegramCallback(telegramConfig, String(query?.id || ""), "Not authorized."); return; }
-  const match = String(query?.data || "").match(/^(qa|qr):([0-9a-f-]{36}):(\\d{13})$/i);
+  const match = String(query?.data || "").match(/^(qa|qr):([0-9a-f-]{36}):(\d{13})$/i);
   if (!match) { await answerTelegramCallback(telegramConfig, String(query?.id || ""), "Invalid or expired action."); return; }
   const action = match[1], id = match[2], version = Number(match[3]);
   const client = await db.connect();
