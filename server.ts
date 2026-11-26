@@ -639,7 +639,7 @@ async function sendTelegramReviewCards(chatId: string, limit = 10): Promise<numb
   for (const item of result.rows) {
     const version = new Date(item.updated_at).getTime();
     const text = "DFQLABS MESSAGE REVIEW\\nProspect: "+(item.company||item.lead_name||"Unknown")+"\\nType: "+item.action_type+"\\nWhatsApp: "+(item.phone||"Not recorded")+"\\n\\nEXACT DRAFT\\n"+String(item.draft_content||"").slice(0,2500)+"\\n\\nTo edit: /edit "+item.id+" [complete revised message]. Editing invalidates this approval; approve the new version again.";
-    await sendTelegramMessage(telegramConfig,chatId,text,fetch,{inline_keyboard:[[{text:"Approve & Send",callback_data:"qa:"+item.id+":"+version},{text:"Reject",callback_data:"qr:"+item.id+":"+version}]]});
+    await sendTelegramMessage(telegramConfig,chatId,text,fetch,{inline_keyboard:[[{text:"Approve & Send",callback_data:"qa:"+item.id+":"+version},{text:"Reject",callback_data:"qr:"+item.id+":"+version},{text:"Edit",callback_data:"qe:"+item.id+":"+version}]]});
   }
   return result.rowCount||0;
 }
@@ -657,6 +657,7 @@ async function handleTelegramReviewCallback(query: any): Promise<void> {
     const result = await client.query("SELECT * FROM agent_queue WHERE id=$1 FOR UPDATE", [id]);
     const item = result.rows[0];
     if (!item || item.status !== "pending_approval" || new Date(item.updated_at).getTime() !== version) { await client.query("ROLLBACK"); await answerTelegramCallback(telegramConfig, String(query.id), "Draft changed or already reviewed."); await sendTelegramMessage(telegramConfig, chatId, "This approval card is stale. Please request /review for the latest version."); return; }
+    if (action === "qe") { await client.query("ROLLBACK"); await answerTelegramCallback(telegramConfig,String(query.id),"Use /edit to send the revised message."); await sendManagerReply(chatId,"Send /edit " + id + " followed by your complete revised message. The edited version will need fresh approval."); return; }
     if (!item.lead_id || !["outreach_dm","value_dm","follow_up"].includes(item.action_type)) { await client.query("ROLLBACK"); await answerTelegramCallback(telegramConfig, String(query.id), "Not a dispatchable message."); return; }
     if (action === "qa") {
       const dnc = await client.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1 FOR UPDATE", [item.lead_id]);
