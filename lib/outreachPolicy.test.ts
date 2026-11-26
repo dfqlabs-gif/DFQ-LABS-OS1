@@ -60,3 +60,8 @@ test("same-day duplicate protection catches company aliases and shared phone num
 test("elapsed-day helper is stable", () => {
   assert.equal(ageDays("2026-11-23T12:00:00Z", new Date("2026-11-26T12:00:00Z")), 3);
 });
+
+test("generic placeholder company names never collide as duplicate identities", () => {
+  assert.equal(normalizeCompanyIdentity("Unknown Company"), "");
+  assert.equal(hasSameDayContactIdentity(base, [{ leadId: "another-lead", company: "Unknown Company", phone: "08011111111" }]), false);
+});
