@@ -169,6 +169,7 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   await syncAgentDoNotContact(updatedLead);
   const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [updatedLead.id]);
   if (contactControl.rows[0]?.do_not_contact || message.historical) return;
+  await notifyAuditIntent(updatedLead, message);
   const inboxState = await db.query("SELECT status FROM agent_logs WHERE agent_name='inbox_sync' ORDER BY created_at DESC LIMIT 1");
   if (inboxState.rows[0]?.status === "halted_circuit_breaker") return;
 
@@ -196,6 +197,7 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
       String(brain.reasoningSummary || brain.recommendedAction || "Generated from the latest inbound reply and full CRM conversation.").slice(0,5000),
       `whatsapp-response:${message.messageId}`,
     ]);
+    if (telegramConfig) await sendTelegramPendingApprovals(telegramConfig.allowedChatId, 8);
     await db.query(
       "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'inbox_sync','success',$2,1,0,$3::jsonb)",
       [randomUUID(), "Logged inbound WhatsApp reply and staged a contextual response.", JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
@@ -632,6 +634,175 @@ async function runManagerNurtureBatch(): Promise<string> {
 }
 
 
+
+async function claimTelegramGreeting(chatId: string): Promise<string> {
+  const local = lagosDateTimeParts();
+  const hour = Number(local.hour);
+  const part = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+  const date = local.year + "-" + local.month + "-" + local.day;
+  const result = await db.query("INSERT INTO agent_telegram_greeting_state (chat_id, greeted_date, greeted_part) VALUES ($1,$2::date,$3) ON CONFLICT (chat_id, greeted_date, greeted_part) DO NOTHING RETURNING chat_id", [chatId, date, part]);
+  return result.rowCount ? "Good " + part + ", Sir.\n\n" : "";
+}
+
+async function managerTelegramReply(chatId: string, message: string, markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }): Promise<void> {
+  if (!telegramConfig) return;
+  const greeting = await claimTelegramGreeting(chatId);
+  await sendTelegramMessage(telegramConfig, chatId, greeting + message, fetch, markup);
+}
+
+function telegramDraftHash(content: string): string {
+  return createHash("sha256").update(content || "").digest("hex").slice(0, 10);
+}
+
+async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
+  if (!telegramConfig) return 0;
+  const result = await db.query("SELECT q.id, q.action_type, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(10, limit))]);
+  for (const row of result.rows) {
+    const hash = telegramDraftHash(String(row.draft_content || ""));
+    const recipient = [row.lead_name, row.lead_company].filter(Boolean).join(" · ") || "Unassigned prospect";
+    const type = String(row.action_type || "").replace(/_/g, " ").toUpperCase();
+    const phone = row.lead_phone ? "\nWhatsApp: " + row.lead_phone : "";
+    const body = ["DFQLABS OS1 — FOUNDER REVIEW", type + " · " + recipient + phone, "", String(row.draft_content || "").slice(0, 2800), "", row.reasoning ? "WHY THIS MESSAGE: " + String(row.reasoning).slice(0, 700) : "", "", "Approve to authorize this exact draft for WhatsApp dispatch. Editing invalidates this approval version.", "Queue ID: " + row.id].filter(Boolean).join("\n");
+    await sendTelegramMessage(telegramConfig, chatId, body, fetch, { inline_keyboard: [[
+      { text: "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
+      { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
+      { text: "Reject", callback_data: "q|r|" + row.id + "|" + hash },
+    ]] });
+  }
+  return result.rows.length;
+}
+
+async function handleTelegramQueueCallback(callback: any): Promise<void> {
+  if (!telegramConfig) return;
+  const chatId = callback?.message?.chat?.id === undefined ? "" : String(callback.message.chat.id);
+  const callbackId = String(callback?.id || "");
+  if (!chatId || chatId !== telegramConfig.allowedChatId || !callbackId) return;
+  const match = String(callback?.data || "").match(/^q\|(a|e|r)\|([0-9a-f-]{36})\|([a-f0-9]{10})$/i);
+  if (!match) {
+    await answerTelegramCallback(telegramConfig, callbackId, "This action is invalid or expired.").catch(() => {});
+    return;
+  }
+  const action = match[1];
+  const queueId = match[2];
+  const expectedHash = match[3];
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query("SELECT * FROM agent_queue WHERE id=$1 FOR UPDATE", [queueId]);
+    const item = found.rows[0];
+    if (!item || item.status !== "pending_approval" || telegramDraftHash(String(item.draft_content || "")) !== expectedHash) {
+      await client.query("ROLLBACK");
+      await answerTelegramCallback(telegramConfig, callbackId, "This draft changed or is no longer awaiting approval.").catch(() => {});
+      await managerTelegramReply(chatId, "That review card is stale. I have not approved or sent anything. Please use the latest draft card.");
+      return;
+    }
+    if (action === "e") {
+      await client.query("INSERT INTO agent_telegram_edit_sessions (chat_id, queue_id, expected_hash, created_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (chat_id) DO UPDATE SET queue_id=EXCLUDED.queue_id, expected_hash=EXCLUDED.expected_hash, created_at=NOW()", [chatId, queueId, expectedHash]);
+      await client.query("COMMIT");
+      await answerTelegramCallback(telegramConfig, callbackId, "Edit mode opened.");
+      await managerTelegramReply(chatId, "Send your revised message as your next Telegram text message. I will save it as a new draft version and show it to you for approval. Nothing will be sent until you approve the revised version.\n\nQueue ID: " + queueId + "\nSend /cancel_edit to cancel.");
+      return;
+    }
+    if (action === "r") {
+      await client.query("UPDATE agent_queue SET status='rejected', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log='Rejected by founder in Telegram.' WHERE id=$1 AND status='pending_approval'", [queueId]);
+      await client.query("COMMIT");
+      await answerTelegramCallback(telegramConfig, callbackId, "Draft rejected.");
+      await managerTelegramReply(chatId, "Rejected. That message will not be sent.");
+      return;
+    }
+    if (item.lead_id) {
+      const control = await client.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1 FOR UPDATE", [item.lead_id]);
+      if (control.rows[0]?.do_not_contact) {
+        await client.query("UPDATE agent_queue SET status='rejected', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log='Blocked: do-not-contact flag is active.' WHERE id=$1", [queueId]);
+        await client.query("COMMIT");
+        await answerTelegramCallback(telegramConfig, callbackId, "Blocked by do-not-contact.");
+        await managerTelegramReply(chatId, "I could not approve this message because the prospect is marked Do Not Contact.");
+        return;
+      }
+    }
+    const updated = await client.query("UPDATE agent_queue SET status=CASE WHEN action_type='log_inbound' THEN 'completed' ELSE 'approved' END, reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log=NULL WHERE id=$1 AND status='pending_approval' RETURNING action_type", [queueId]);
+    if (!updated.rowCount) {
+      await client.query("ROLLBACK");
+      await answerTelegramCallback(telegramConfig, callbackId, "Already reviewed.");
+      return;
+    }
+    await client.query("INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'telegram-founder','queue_item_approved',$2,$3::jsonb)", [randomUUID(), queueId, JSON.stringify({ channel: "telegram", draftHash: expectedHash })]);
+    await client.query("COMMIT");
+    await answerTelegramCallback(telegramConfig, callbackId, "Approved. Dispatch authorized.");
+    await managerTelegramReply(chatId, "Approved, Sir. The dispatcher is authorized to send this exact version through the connected WhatsApp account. I will report the recorded outcome.");
+    void dispatchApprovedQueue();
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    await answerTelegramCallback(telegramConfig, callbackId, "Could not process this review.").catch(() => {});
+    await managerTelegramReply(chatId, "I could not process that review: " + String(error?.message || error).slice(0, 250));
+  } finally {
+    client.release();
+  }
+}
+
+function isAuditIntentMessage(text: string): boolean {
+  return /\b(audit|content audit|strategy audit|audit our|audit my|review our (page|profile|website)|review my (page|profile|website)|look at our (page|profile|website))\b/i.test(text || "");
+}
+function safeProfileUrl(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^@?[a-z0-9._]{2,30}$/i.test(raw)) return "https://www.instagram.com/" + raw.replace(/^@/, "") + "/";
+  try {
+    const url = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch { return ""; }
+}
+async function notifyAuditIntent(lead: Lead, inbound: WhatsAppInbound): Promise<void> {
+  if (!telegramConfig || !isAuditIntentMessage(inbound.text)) return;
+  const prior = await db.query("SELECT 1 FROM agent_audit_log WHERE action='audit_intent_alert_sent' AND details->>'messageId'=$1 LIMIT 1", [inbound.messageId]);
+  if (prior.rowCount) return;
+  const company = String(lead.company || lead.name || "Unknown business").trim();
+  const location = String((lead as any).location || (lead as any).city || "Not recorded").trim();
+  const category = String(lead.clientType || "Not recorded").trim();
+  let searchResults: any[] = [];
+  let provider = "";
+  try {
+    const searched = await searchWebWithFallback([company + " " + location + " Nigeria official website Instagram real estate", company + " " + location + " Instagram profile"]);
+    searchResults = searched.results || [];
+    provider = searched.provider || "";
+  } catch (error: any) {
+    console.error("Audit prospect enrichment failed:", String(error?.message || error).slice(0, 180));
+  }
+  const crmInstagram = safeProfileUrl(String(lead.instagram || ""));
+  const crmWebsite = safeProfileUrl(String(lead.website || ""));
+  const instagramCandidate = searchResults.find((item: any) => {
+    try { const url = new URL(item.url); return /(^|\.)instagram\.com$/i.test(url.hostname) && url.pathname.split("/").filter(Boolean).length >= 1; }
+    catch { return false; }
+  });
+  const websiteCandidate = searchResults.find((item: any) => {
+    try {
+      const url = new URL(item.url);
+      return !/(instagram|facebook|linkedin|tiktok|twitter|x\.com|youtube|google)\.com$/i.test(url.hostname) && !/(instagram|facebook|linkedin|tiktok|twitter|x\.com|youtube)\./i.test(url.hostname);
+    } catch { return false; }
+  });
+  const instagramLine = crmInstagram ? "Instagram (CRM record): " + crmInstagram : instagramCandidate ? "Possible Instagram profile (search candidate — verify before use): " + instagramCandidate.url : "Instagram: Not found in the CRM or available search results.";
+  const websiteLine = crmWebsite ? "Website (CRM record): " + crmWebsite : websiteCandidate ? "Possible website (search candidate — verify before use): " + websiteCandidate.url : "Website: Not found in the CRM or available search results.";
+  const thread = (Array.isArray(lead.conversationLog) ? lead.conversationLog : []).filter((entry: any) => entry?.type === "dm" || entry?.type === "reply").slice(-5).map((entry: any) => (entry.direction === "outbound" ? "DFQLABS sent" : "Prospect") + ": " + String(entry.text || "").slice(0, 420));
+  const alert = [
+    "AUDIT OPPORTUNITY — FOUNDER INTELLIGENCE", "",
+    "Business: " + company,
+    "Contact: " + String(lead.name || inbound.pushName || "Not recorded"),
+    "Phone / WhatsApp: " + String(lead.phone || lead.whatsapp || inbound.phone || "Not recorded"),
+    instagramLine, websiteLine, "Location: " + location, "Category: " + category, "",
+    "ORIGINAL INBOUND MESSAGE", inbound.text, "",
+    "RECENT THREAD CONTEXT",
+    thread.length ? thread.join("\n") : "No earlier conversation entries were recorded.", "",
+    "WHY THIS IS AN OPPORTUNITY",
+    "The prospect explicitly mentioned an audit or requested a review. Treat this as a high-intent signal, confirm scope and decision-maker, and avoid sending a generic sales pitch.", "",
+    "RECOMMENDED NEXT ACTION",
+    "Acknowledge the request, confirm the business profile/page to audit, then prepare the DFQLABS strategic audit and agree on the delivery timeline. Keep all outbound replies in the founder approval queue.", "",
+    "INSTAGRAM SCREENSHOT",
+    "Not attached: no verified screenshot capture was available during this enrichment. No image has been fabricated.",
+    provider ? "Enrichment source: " + provider + " search results. Search candidates are unverified until checked." : "External enrichment unavailable; details above are limited to the CRM record.",
+  ].join("\n");
+  await managerTelegramReply(telegramConfig.allowedChatId, alert);
+  await db.query("INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,'system:inbox_sync','audit_intent_alert_sent',$2::jsonb)", [randomUUID(), JSON.stringify({ leadId: lead.id, messageId: inbound.messageId, company })]);
+}
 
 async function processTelegramEdit(chatId: string, textValue: string): Promise<boolean> {
   const session = await db.query("SELECT queue_id, expected_hash FROM agent_telegram_edit_sessions WHERE chat_id=$1 AND created_at > NOW()-INTERVAL '30 minutes'", [chatId]);
