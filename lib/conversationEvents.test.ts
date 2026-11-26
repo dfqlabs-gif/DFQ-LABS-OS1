@@ -45,3 +45,8 @@ test("legacy events receive deterministic identities without using their array p
   const legacy = { ts: "2026-09-11T08:20:00.000Z", type: "reply" as const, direction: "inbound" as const, label: "Thread", text: "A reply", by: "Sarah" };
   assert.equal(conversationEventId(legacy), conversationEventId({ ...legacy }));
 });
+
+test("committed outbound matching the opening DM is not treated as a protected legacy anchor", async () => {
+  const event: any = { id: "sent-1", outboundId: "outbound-1", ts: "2026-11-26T10:00:00.000Z", type: "dm", direction: "outbound", label: "Sent", text: "Opening message", by: "DFQLABS AI" };
+  assert.equal(isProtectedConversationAnchor(event, "Opening message", ""), false);
+});
