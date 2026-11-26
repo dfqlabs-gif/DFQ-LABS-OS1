@@ -89,10 +89,10 @@ OUTREACH RELATIONSHIP RULES:
 - Never say an audit was completed or delivered unless CRM records confirm it.
 - Do not invent profile observations, company projects, buyer objections, performance data, or prior promises. If evidence is thin, write a modest useful observation or skip the lead.
 - Do not repeat the same message angle already used in this lead's history.
-Current stage objective: ${stageObjective(lead.status || "New")}
+Current stage objective: ${requested === "VALUE_DM" ? "Provide one genuinely useful, evidence-grounded relationship-nurture insight. Do not ask for a call, meeting, reply, permission, or sale. This requested value-first task overrides the normal stage conversion objective for this message only." : stageObjective(lead.status || "New")}
 If this stage objective conflicts with the verified sent-message chronology, the actual chronology and relationship rules take precedence. Never restart a completed or previously attempted stage.
 Timeline: ${timeline}
-Requested task: ${options.task || "Determine and prepare the best next outbound action."}
+Requested task: ${options.task || "Determine and prepare the best next outbound action."}\n${requested === "VALUE_DM" ? VALUE_DM_NURTURE_GUIDANCE : ""}
 Requested type: ${requested}
 ${rewriteReason ? `The first internal self-check failed because: ${rewriteReason}. Rewrite the message and return a stronger result.` : "Perform an internal self-check before returning: stage fit, factual grounding, conversation continuity, repetition, generic language, premature CTA, unsupported claims, useful next move, and WhatsApp length."}
 
