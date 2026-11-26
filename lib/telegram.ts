@@ -47,8 +47,14 @@ export async function sendTelegramMessage(
   const chunks: string[] = [];
   let current = "";
   for (const line of normalized.split("\n")) {
-    const next = current ? current + "\n" + line : line;
-    if (next.length > 3900 && current) { chunks.push(current); current = line; }
+    let remaining = line;
+    while (remaining.length > 3900) {
+      if (current) { chunks.push(current); current = ""; }
+      chunks.push(remaining.slice(0, 3900));
+      remaining = remaining.slice(3900);
+    }
+    const next = current ? current + "\n" + remaining : remaining;
+    if (next.length > 3900 && current) { chunks.push(current); current = remaining; }
     else current = next;
   }
   if (current || !chunks.length) chunks.push(current || " ");
