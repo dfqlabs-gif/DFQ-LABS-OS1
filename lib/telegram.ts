@@ -113,7 +113,6 @@ export async function transcribeTelegramVoice(config: TelegramConfig, fileId: st
   ].filter(Boolean) as Array<{name:string;url:string;key:string;model:string}>;
   const geminiKey = env.GEMINI_API_KEY?.trim();
   if (!providers.length && !geminiKey) throw new Error("Voice transcription is not configured. Add GROQ_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY to staging.");
-  if (!providers.length) throw new Error("Voice transcription is not configured. Add GROQ_API_KEY or OPENAI_API_KEY to the staging service.");
   const errors: string[] = [];
   for (const provider of providers) {
     try {
