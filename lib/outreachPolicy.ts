@@ -27,6 +27,7 @@ export function latestOutboundTouch(lead: Lead): OutboundTouch | null {
       touches.push({ at: item.ts, text: item.text || "", id: item.outboundId || item.id, messageType: item.messageType });
     }
   }
+  if (!touches.length && lead.dmText && lead.lastContacted) touches.push({ at: lead.lastContacted, text: lead.dmText, id: "legacy-dmText", messageType: "INTRODUCTION_DM" });
   const valid = touches.filter(item => Number.isFinite(new Date(item.at).getTime()));
   valid.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   return valid[0] || null;
