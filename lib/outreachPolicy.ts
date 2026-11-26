@@ -67,10 +67,21 @@ export function formatProspectGreeting(lead: Pick<Lead, "name" | "company">, now
 
 export function ensureProspectGreeting(lead: Pick<Lead, "name" | "company">, message: string, now = new Date()): string {
   let clean = String(message || "").trim();
-  if (/^(hi|hello|good morning|good afternoon|good evening|dear)\\b/i.test(clean)) return clean;
-  const recipient = String(lead.name || lead.company || "").trim().replace(/^team\\s+/i, "");
-  if (recipient && clean.toLowerCase().startsWith(recipient.toLowerCase() + ",")) clean = clean.slice(recipient.length + 1).trim();
-  return formatProspectGreeting(lead, now) + " " + clean;
+  const recipient = String(lead.name || "").trim() || (lead.company ? "Team " + lead.company.replace(/^team\\s+/i, "") : "there");
+  const greeting = clean.match(/^(hi|hello|good morning|good afternoon|good evening|dear)\\b[,.]?\\s*(.*)$/i);
+  if (greeting) {
+    clean = greeting[2].trim();
+    const target = recipient.toLowerCase();
+    if (clean.toLowerCase().startsWith(target + ",") || clean.toLowerCase().startsWith(target + ".")) {
+      clean = clean.slice(recipient.length).replace(/^[,.]\\s*/, "").trim();
+    } else {
+      clean = clean.replace(/^(there|team)[,.]?\\s*/i, "");
+    }
+  } else {
+    const company = String(lead.company || "").trim().replace(/^team\\s+/i, "");
+    if (company && clean.toLowerCase().startsWith(company.toLowerCase() + ",")) clean = clean.slice(company.length + 1).trim();
+  }
+  return formatProspectGreeting(lead, now) + (clean ? " " + clean : "");
 }
 
 export function buildOutreachChronology(lead: Lead, now = new Date()): string {
