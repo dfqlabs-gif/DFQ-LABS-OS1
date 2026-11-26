@@ -427,7 +427,7 @@ async function initializeDatabase() {
   // This updates the existing staging account hash as well as seeding a fresh DB.
   const founderPassword = String(process.env.FOUNDER_PASSWORD || process.env.FOUNDER_INITIAL_PASSWORD || "");
   const userCountRes = await db.query("SELECT COUNT(*) FROM users");
-  if (founderPassword.length >= 16) {
+  if (founderPassword.length >= 12) {
     await db.query(
       `INSERT INTO outreach_seats (seat_id, seat_name, status, current_user_id) VALUES
        ('seat-outreach-a', 'Outreach Seat A', 'VACANT', NULL),
@@ -448,7 +448,7 @@ async function initializeDatabase() {
     );
     console.log("✓ Founder account synchronized from server-side password configuration");
   } else if (parseInt(userCountRes.rows[0].count) === 0) {
-    throw new Error("Set FOUNDER_PASSWORD (or FOUNDER_INITIAL_PASSWORD) to a value of at least 16 characters before initializing an empty OS1 database.");
+    throw new Error("Set FOUNDER_PASSWORD (or FOUNDER_INITIAL_PASSWORD) to a value of at least 12 characters before initializing an empty OS1 database.");
   }
   await db.query(`CREATE TABLE IF NOT EXISTS crm_action_history (id TEXT PRIMARY KEY, lead_id TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
   await db.query(`CREATE INDEX IF NOT EXISTS crm_action_history_actor_created_idx ON crm_action_history ((data->>'actorId'), created_at DESC)`);
