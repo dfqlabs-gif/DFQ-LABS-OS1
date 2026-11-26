@@ -132,7 +132,7 @@ async function attemptRoutineInboundAutoReply(lead: Lead, inbound: WhatsAppInbou
     ),
   );
   const draft = String(brain.message || "").trim();
-  if (!draft || /^ESCALATE[.! ]*$/i.test(draft) || /\b(price|pricing|cost|quote|discount|proposal|contract|guarantee|guaranteed)\b/i.test(draft)) return false;
+  if (!draft || /\bESCALATE\b/i.test(draft) || /\b(price|pricing|cost|quote|discount|proposal|contract|guarantee|guaranteed)\b/i.test(draft)) return false;
 
   const client = await db.connect();
   const queueId = randomUUID();
@@ -164,6 +164,7 @@ async function attemptRoutineInboundAutoReply(lead: Lead, inbound: WhatsAppInbou
     const phone = normalizePhone(getWhatsAppNumber(latest));
     if (!phone.valid) throw new Error(phone.error || "Lead has no valid WhatsApp number.");
     const delivery = await whatsappBridge.sendText(phone.international, draft);
+    if (!delivery.messageId) throw new Error("WhatsApp did not return a message ID; delivery is uncertain and must be checked manually.");
     const sentAt = new Date().toISOString();
     const committed = commitOutboundSent(withOutbound, outbound.id, sentAt);
     await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(committed), latest.id]);
