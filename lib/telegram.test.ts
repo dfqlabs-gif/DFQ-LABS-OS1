@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, verifyTelegramWebhookSecret } from "./telegram.js";
+import { getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, transcribeTelegramVoice, verifyTelegramWebhookSecret } from "./telegram.js";
 
 test("Telegram config requires all secrets and allowed chat ID", () => {
   assert.equal(getTelegramConfig({ TELEGRAM_BOT_TOKEN: "x", TELEGRAM_WEBHOOK_SECRET: "y" }), null);
@@ -39,4 +39,11 @@ test("Telegram message delivery uses the configured chat and chunks long message
   assert.equal(sent.length, 2);
   assert.equal(sent[0].chat_id, "123");
   assert.equal(sent[0].text.length, 3900);
+});
+
+test("Telegram voice transcription rejects oversized voice notes before network access", async () => {
+  await assert.rejects(
+    () => transcribeTelegramVoice({ botToken: "x", webhookSecret: "y", allowedChatId: "1" }, "file-id", 21 * 1024 * 1024, {}),
+    /too large/i,
+  );
 });
