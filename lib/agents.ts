@@ -139,6 +139,22 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
       UNIQUE (job_name, scheduled_date)
     )
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_telegram_greeting_state (
+      chat_id TEXT PRIMARY KEY,
+      greeted_date DATE NOT NULL,
+      greeted_part TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_telegram_edit_sessions (
+      chat_id TEXT PRIMARY KEY,
+      queue_id UUID NOT NULL REFERENCES agent_queue(id) ON DELETE CASCADE,
+      expected_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
   await db.query("INSERT INTO agent_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
 }
 
