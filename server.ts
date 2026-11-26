@@ -678,7 +678,7 @@ async function callInternalFounderRoute(route: string, body: Record<string, unkn
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + agentSystemToken },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(180000),
+    signal: AbortSignal.timeout(300000),
   });
   const payload: any = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(String(payload?.error || `Internal agent returned HTTP ${response.status}`).slice(0,400));
@@ -714,10 +714,11 @@ async function runManagerNurtureBatch(targetName?: string): Promise<string> {
     ? "I found the CRM record, but it is not eligible for a follow-up right now. It may have a recent reply, active draft, opt-out, closed stage or recent contact. No changes were made."
     : "I checked the CRM. There are no eligible, unsuppressed leads currently due for a nurture draft.";
   const dueFollowUps = candidates.filter((lead: Lead) => !!lead.awaitingReplySince && !lead.prospectLatestResponse);
+  const selected = dueFollowUps.length ? dueFollowUps : candidates;
   const actionType = dueFollowUps.length ? "follow_up" : "value_dm";
   const staged: any[] = [], skipped: string[] = [];
   // Isolate each prospect's model work so one slow request cannot abort the full batch.
-  for (const lead of candidates) {
+  for (const lead of selected) {
     try {
       const result = await callInternalFounderRoute("/api/agents/generate", { leadIds: [lead.id], actionType });
       staged.push(...(result.staged || []));
@@ -727,7 +728,7 @@ async function runManagerNurtureBatch(targetName?: string): Promise<string> {
     }
   }
   return "Nurture task finished. " + (targetName ? "Contact: " + targetName + ". " : "") +
-    "Eligible records checked: " + candidates.length + ". Drafts staged: " + staged.length + ". Not completed/skipped: " + skipped.length +
+    "Eligible records checked: " + selected.length + ". Drafts staged: " + staged.length + ". Not completed/skipped: " + skipped.length +
     (skipped.length ? "\n\nDetails:\n• " + skipped.join("\n• ") : "") +
     "\n\nNothing was sent. Any generated draft remains in the founder approval queue.";
 }
@@ -981,32 +982,10 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
     if (await processTelegramEdit(chatId, message)) return;
     const reply = (text: string, markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }) =>
       managerTelegramReply(chatId, text, markup);
-    if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
-      await reply("DFQLABS OS1 — Head of Business online.\n\nShortcuts (optional): /report, /status, /queue, /nurture, /scout [city], /linkedin [topic].\n\nYou can simply tell me what outcome you want in ordinary text or a voice note. I will interpret it, coordinate the relevant agents, execute permitted internal work and report the result. Routine factual inbound FAQs may be answered automatically only from enabled DFQLABS Knowledge Base sources. Sensitive, commercial or uncertain replies remain in your founder approval queue. Cold outreach still requires your approval.");
-      return;
-    }
-    if (/^\/queue(?:@\w+)?$/i.test(message)) {
-      const count = await sendTelegramPendingApprovals(chatId, 10);
-      if (!count) await reply("There are no pending DM/follow-up drafts awaiting approval.");
-      return;
-    }
-    if (/^\/report(?:@\w+)?$/i.test(message) || /\b(daily report|executive report|business report|how did we do today|today.?s performance|end.?of.?day report)\b/i.test(message)) {
-      await reply(await buildManagerDailyReport(db));
-      return;
-    }
-    if (/^\/status(?:@\w+)?$/i.test(message)) {
-      const context = await buildManagerKnowledgeContext(db);
-      await reply("DFQLABS OS1 — Live operational context\n\n" + context + "\n\nStatus is compiled directly from OS1 records. AI-generated interpretation is temporarily unavailable if a model provider is degraded.");
-      return;
-    }
-    if (/^(hi|hello|hey|good morning|good afternoon|good evening)(?:\s+manager)?[!. ]*$/i.test(message)) {
-      await reply("I’m online and coordinating the DFQLABS OS1 operation. I can review pipeline health, delegate prospect discovery, prepare nurture drafts and surface opportunities. What would you like me to prioritize?");
-      return;
-    }
-    if (/^\\/nurture(?:@\\w+)?$/i.test(message) || /\\b(nurture|follow.?up)\\b/i.test(message)) {
-      const target = message.match(/\\bsend\\s+(.+?)\\s+(?:a\\s+)?follow.?up\\b/i)?.[1]?.trim()
-        || message.match(/\\bfollow.?up\\s+(?:with|for)\\s+(.+)$/i)?.[1]?.trim()
-        || message.match(/\\bnurture\\s+(.+)$/i)?.[1]?.trim();
+    if (/^\/nurture(?:@\w+)?$/i.test(message) || /\b(nurture|follow.?up)\b/i.test(message)) {
+      const target = message.match(/\bsend\s+(.+?)\s+(?:a\s+)?follow.?up\b/i)?.[1]?.trim()
+        || message.match(/\bfollow.?up\s+(?:with|for)\s+(.+)$/i)?.[1]?.trim()
+        || message.match(/\bnurture\s+(.+)$/i)?.[1]?.trim();
       await reply(target
         ? "Understood. I’m locating " + target + " in the CRM and checking contact history, eligibility and opt-out controls. I’ll prepare a draft for your approval."
         : "Understood. I’m checking the CRM, opt-out controls and recent queue before preparing eligible nurture drafts.");
