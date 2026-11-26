@@ -630,7 +630,7 @@ async function runManagerNurtureBatch(): Promise<string> {
   const actionType = dueFollowUps.length ? "follow_up" : "value_dm";
   const selected = (dueFollowUps.length ? dueFollowUps : candidates).slice(0,10);
   const result = await callInternalFounderRoute("/api/agents/generate", { leadIds: selected.map((lead: Lead) => lead.id), actionType });
-  return `Nurture task completed. I asked the ${actionType === "follow_up" ? "Closer" : "Writer"} to prepare drafts for ${selected.length} existing CRM leads. ${result.staged?.length || 0} draft(s) are now in the founder review queue; ${result.skipped?.length || 0} skipped. Nothing was sent. Open OS1's AI Review Queue to review and approve drafts.`;
+  return `Nurture task completed. I asked the ${actionType === "follow_up" ? "Closer" : "Writer"} to prepare drafts for ${selected.length} existing CRM leads. ${result.staged?.length || 0} draft(s) are now in the founder review queue; ${result.skipped?.length || 0} skipped. Nothing was sent. I will surface the drafts here in Telegram for your review and approval.`;
 }
 
 
@@ -903,7 +903,6 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
       "You are Harry, the DFQLABS OS1 Head of Business and sole interface to the founder. Be a capable, composed, proactive operations leader. Address the founder respectfully as Sir, but do not force the honorific into every sentence. Use natural language, concise operational updates and specific recommendations. Coordinate Scout, Writer, Closer, Research and Dispatcher. Never claim an action was completed unless an execution result confirms it. Never authorize or send outbound messages yourself; only a founder approval on the exact draft version can authorize WhatsApp dispatch. Ask one concise clarification only when necessary.\n\nSYSTEM CONTEXT:\n" + context + "\n\nFOUNDER MESSAGE:\n" + message,
       GEMINI_MODEL, 1400, 0.35);
     await reply(answer);
-    await sendTelegramPendingApprovals(chatId, 8);
   } catch (error: any) {
     await managerTelegramReply(chatId, "I couldn't complete that task: " + String(error?.message || error).slice(0,700) + "\n\nYour existing CRM and review queue remain unchanged.").catch(() => {});
   }
