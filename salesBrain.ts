@@ -7,6 +7,7 @@ import { ALL_MESSAGE_TYPES, MESSAGE_TYPE_RULES } from "./lib/messageTypes";
 import { addDays } from "./constants";
 import { buildLeadContext, buildTimeline, runAI, stageObjective, stripMarkdown } from "./aiEngine";
 import { ABUJA_BUYER_INTELLIGENCE } from "./lib/abujaBuyerIntelligence";
+import { buildOutreachChronology, ensureProspectGreeting } from "./lib/outreachPolicy";
 
 export interface SalesBrainResult {
   leadId: string;
@@ -69,14 +70,24 @@ function prompt(lead: Lead, options: SalesBrainOptions, rewriteReason?: string):
   const learningBlock = options.learningInsights?.length
     ? `\nOrganizational learning (historical advisory evidence, never rules):\n${options.learningInsights.map(insight => `- ${insight.pattern} Confidence ${insight.confidence}/100; ${insight.evidenceSummary}`).join("\n")}\nUse this only when genuinely relevant. Current lead history, research, and fact safety take precedence. Do not invent facts or force a historically successful strategy.\n`
     : "";
+  const chronology = buildOutreachChronology(lead);
   return `You are the DFQ Labs AI SALES BRAIN. You are the only strategic authority for this lead. Analyze before writing, but do not reveal private chain-of-thought.
 
 Use the following DFQLABS Abuja buyer-intelligence playbook as market-level strategic context. It is not evidence about this individual prospect. Apply only the buyer segment and content opportunity relevant to the prospect's verified business and audience. Never convert a market-level pattern into a prospect-specific claim.
 
 ${ABUJA_BUYER_INTELLIGENCE}
 
-Use only verified CRM/conversation information below. Never fabricate a person name: if contact identity is unknown, address the company/team naturally. A company name is not automatically a person's name. A Value DM must provide contextual, actionable value with no CTA or disguised sales ask. Do not write a lazy check-in. If an audit was delivered and the prospect is silent, acknowledge that specific prior interaction and choose a commercially useful, low-pressure next move.
+Use only verified CRM/conversation information below. Never fabricate a person name: if contact identity is unknown, address the company/team naturally. A company name is not automatically a person's name. Every prospect-facing message MUST begin with a courteous, natural greeting appropriate to Lagos time, addressed to the verified contact name or Team [Company] when no individual contact is known. Do not omit the greeting. A Value DM must provide contextual, actionable value with no CTA or disguised sales ask. Do not write a lazy check-in. If an audit was delivered and the prospect is silent, acknowledge that specific prior interaction and choose a commercially useful, low-pressure next move. Read the full chronological history and explicitly respect elapsed time.
 
+Chronology: ${chronology}
+OUTREACH RELATIONSHIP RULES:
+- Never contact the same prospect or company twice on the same Lagos calendar day. If a message was already sent today, recommend no second outbound; the system should skip it rather than generate another DM.
+- For outreach 1–7 days after a prior message, acknowledge the exact recent interaction and continue naturally; do not restart the introduction.
+- For 8–29 days of silence, use a gentle follow-up with a fresh useful angle and honest timing; do not say yesterday or recently unless the timestamp supports it.
+- For 30+ days of silence, treat it as reactivation: acknowledge that some time has passed, briefly reconnect to the actual prior message/topic, and introduce a genuinely new reason to engage. Never pretend the previous message was sent yesterday.
+- Never say an audit was completed or delivered unless CRM records confirm it.
+- Do not invent profile observations, company projects, buyer objections, performance data, or prior promises. If evidence is thin, write a modest useful observation or skip the lead.
+- Do not repeat the same message angle already used in this lead's history.
 Current stage objective: ${stageObjective(lead.status || "New")}
 Timeline: ${timeline}
 Requested task: ${options.task || "Determine and prepare the best next outbound action."}
@@ -123,8 +134,9 @@ export async function runSalesBrainWithGenerator(
 ): Promise<SalesBrainResult> {
   const requested = options.requestedMessageType || "FOLLOW_UP";
   let result = normalise(lead, jsonFromModel(await generate(prompt(lead, options), 1200)), requested);
+  result.message = ensureProspectGreeting(lead, result.message);
   const failure = validateSalesBrainMessage(result.message, result.messageType);
-  if (failure) result = normalise(lead, jsonFromModel(await generate(prompt(lead, options, failure), 1200)), requested, true);
+  if (failure) { result = normalise(lead, jsonFromModel(await generate(prompt(lead, options, failure), 1200)), requested, true); result.message = ensureProspectGreeting(lead, result.message); }
   const finalFailure = validateSalesBrainMessage(result.message, result.messageType);
   if (finalFailure) throw new Error(`Sales Brain could not approve a safe message: ${finalFailure}.`);
   return result;
