@@ -165,6 +165,7 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   }
 
   if (!updatedLead) return;
+  void sendAuditOpportunityAlert(updatedLead,message.text,message.receivedAt).catch(error => console.error('Audit opportunity alert failed:',String(error?.message || error).slice(0,200)));
   await syncAgentDoNotContact(updatedLead);
   const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [updatedLead.id]);
   if (contactControl.rows[0]?.do_not_contact || message.historical) return;
@@ -210,6 +211,16 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   }
 }
 
+async function sendAuditOpportunityAlert(lead: Lead, inboundText: string, receivedAt: string): Promise<void> {
+  if (!telegramConfig || !/\\b(audit|strategy review|page review|account review|content audit)\\b/i.test(inboundText)) return;
+  const company = lead.company || lead.name || 'Unknown business';
+  let sources: any[] = [];
+  try { const found = await searchWebWithFallback(['"' + company + '" Nigeria real estate','"' + company + '" Instagram',company + ' official website']); sources = found.results.slice(0,6); } catch {}
+  const instagram = lead.instagram || (sources.find(x => /instagram\\.com\\//i.test(x.url))?.url || 'Not verified');
+  const website = lead.website || (sources.find(x => !/instagram\\.com|facebook\\.com|linkedin\\.com/i.test(x.url))?.url || 'Not verified');
+  const lines = ['AUDIT OPPORTUNITY — FOUNDER INTELLIGENCE','Business/contact: ' + company + ' / ' + (lead.name || 'Not recorded'),'Phone: ' + (lead.phone || lead.whatsapp || 'Not recorded'),'Instagram: ' + instagram,'Website: ' + website,'Location: ' + ((lead as any).location || (lead as any).city || 'Not recorded'),'Category: ' + (lead.clientType || 'Not recorded'),'Original message: “' + inboundText.slice(0,900) + '”','Received: ' + receivedAt,'Intent signal: Prospect mentioned an audit/review. Treat this as an inbound high-intent signal, not permission to send a sales message.','Recommended next action: Review the prospect online, prepare the promised audit scope, and personally confirm a delivery timeline.','Research candidates — verify before use:',...sources.map(x => '• ' + x.title + ' — ' + x.url + ' — ' + x.snippet),'Instagram screenshot: Not attached. No verified screenshot-capture integration is configured, so no image is fabricated.'];
+  await sendTelegramMessage(telegramConfig,telegramConfig.allowedChatId,lines.join('\\n'));
+}
 async function appendWhatsAppHistoricalOutbound(message: WhatsAppInbound, author: string): Promise<boolean> {
   const allLeads = await db.query("SELECT id, data FROM leads");
   const matched = allLeads.rows.find((row: any) => {
