@@ -73,7 +73,7 @@ export async function buildManagerDailyReport(db: Pool): Promise<string> {
       COUNT(*) FILTER (WHERE data->>'outcome'='CONVERTED')::int AS conversions
       FROM sales_learning_events WHERE updated_at >= ${dayStart}`),
     db.query(`SELECT COUNT(*)::int AS received FROM agent_whatsapp_events WHERE received_at >= ${dayStart}`),
-    db.query(`SELECT COUNT(*)::int AS new_leads FROM leads WHERE created_at >= ${dayStart}`),
+    db.query(`SELECT COUNT(*)::int AS new_leads FROM leads WHERE NULLIF(data->>'dateAdded','')::timestamptz >= ${dayStart}`),
   ]);
   const recent = agents.rows.slice(0,6).map((row: any) =>
     `• ${row.agent_name}: ${row.status} — ${row.summary} (${row.items_processed} items)`
