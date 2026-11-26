@@ -21,7 +21,7 @@ import { createAgentRouter, initializeAgentTables } from "./lib/agents";
 import { containsExplicitOptOut } from "./lib/agentSafety";
 import { createWhatsAppBridge, type WhatsAppInbound } from "./lib/whatsappBridge";
 import { getWhatsAppNumber, normalizePhone } from "./lib/phone";
-import { getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, verifyTelegramWebhookSecret } from "./lib/telegram";
+import { answerTelegramCallback, getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, transcribeTelegramVoice, verifyTelegramWebhookSecret } from "./lib/telegram";
 import { buildManagerDailyReport, buildManagerKnowledgeContext } from "./lib/manager";
 import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
@@ -683,59 +683,273 @@ async function sendManagerReply(chatId: string, message: string): Promise<void> 
   await sendTelegramMessage(telegramConfig,chatId,greeting+message);
 }
 
+async function claimTelegramGreeting(chatId: string): Promise<string> {
+  const local = lagosDateTimeParts();
+  const hour = Number(local.hour);
+  const part = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+  const date = local.year + "-" + local.month + "-" + local.day;
+  const result = await db.query(
+    "INSERT INTO agent_telegram_greeting_state (chat_id, greeted_date, greeted_part) VALUES ($1,$2::date,$3) ON CONFLICT (chat_id, greeted_date, greeted_part) DO NOTHING RETURNING chat_id",
+    [chatId, date, part]
+  );
+  return result.rowCount ? "Good " + part + ", Sir.\n\n" : "";
+}
+
+async function managerTelegramReply(
+  chatId: string,
+  message: string,
+  markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> },
+): Promise<void> {
+  if (!telegramConfig) return;
+  const greeting = await claimTelegramGreeting(chatId);
+  await sendTelegramMessage(telegramConfig, chatId, greeting + message, fetch, markup);
+}
+
+function telegramDraftHash(content: string): string {
+  return createHash("sha256").update(content || "").digest("hex").slice(0, 10);
+}
+
+async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
+  if (!telegramConfig) return 0;
+  const result = await db.query(
+    "SELECT q.id, q.action_type, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1",
+    [Math.max(1, Math.min(10, limit))]
+  );
+  for (const row of result.rows) {
+    const hash = telegramDraftHash(String(row.draft_content || ""));
+    const recipient = [row.lead_name, row.lead_company].filter(Boolean).join(" · ") || "Unassigned prospect";
+    const type = String(row.action_type || "").replace(/_/g, " ").toUpperCase();
+    const phone = row.lead_phone ? "\nWhatsApp: " + row.lead_phone : "";
+    const body = [
+      "DFQLABS OS1 — FOUNDER REVIEW",
+      type + " · " + recipient + phone,
+      "",
+      String(row.draft_content || "").slice(0, 2800),
+      "",
+      row.reasoning ? "WHY THIS MESSAGE: " + String(row.reasoning).slice(0, 700) : "",
+      "",
+      "Approve to authorize this exact draft for WhatsApp dispatch. Editing invalidates this approval version.",
+      "Queue ID: " + row.id,
+    ].filter(Boolean).join("\n");
+    await sendTelegramMessage(telegramConfig, chatId, body, fetch, {
+      inline_keyboard: [[
+        { text: "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
+        { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
+        { text: "Reject", callback_data: "q|r|" + row.id + "|" + hash },
+      ]],
+    });
+  }
+  return result.rows.length;
+}
+
+async function handleTelegramQueueCallback(callback: any): Promise<void> {
+  if (!telegramConfig) return;
+  const chatId = callback?.message?.chat?.id === undefined ? "" : String(callback.message.chat.id);
+  const callbackId = String(callback?.id || "");
+  if (!chatId || chatId !== telegramConfig.allowedChatId || !callbackId) return;
+  const match = String(callback?.data || "").match(/^q\|(a|e|r)\|([0-9a-f-]{36})\|([a-f0-9]{10})$/i);
+  if (!match) {
+    await answerTelegramCallback(telegramConfig, callbackId, "This action is invalid or expired.").catch(() => {});
+    return;
+  }
+  const action = match[1];
+  const queueId = match[2];
+  const expectedHash = match[3];
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query("SELECT * FROM agent_queue WHERE id=$1 FOR UPDATE", [queueId]);
+    const item = found.rows[0];
+    if (!item || item.status !== "pending_approval" || telegramDraftHash(String(item.draft_content || "")) !== expectedHash) {
+      await client.query("ROLLBACK");
+      await answerTelegramCallback(telegramConfig, callbackId, "This draft changed or is no longer awaiting approval.").catch(() => {});
+      await managerTelegramReply(chatId, "That review card is stale. I have not approved or sent anything. Please use the latest draft card.");
+      return;
+    }
+    if (action === "e") {
+      await client.query(
+        "INSERT INTO agent_telegram_edit_sessions (chat_id, queue_id, expected_hash, created_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (chat_id) DO UPDATE SET queue_id=EXCLUDED.queue_id, expected_hash=EXCLUDED.expected_hash, created_at=NOW()",
+        [chatId, queueId, expectedHash]
+      );
+      await client.query("COMMIT");
+      await answerTelegramCallback(telegramConfig, callbackId, "Edit mode opened.");
+      await managerTelegramReply(chatId, "Send your revised message as your next Telegram text message. I will save it as a new draft version and show it to you for approval. Nothing will be sent until you approve the revised version.\n\nQueue ID: " + queueId + "\nSend /cancel_edit to cancel.");
+      return;
+    }
+    if (action === "r") {
+      await client.query("UPDATE agent_queue SET status='rejected', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log='Rejected by founder in Telegram.' WHERE id=$1 AND status='pending_approval'", [queueId]);
+      await client.query("COMMIT");
+      await answerTelegramCallback(telegramConfig, callbackId, "Draft rejected.");
+      await managerTelegramReply(chatId, "Rejected. That message will not be sent.");
+      return;
+    }
+    if (item.lead_id) {
+      const control = await client.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1 FOR UPDATE", [item.lead_id]);
+      if (control.rows[0]?.do_not_contact) {
+        await client.query("UPDATE agent_queue SET status='rejected', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log='Blocked: do-not-contact flag is active.' WHERE id=$1", [queueId]);
+        await client.query("COMMIT");
+        await answerTelegramCallback(telegramConfig, callbackId, "Blocked by do-not-contact.");
+        await managerTelegramReply(chatId, "I could not approve this message because the prospect is marked Do Not Contact.");
+        return;
+      }
+    }
+    const updated = await client.query(
+      "UPDATE agent_queue SET status=CASE WHEN action_type='log_inbound' THEN 'completed' ELSE 'approved' END, reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log=NULL WHERE id=$1 AND status='pending_approval' RETURNING action_type",
+      [queueId]
+    );
+    if (!updated.rowCount) {
+      await client.query("ROLLBACK");
+      await answerTelegramCallback(telegramConfig, callbackId, "Already reviewed.");
+      return;
+    }
+    await client.query(
+      "INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'telegram-founder','queue_item_approved',$2,$3::jsonb)",
+      [randomUUID(), queueId, JSON.stringify({ channel: "telegram", draftHash: expectedHash })]
+    );
+    await client.query("COMMIT");
+    await answerTelegramCallback(telegramConfig, callbackId, "Approved. Dispatch authorized.");
+    await managerTelegramReply(chatId, "Approved, Sir. The dispatcher is authorized to send this exact version through the connected WhatsApp account. I will report the recorded outcome.");
+    void dispatchApprovedQueue();
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    await answerTelegramCallback(telegramConfig, callbackId, "Could not process this review.").catch(() => {});
+    await managerTelegramReply(chatId, "I could not process that review: " + String(error?.message || error).slice(0, 250));
+  } finally {
+    client.release();
+  }
+}
+
+async function processTelegramEdit(chatId: string, textValue: string): Promise<boolean> {
+  const session = await db.query("SELECT queue_id, expected_hash FROM agent_telegram_edit_sessions WHERE chat_id=$1 AND created_at > NOW()-INTERVAL '30 minutes'", [chatId]);
+  if (!session.rowCount) return false;
+  if (/^\/cancel_edit(?:@\w+)?$/i.test(textValue.trim())) {
+    await db.query("DELETE FROM agent_telegram_edit_sessions WHERE chat_id=$1", [chatId]);
+    await managerTelegramReply(chatId, "Edit cancelled. The original draft remains pending approval and has not been sent.");
+    return true;
+  }
+  if (!textValue.trim() || textValue.length > 30000) {
+    await managerTelegramReply(chatId, "The revised draft must contain 1–30,000 characters. Try again or send /cancel_edit.");
+    return true;
+  }
+  const queueId = session.rows[0].queue_id;
+  const expectedHash = session.rows[0].expected_hash;
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query("SELECT draft_content, status FROM agent_queue WHERE id=$1 FOR UPDATE", [queueId]);
+    if (!current.rowCount || current.rows[0].status !== "pending_approval" || telegramDraftHash(String(current.rows[0].draft_content || "")) !== expectedHash) {
+      await client.query("DELETE FROM agent_telegram_edit_sessions WHERE chat_id=$1", [chatId]);
+      await client.query("COMMIT");
+      await managerTelegramReply(chatId, "The original draft changed or was already reviewed. I discarded this edit session; please review the latest card.");
+      return true;
+    }
+    const revised = textValue.trim();
+    await client.query("UPDATE agent_queue SET draft_content=$1, updated_at=NOW(), error_log=NULL WHERE id=$2", [revised, queueId]);
+    await client.query("DELETE FROM agent_telegram_edit_sessions WHERE chat_id=$1", [chatId]);
+    await client.query(
+      "INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'telegram-founder','draft_edited',$2,$3::jsonb)",
+      [randomUUID(), queueId, JSON.stringify({ channel: "telegram", previousDraftHash: expectedHash, newDraftHash: telegramDraftHash(revised) })]
+    );
+    await client.query("COMMIT");
+    await managerTelegramReply(chatId, "Updated. The revised version is saved and still awaits your approval. It has not been sent.");
+    await sendTelegramPendingApprovals(chatId, 8);
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    await managerTelegramReply(chatId, "I couldn't save that edit: " + String(error?.message || error).slice(0, 250));
+  } finally {
+    client.release();
+  }
+  return true;
+}
+
 async function processManagerTelegramMessage(chatId: string, textValue: string): Promise<void> {
   if (!telegramConfig) return;
   const message = textValue.trim().slice(0,4000);
   try {
- 
-    if (/^\/review(?:@\w+)?$/i.test(message)) { const count = await sendTelegramReviewCards(chatId,10); await sendTelegramMessage(telegramConfig,chatId,count ? "Pending message drafts are shown below. Approve or reject each one." : "There are no pending WhatsApp drafts."); return; }   if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
-      await sendManagerReply(chatId,
-        "DFQLABS OS1 — Head of Business online.\n\nCommands:\n/report — daily business report\n/status — agent, CRM and knowledge status\n/nurture — prepare follow-up/value drafts for eligible existing leads\n/scout [city] — discover new prospects\n/linkedin [topic] — prepare a LinkedIn draft\n\nYou can also send a normal instruction. I coordinate the specialist agents; you only speak with me. All outbound messages remain subject to founder approval.");
+    if (await processTelegramEdit(chatId, message)) return;
+    const reply = (text: string, markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }) =>
+      managerTelegramReply(chatId, text, markup);
+    if (/^\/start(?:\s|$)/i.test(message) || /^\/help(?:\s|$)/i.test(message)) {
+      await reply("DFQLABS OS1 — Head of Business online.\n\nCommands:\n/report — daily business report\n/status — agent, CRM and knowledge status\n/queue — show pending DM approvals\n/nurture — prepare follow-up/value drafts for eligible existing leads\n/scout [city] — discover new prospects\n/linkedin [topic] — prepare a LinkedIn draft\n/cancel_edit — cancel a draft edit\n\nYou can send text or voice notes. I coordinate the specialist agents; you only speak with me. Approving a Telegram review card authorizes that exact message for WhatsApp dispatch. Nothing else is sent automatically.");
+      return;
+    }
+    if (/^\/queue(?:@\w+)?$/i.test(message)) {
+      const count = await sendTelegramPendingApprovals(chatId, 10);
+      await reply(count ? "I sent " + count + " pending review card(s) above. Each approval is tied to the exact draft version." : "There are no pending DM/follow-up drafts awaiting approval.");
       return;
     }
     if (/^\/report(?:@\w+)?$/i.test(message)) {
-      await sendManagerReply(chatId, await buildManagerDailyReport(db));
+      await reply(await buildManagerDailyReport(db));
       return;
     }
     if (/^\/status(?:@\w+)?$/i.test(message)) {
       const context = await buildManagerKnowledgeContext(db);
-      await sendManagerReply(chatId,
-        "DFQLABS OS1 — Live operational context\\n\\n" + context +
-        "\\n\\nStatus is compiled directly from OS1 records. AI-generated interpretation is temporarily unavailable if a model provider is degraded.");
+      await reply("DFQLABS OS1 — Live operational context\n\n" + context + "\n\nStatus is compiled directly from OS1 records. AI-generated interpretation is temporarily unavailable if a model provider is degraded.");
       return;
     }
-    if (/^(hi|hello|hey|good morning|good afternoon|good evening)(?:\\s+manager)?[!. ]*$/i.test(message)) {
-      await sendManagerReply(chatId,
-        "Hello. DFQLABS OS1 Head of Business is online. I can coordinate prospect discovery, nurture drafts, LinkedIn drafts and operational reporting. AI model health is monitored separately; all outbound messages remain in founder approval.");
+    if (/^(hi|hello|hey|good morning|good afternoon|good evening)(?:\s+manager)?[!. ]*$/i.test(message)) {
+      await reply("I’m online and coordinating the DFQLABS OS1 operation. I can review pipeline health, delegate prospect discovery, prepare nurture drafts and surface opportunities. What would you like me to prioritize?");
       return;
     }
     if (/^\/nurture(?:@\w+)?$/i.test(message) || /\b(nurture|follow.?up)\b/i.test(message)) {
-      await sendManagerReply(chatId, "Understood. I'm checking the existing CRM, opt-out controls and recent queue before delegating a nurture batch.");
-      await sendManagerReply(chatId, await runManagerNurtureBatch());
+      await reply("Understood. I’m checking the existing CRM, opt-out controls and recent queue before delegating a nurture batch.");
+      await reply(await runManagerNurtureBatch());
+      await sendTelegramPendingApprovals(chatId, 8);
       return;
     }
     const scoutMatch = message.match(/^\/scout(?:@\w+)?(?:\s+(.+))?$/i);
     if (scoutMatch || /\b(find|discover|scout|prospect)\b/i.test(message)) {
       const city = (scoutMatch?.[1] || (message.match(/\b(Abuja|Lagos|Port Harcourt|Delta State|Edo State)\b/i)?.[0]) || "Abuja").trim();
       const result = await callInternalFounderRoute("/api/agents/scout", { city, limit: 10 });
-      await sendManagerReply(chatId, `Scout completed for ${city}. ${result.staged?.length || 0} verified candidate(s) staged; ${result.skipped?.length || 0} skipped. New leads are awaiting founder review.`);
+      await reply("Scout completed for " + city + ". " + (result.staged?.length || 0) + " verified candidate(s) staged; " + (result.skipped?.length || 0) + " skipped. New leads are awaiting founder review.");
+      await sendTelegramPendingApprovals(chatId, 8);
       return;
     }
     const linkedinMatch = message.match(/^\/linkedin(?:@\w+)?(?:\s+(.+))?$/i);
     if (linkedinMatch || /\b(linkedin post|linkedin article)\b/i.test(message)) {
       const topic = linkedinMatch?.[1] || message.replace(/.*\b(?:linkedin post|linkedin article)\b[:\s-]*/i, "").trim();
       const result = await callInternalFounderRoute("/api/agents/linkedin-article", { topic: topic || "A practical buyer-psychology insight for Nigerian real-estate brands" });
-      await sendManagerReply(chatId, "The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
+      await reply("The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
+      await sendTelegramPendingApprovals(chatId, 8);
       return;
     }
     const context = await buildManagerKnowledgeContext(db, message);
     const answer = await callGemini(SYSTEM_PROMPT,
-      "You are the DFQLABS OS1 Head of Business and sole interface to the founder. Coordinate Scout, Writer, Closer, Research and Dispatcher. Be direct and operational. Use the system context below. If the request asks for nurturing/follow-ups, delegate using the nurture workflow; if it asks for prospect discovery, delegate to Scout; if it asks for a LinkedIn article, delegate to Writer. Never claim an action was completed unless an execution result confirms it. Never authorize or send outbound messages. Ask one concise clarification only when necessary.\n\nSYSTEM CONTEXT:\n" + context + "\n\nFOUNDER MESSAGE:\n" + message,
+      "You are Harry, the DFQLABS OS1 Head of Business and sole interface to the founder. Be a capable, composed, proactive operations leader. Address the founder respectfully as Sir, but do not force the honorific into every sentence. Use natural language, concise operational updates and specific recommendations. Coordinate Scout, Writer, Closer, Research and Dispatcher. Never claim an action was completed unless an execution result confirms it. Never authorize or send outbound messages yourself; only a founder approval on the exact draft version can authorize WhatsApp dispatch. Ask one concise clarification only when necessary.\n\nSYSTEM CONTEXT:\n" + context + "\n\nFOUNDER MESSAGE:\n" + message,
       GEMINI_MODEL, 1400, 0.35);
-    await sendManagerReply(chatId, answer);
+    await reply(answer);
+    await sendTelegramPendingApprovals(chatId, 8);
   } catch (error: any) {
-    await sendManagerReply(chatId, "I couldn't complete that task: " + String(error?.message || error).slice(0,700) + "\n\nYour existing CRM and review queue remain unchanged.").catch(() => {});
+    await managerTelegramReply(chatId, "I couldn't complete that task: " + String(error?.message || error).slice(0,700) + "\n\nYour existing CRM and review queue remain unchanged.").catch(() => {});
   }
+}
+
+async function handleTelegramWebhookUpdate(body: any): Promise<void> {
+  if (!telegramConfig) return;
+  const callback = body?.callback_query;
+  if (callback) {
+    const chatId = callback?.message?.chat?.id === undefined ? "" : String(callback.message.chat.id);
+    if (chatId !== telegramConfig.allowedChatId) return;
+    await handleTelegramQueueCallback(callback);
+    return;
+  }
+  const message = body?.message;
+  const chatId = message?.chat?.id === undefined ? "" : String(message.chat.id);
+  if (!chatId || chatId !== telegramConfig.allowedChatId) return;
+  if (message?.voice?.file_id || message?.audio?.file_id) {
+    try {
+      const voice = message.voice || message.audio;
+      const transcript = await transcribeTelegramVoice(telegramConfig, String(voice.file_id), Number(voice.file_size || 0) || undefined);
+      await managerTelegramReply(chatId, "I’ve transcribed your voice note. I’m acting on the instruction now; any external message will still require your separate approval.\n\nTranscript: “" + transcript + "”");
+      await processManagerTelegramMessage(chatId, transcript);
+    } catch (error: any) {
+      await managerTelegramReply(chatId, "I received your voice note but could not transcribe it: " + String(error?.message || error).slice(0, 350));
+    }
+    return;
+  }
+  const textValue = typeof message?.text === "string" ? message.text : "";
+  if (!textValue) return;
+  await processManagerTelegramMessage(chatId, textValue);
 }
 
 app.post("/api/telegram/webhook", async (req, res) => {
@@ -744,31 +958,16 @@ app.post("/api/telegram/webhook", async (req, res) => {
   if (!verifyTelegramWebhookSecret(typeof secret === "string" ? secret : undefined, telegramConfig.webhookSecret)) {
     return res.status(401).json({ error: "Invalid Telegram webhook secret." });
   }
-  const callback = req.body?.callback_query;
-  if (callback) {
-    if (String(callback?.message?.chat?.id || "") !== telegramConfig.allowedChatId) return res.status(200).json({ok:true,ignored:true});
-    res.status(200).json({ok:true});
-    setImmediate(() => { void handleTelegramReviewCallback(callback); });
-    return;
+  const updateId = Number(req.body?.update_id);
+  if (Number.isSafeInteger(updateId)) {
+    const inserted = await db.query("INSERT INTO agent_telegram_updates (update_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING update_id", [updateId]);
+    if (!inserted.rowCount) return res.status(200).json({ ok: true, duplicate: true });
   }
-  const message = req.body?.message;
-  const chatId = message?.chat?.id === undefined ? "" : String(message.chat.id);
-  if (!chatId || chatId !== telegramConfig.allowedChatId) return res.status(200).json({ok:true,ignored:true});
-  res.status(200).json({ok:true});
-  const voice = message?.voice || message?.audio;
-  if (voice?.file_id) {
-    setImmediate(async () => {
-      try {
-        const transcript = await transcribeTelegramVoice(telegramConfig, String(voice.file_id), Number(voice.file_size || 0));
-        await sendTelegramMessage(telegramConfig, chatId, "Voice note transcribed: " + transcript);
-        await processManagerTelegramMessage(chatId, transcript);
-      } catch (error:any) { await sendTelegramMessage(telegramConfig, chatId, "Voice note could not be processed: " + String(error?.message || error).slice(0,250)); }
-    });
-    return;
-  }
-  const textValue = typeof message?.text === "string" ? message.text : "";
-  if (!textValue) return;
-  setImmediate(() => { void processManagerTelegramMessage(chatId, textValue); });
+  const update = req.body;
+  const chatId = update?.callback_query?.message?.chat?.id ?? update?.message?.chat?.id;
+  if (chatId === undefined || String(chatId) !== telegramConfig.allowedChatId) return res.status(200).json({ ok: true, ignored: true });
+  res.status(200).json({ ok: true });
+  setImmediate(() => { void handleTelegramWebhookUpdate(update).catch(error => console.error("Telegram update processing failed:", String(error?.message || error).slice(0, 300))); });
 });
 
 let managerDailyReportBusy = false;
@@ -1763,6 +1962,7 @@ async function dispatchApprovedQueue(): Promise<void> {
   let client: any = null;
   let locked = false;
   let claimedItem: any = null;
+  let sentSuccessfully = false;
   try {
     client = await db.connect();
     const lock = await client.query("SELECT pg_try_advisory_lock(hashtext($1)) AS locked", ["dfqlabs-os1-approved-dispatcher"]);
@@ -1863,6 +2063,7 @@ async function dispatchApprovedQueue(): Promise<void> {
       [randomUUID(), claimedItem.id, JSON.stringify({ leadId: lead.id, phone: phone.digits, externalMessageId: delivery.messageId, messageType })]
     );
     await client.query("COMMIT");
+    sentSuccessfully = true;
     void syncLearningForLead(updatedLead).catch(error => console.error("Agent outbound learning sync failed:", error));
     await db.query(
       "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'dispatcher','success',$2,1,0,$3::jsonb)",
@@ -1889,6 +2090,10 @@ async function dispatchApprovedQueue(): Promise<void> {
       client.release();
     }
     dispatcherBusy = false;
+    if (sentSuccessfully) {
+      const timer = setTimeout(() => { void dispatchApprovedQueue(); }, 1800);
+      timer.unref?.();
+    }
   }
 }
 
