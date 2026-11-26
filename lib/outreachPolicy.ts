@@ -9,7 +9,7 @@ export function normalizeCompanyIdentity(value: string | undefined): string {
     .split(/\s+/)
     .filter(Boolean)
     .filter(token => !["team", "the", "company", "co", "limited", "ltd", "llc", "plc", "developers", "developer", "development", "properties", "property", "realty", "real", "estate", "homes", "group"].includes(token))
-    .join(" ");
+    .join(" ").replace(/^(unknown|not recorded|not available|unassigned|none|n a)$/, "");
 }
 
 export function normalizePhoneIdentity(value: string | undefined): string {
@@ -27,7 +27,7 @@ export function latestOutboundTouch(lead: Lead): OutboundTouch | null {
       touches.push({ at: item.ts, text: item.text || "", id: item.outboundId || item.id, messageType: item.messageType });
     }
   }
-  if (!touches.length && lead.dmText && lead.lastContacted) touches.push({ at: lead.lastContacted, text: lead.dmText, id: "legacy-dmText", messageType: "INTRODUCTION_DM" });
+  if (!touches.length && lead.lastContacted && (lead.dmText || ["DM Sent", "Value Given", "Audit Delivered", "Proposal Sent"].includes(lead.status))) touches.push({ at: lead.lastContacted, text: lead.dmText || "", id: "legacy-dmText", messageType: "INTRODUCTION_DM" });
   const valid = touches.filter(item => Number.isFinite(new Date(item.at).getTime()));
   valid.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
   return valid[0] || null;
