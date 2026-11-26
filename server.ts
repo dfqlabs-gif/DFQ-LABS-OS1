@@ -25,7 +25,7 @@ import { answerTelegramCallback, getTelegramConfig, registerTelegramWebhook, sen
 import { buildManagerDailyReport, buildManagerKnowledgeContext } from "./lib/manager";
 import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
-import { chooseOutboundMessageType, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
+import { chooseOutboundMessageType, ensureProspectGreeting, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
 
 dotenv.config();
 
@@ -660,12 +660,38 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
   const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(10, limit))]);
   let greeting = result.rows.length ? await claimTelegramGreeting(chatId) : "";
   for (const row of result.rows) {
-    const hash = telegramDraftHash(String(row.draft_content || ""));
-    const recipient = [row.lead_name, row.lead_company].filter(Boolean).join(" · ") || "Unassigned prospect";
+    const rawDraft = String(row.draft_content || "");
+    const rawName = String(row.lead_name || "").trim();
+    const leadName = /^(unknown company|unknown|n\/a|not available|unassigned)$/i.test(rawName) ? "" : rawName;
+    const lead = { name: leadName, company: String(row.lead_company || "") };
+    const normalizedDraft = ensureProspectGreeting(lead, rawDraft);
+    let approvedDraft = rawDraft;
+    if (normalizedDraft !== rawDraft) {
+      const updated = await db.query("UPDATE agent_queue SET draft_content=$1 WHERE id=$2 AND status='pending_approval' AND draft_content=$3 RETURNING id", [normalizedDraft, row.id, rawDraft]);
+      if (!updated.rowCount) continue;
+      approvedDraft = normalizedDraft;
+    }
+    const hash = telegramDraftHash(approvedDraft);
+    const recipient = [leadName, lead.company].filter(Boolean).join(" · ") || "Unassigned prospect";
     const type = String(row.metadata?.messageType || row.action_type || "").replace(/_/g, " ").toUpperCase();
-    const phone = row.lead_phone ? "\nWhatsApp: " + row.lead_phone : "";
-    const body = ["DFQLABS OS1 — FOUNDER REVIEW", type + " · " + recipient + phone, "", String(row.draft_content || "").slice(0, 2800), "", row.reasoning ? "WHY THIS MESSAGE: " + String(row.reasoning).slice(0, 700) : "", "", "Approve to authorize this exact draft for WhatsApp dispatch. Editing invalidates this approval version.", "Queue ID: " + row.id].filter(Boolean).join("\n");
-    await sendTelegramMessage(telegramConfig, chatId, greeting + body, fetch, { inline_keyboard: [[
+    const details = [
+      "📋 FOUNDER REVIEW",
+      "",
+      "👤 PROSPECT",
+      recipient,
+      row.lead_phone ? "📞 WhatsApp: " + row.lead_phone : "",
+      "🏷️ " + type,
+      "",
+      "✉️ PROPOSED MESSAGE",
+      "────────────────────",
+      approvedDraft.slice(0, 2400),
+      row.reasoning ? "" : "",
+      row.reasoning ? "🧠 STRATEGY\n" + String(row.reasoning).slice(0, 350) : "",
+      "",
+      "🔐 Approving sends this exact version. Editing requires a fresh approval.",
+      "Reference: " + row.id,
+    ].filter(Boolean).join("\n");
+    await sendTelegramMessage(telegramConfig, chatId, greeting + details, fetch, { inline_keyboard: [[
       { text: "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
       { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
       { text: "Reject", callback_data: "q|r|" + row.id + "|" + hash },
@@ -674,7 +700,6 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
   }
   return result.rows.length;
 }
-
 async function handleTelegramQueueCallback(callback: any): Promise<void> {
   if (!telegramConfig) return;
   const chatId = callback?.message?.chat?.id === undefined ? "" : String(callback.message.chat.id);
@@ -928,10 +953,11 @@ async function handleTelegramWebhookUpdate(body: any): Promise<void> {
     try {
       const voice = message.voice || message.audio;
       const transcript = await transcribeTelegramVoice(telegramConfig, String(voice.file_id), Number(voice.file_size || 0) || undefined);
-      await managerTelegramReply(chatId, "I’ve transcribed your voice note. I’m acting on the instruction now; any external message will still require your separate approval.\n\nTranscript: “" + transcript + "”");
+      // Treat voice as an instruction, not content to echo back. The normal
+      // Manager workflow replies with its result; outbound still needs approval.
       await processManagerTelegramMessage(chatId, transcript);
     } catch (error: any) {
-      await managerTelegramReply(chatId, "I received your voice note but could not transcribe it: " + String(error?.message || error).slice(0, 350));
+      await managerTelegramReply(chatId, "I couldn't understand that voice note. Please try again, or send the instruction as text. (" + String(error?.message || error).slice(0, 180) + ")");
     }
     return;
   }
