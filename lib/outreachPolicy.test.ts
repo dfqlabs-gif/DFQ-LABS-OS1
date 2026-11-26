@@ -41,6 +41,7 @@ test("prospect greeting is respectful, personalized and Lagos-time aware", () =>
   assert.equal(formatProspectGreeting({ name: "", company: "Abode" }, new Date("2026-11-26T13:00:00+01:00")), "Good afternoon, Team Abode.");
   assert.equal(formatProspectGreeting({ name: "Ifeanyi", company: "Abode" }, new Date("2026-11-26T09:00:00+01:00")), "Good morning, Ifeanyi.");
   assert.equal(formatProspectGreeting({ name: "", company: "Abode" }, new Date("2026-11-26T18:00:00+01:00")), "Good evening, Team Abode.");
+  assert.equal(formatProspectGreeting({ name: "Team Novo developers", company: "Unknown Company" }, new Date("2026-11-26T14:00:00+01:00")), "Good afternoon, Team Novo developers.");
 });
 
 test("greeting enforcement corrects missing addressees and duplicate company openings", () => {
