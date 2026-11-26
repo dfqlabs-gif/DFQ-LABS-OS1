@@ -815,9 +815,9 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
   const callbackId = String(callback?.id || "");
   const senderId = callback?.from?.id === undefined ? "" : String(callback.from.id);
   if (!chatId || chatId !== telegramConfig.allowedChatId || !callbackId || (senderId && senderId !== telegramConfig.allowedChatId)) return;
+  await answerTelegramCallback(telegramConfig, callbackId, "Received. Processing your review…").catch(() => {});
   const match = String(callback?.data || "").match(/^q\|(a|e|r)\|([0-9a-f-]{36})\|([a-f0-9]{16})$/i);
   if (!match) {
-    await answerTelegramCallback(telegramConfig, callbackId, "This action is invalid or expired.").catch(() => {});
     return;
   }
   const action = match[1];
@@ -830,22 +830,19 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
     const item = found.rows[0];
     if (!item || item.status !== "pending_approval" || telegramDraftHash(String(item.draft_content || "")) !== expectedHash) {
       await client.query("ROLLBACK");
-      await answerTelegramCallback(telegramConfig, callbackId, "This draft changed or is no longer awaiting approval.").catch(() => {});
       await managerTelegramReply(chatId, "That review card is stale. I have not approved or sent anything. Please use the latest draft card.");
       return;
     }
     if (action === "e") {
       await client.query("INSERT INTO agent_telegram_edit_sessions (chat_id, queue_id, expected_hash, created_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (chat_id) DO UPDATE SET queue_id=EXCLUDED.queue_id, expected_hash=EXCLUDED.expected_hash, created_at=NOW()", [chatId, queueId, expectedHash]);
       await client.query("COMMIT");
-      await answerTelegramCallback(telegramConfig, callbackId, "Edit mode opened.");
       await managerTelegramReply(chatId, "Send your revised message as your next Telegram text message. I will save it as a new draft version and show it to you for approval. Nothing will be sent until you approve the revised version.\n\nQueue ID: " + queueId + "\nSend /cancel_edit to cancel.");
       return;
     }
     if (action === "r") {
       await client.query("UPDATE agent_queue SET status='rejected', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log='Rejected by founder in Telegram.' WHERE id=$1 AND status='pending_approval'", [queueId]);
       await client.query("COMMIT");
-      await answerTelegramCallback(telegramConfig, callbackId, "Draft rejected.");
-      await managerTelegramReply(chatId, "Rejected. That message will not be sent.");
+      await managerTelegramReply(chatId, "Rejected — prospect record " + String(item.lead_id || queueId) + ". That message will not be sent.");
       return;
     }
     if (item.lead_id) {
@@ -853,7 +850,6 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
       if (control.rows[0]?.do_not_contact) {
         await client.query("UPDATE agent_queue SET status='rejected', reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log='Blocked: do-not-contact flag is active.' WHERE id=$1", [queueId]);
         await client.query("COMMIT");
-        await answerTelegramCallback(telegramConfig, callbackId, "Blocked by do-not-contact.");
         await managerTelegramReply(chatId, "I could not approve this message because the prospect is marked Do Not Contact.");
         return;
       }
@@ -861,17 +857,14 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
     const updated = await client.query("UPDATE agent_queue SET status=CASE WHEN action_type='log_inbound' THEN 'completed' ELSE 'approved' END, reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log=NULL WHERE id=$1 AND status='pending_approval' RETURNING action_type", [queueId]);
     if (!updated.rowCount) {
       await client.query("ROLLBACK");
-      await answerTelegramCallback(telegramConfig, callbackId, "Already reviewed.");
       return;
     }
     await client.query("INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'telegram-founder','queue_item_approved',$2,$3::jsonb)", [randomUUID(), queueId, JSON.stringify({ channel: "telegram", draftHash: expectedHash })]);
     await client.query("COMMIT");
-    await answerTelegramCallback(telegramConfig, callbackId, "Approved. Dispatch authorized.");
-    await managerTelegramReply(chatId, "Approved, Sir. The dispatcher is authorized to send this exact version through the connected WhatsApp account. I will report the recorded outcome.");
+    await managerTelegramReply(chatId, "Approved — prospect record " + String(item.lead_id || queueId) + ". The Dispatcher is authorized to send this exact version. I will confirm the WhatsApp message ID and CRM reconciliation separately.");
     void dispatchApprovedQueue();
   } catch (error: any) {
     await client.query("ROLLBACK").catch(() => {});
-    await answerTelegramCallback(telegramConfig, callbackId, "Could not process this review.").catch(() => {});
     await managerTelegramReply(chatId, "I could not process that review: " + String(error?.message || error).slice(0, 250));
   } finally {
     client.release();
@@ -943,7 +936,7 @@ async function notifyAuditIntent(lead: Lead, inbound: WhatsAppInbound): Promise<
 }
 
 async function processTelegramEdit(chatId: string, textValue: string): Promise<boolean> {
-  const session = await db.query("SELECT queue_id, expected_hash FROM agent_telegram_edit_sessions WHERE chat_id=$1 AND created_at > NOW()-INTERVAL '30 minutes'", [chatId]);
+  const session = await db.query("SELECT e.queue_id, e.expected_hash, q.draft_content, q.lead_id, l.data AS lead_data FROM agent_telegram_edit_sessions e JOIN agent_queue q ON q.id=e.queue_id LEFT JOIN leads l ON l.id=q.lead_id WHERE e.chat_id=$1 AND e.created_at > NOW()-INTERVAL '30 minutes'", [chatId]);
   if (!session.rowCount) return false;
   if (/^\/cancel_edit(?:@\w+)?$/i.test(textValue.trim())) {
     await db.query("DELETE FROM agent_telegram_edit_sessions WHERE chat_id=$1", [chatId]);
@@ -966,7 +959,21 @@ async function processTelegramEdit(chatId: string, textValue: string): Promise<b
       await managerTelegramReply(chatId, "The original draft changed or was already reviewed. I discarded this edit session; please review the latest card.");
       return true;
     }
-    const revised = textValue.trim();
+    const originalDraft = String(session.rows[0].draft_content || current.rows[0].draft_content || "");
+    const lead = session.rows[0].lead_data as Lead | undefined;
+    const looksLikeReplacement = /^(good (morning|afternoon|evening)|hello|hi|dear)\b/i.test(textValue.trim()) && textValue.trim().length > 35;
+    const editContext = [
+      "You are revising a pending DFQLABS prospect message at the founder's instruction.",
+      "Treat the founder's latest text as EDIT INSTRUCTIONS unless it is clearly a complete replacement message.",
+      "Apply only the requested changes. Preserve correct facts, intent, chronology, greeting context and prospect-specific details.",
+      "Never copy the editing instruction into the prospect message. Never invent audit findings, research, links, offers or previous conversations.",
+      "Return ONLY the final WhatsApp message, without quotation marks, explanation or strategy.",
+      "CURRENT DRAFT:\\n" + originalDraft,
+      "PROSPECT CONTEXT:\\n" + JSON.stringify({name:lead?.name,company:lead?.company,status:lead?.status,notes:lead?.notes,lastContacted:lead?.lastContacted,conversationLog:(lead?.conversationLog||[]).slice(-8)}),
+      "FOUNDER EDIT INSTRUCTION:\\n" + textValue.trim()
+    ].join("\\n\\n");
+    const revised = looksLikeReplacement ? textValue.trim() : String(await callGemini(SYSTEM_PROMPT, editContext, GEMINI_MODEL, 500, 0.2)).trim();
+    if (!revised || revised.length > 4000 || /^(here is|revised message:|final message:)/i.test(revised)) throw new Error("The edit could not be converted into a clean message. The original draft remains unchanged.");
     await client.query("UPDATE agent_queue SET draft_content=$1, updated_at=NOW(), error_log=NULL WHERE id=$2", [revised, queueId]);
     await client.query("DELETE FROM agent_telegram_edit_sessions WHERE chat_id=$1", [chatId]);
     await client.query(
