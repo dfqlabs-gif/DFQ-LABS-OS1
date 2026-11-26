@@ -111,7 +111,7 @@ test("Telegram voice transcription supports Gemini as the only configured provid
 });
 
 test("Telegram text normalization removes Markdown markers and preserves readable structure", () => {
-  const result = normalizeTelegramText("### **Operational Overview**\\n\\n1. **Active leads:** 518\\n* Scout needs review\\n- Follow up with warm leads");
+  const result = normalizeTelegramText("### **Operational Overview**\n\n1. **Active leads:** 518\n* Scout needs review\n- Follow up with warm leads");
   assert.equal(result.includes("#"), false);
   assert.equal(result.includes("**"), false);
   assert.match(result, /Operational Overview/);
