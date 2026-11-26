@@ -2202,14 +2202,28 @@ async function dispatchApprovedQueue(): Promise<void> {
 
     // Keep the lead row locked through the final DNC check and WhatsApp handoff.
     // If delivery becomes uncertain, the queue is failed for manual verification and is never auto-retried.
+    await client.query("UPDATE agent_queue SET metadata=metadata || $1::jsonb WHERE id=$2 AND status='sending'", [JSON.stringify({ outboundId: outbound.id, leadId: lead.id }), claimedItem.id]);
     const delivery = await whatsappBridge.sendText(phone.international, claimedItem.draft_content);
+    if (!delivery.messageId) throw new Error("WhatsApp returned no message ID; delivery outcome is uncertain. Verify manually before retrying.");
     const sentAt = new Date().toISOString();
-    const updatedLead = commitOutboundSent(withGeneratedOutbound, outbound.id, sentAt);
+    // Persist the external WhatsApp receipt independently before CRM reconciliation.
+    // If the following CRM transaction fails, the message ID remains available for safe recovery.
+    await client.query("COMMIT");
+    await db.query("UPDATE agent_queue SET external_message_id=$1, sent_at=$2::timestamptz, metadata=metadata || $3::jsonb, updated_at=NOW() WHERE id=$4 AND status='sending'", [
+      delivery.messageId, sentAt, JSON.stringify({ deliveryConfirmed: true }), claimedItem.id
+    ]);
+    await client.query("BEGIN");
+    const latestLeadResult = await client.query("SELECT data FROM leads WHERE id=$1 FOR UPDATE", [lead.id]);
+    const latestLead = latestLeadResult.rows[0]?.data as Lead | undefined;
+    if (!latestLead) throw new Error("WhatsApp delivery confirmed, but CRM lead disappeared before reconciliation. External message ID has been retained.");
+    const latestOutbound = (latestLead.outboundMessages || []).find((item: any) => item.id === outbound.id);
+    if (!latestOutbound) throw new Error("WhatsApp delivery confirmed, but outbound CRM record is missing. External message ID has been retained.");
+    const updatedLead = commitOutboundSent(latestLead, outbound.id, sentAt);
     await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(updatedLead), lead.id]);
     await client.query(`
-      UPDATE agent_queue SET status='sent', external_message_id=$1, sent_at=$2::timestamptz, updated_at=NOW(), error_log=NULL
-      WHERE id=$3 AND status='sending'
-    `, [delivery.messageId, sentAt, claimedItem.id]);
+      UPDATE agent_queue SET status='sent', sent_at=$1::timestamptz, updated_at=NOW(), error_log=NULL
+      WHERE id=$2 AND status='sending'
+    `, [sentAt, claimedItem.id]);
     await client.query(
       "INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'system:dispatcher','outbound_sent',$2,$3::jsonb)",
       [randomUUID(), claimedItem.id, JSON.stringify({ leadId: lead.id, phone: phone.digits, externalMessageId: delivery.messageId, messageType })]
@@ -2225,7 +2239,7 @@ async function dispatchApprovedQueue(): Promise<void> {
     if (client) await client.query("ROLLBACK").catch(() => {});
     if (claimedItem?.id) {
       const safeError = String(error?.message || "WhatsApp send failed; delivery outcome may be uncertain.").slice(0, 500);
-      await db.query("UPDATE agent_queue SET status='failed', error_log=$1, updated_at=NOW() WHERE id=$2 AND status='sending'", [safeError + " Verify the WhatsApp chat manually before any retry.", claimedItem.id]).catch(() => {});
+      await db.query("UPDATE agent_queue SET status=CASE WHEN external_message_id IS NOT NULL THEN 'sending' ELSE 'failed' END, error_log=$1, updated_at=NOW() WHERE id=$2 AND status='sending'", [safeError + " Verify the WhatsApp chat manually before any retry. If an external message ID exists, reconcile the CRM record; do not resend.", claimedItem.id]).catch(() => {});
       const prior = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='dispatcher' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
       const failures = prior.rows[0]?.status === "error" ? Number(prior.rows[0].consecutive_failures || 0) + 1 : 1;
       const status = failures >= 2 ? "halted_circuit_breaker" : "error";
