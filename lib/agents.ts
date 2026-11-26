@@ -11,6 +11,7 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS agent_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       automation_mode TEXT NOT NULL DEFAULT 'queue_only' CHECK (automation_mode IN ('queue_only','autopilot')),
+      inbound_auto_reply_enabled BOOLEAN NOT NULL DEFAULT TRUE,
       daily_outreach_cap INTEGER NOT NULL DEFAULT 30 CHECK (daily_outreach_cap BETWEEN 1 AND 100),
       daily_value_dm_cap INTEGER NOT NULL DEFAULT 30 CHECK (daily_value_dm_cap BETWEEN 1 AND 100),
       brand_voice TEXT NOT NULL DEFAULT 'Sharp, consultative, peer-to-peer buyer psychology authority for real-estate brands. Never needy, hype-heavy or aggressively salesy.',
@@ -162,6 +163,7 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await db.query("ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS inbound_auto_reply_enabled BOOLEAN NOT NULL DEFAULT TRUE");
   await db.query("INSERT INTO agent_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
 }
 
