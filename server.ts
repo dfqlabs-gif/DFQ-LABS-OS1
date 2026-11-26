@@ -867,6 +867,16 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
   if (!telegramConfig) return;
   const message = textValue.trim().slice(0,4000);
   try {
+    if (message.toLowerCase().startsWith("/edit ")) {
+      const rest = message.slice(6).trim(); const split = rest.indexOf(" ");
+      if (split < 1) { await sendManagerReply(chatId, "Format: /edit QUEUE_ID complete revised message"); return; }
+      const queueId = rest.slice(0, split); const revised = rest.slice(split + 1).trim();
+      if (!revised) { await sendManagerReply(chatId, "The revised message cannot be empty."); return; }
+      const saved = await db.query("UPDATE agent_queue SET draft_content=$1,updated_at=NOW(),error_log=NULL WHERE id=$2 AND status=$3 AND action_type=ANY($4::text[]) RETURNING id", [revised, queueId, "pending_approval", ["outreach_dm","value_dm","follow_up"]]);
+      if (!saved.rowCount) { await sendManagerReply(chatId, "That draft is no longer pending and cannot be edited."); return; }
+      await sendManagerReply(chatId, "Edited and saved. The previous approval is invalidated; review the new version below.");
+      await sendTelegramReviewCards(chatId, 5); return;
+    }
     if (await processTelegramEdit(chatId, message)) return;
     const reply = (text: string, markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }) =>
       managerTelegramReply(chatId, text, markup);
