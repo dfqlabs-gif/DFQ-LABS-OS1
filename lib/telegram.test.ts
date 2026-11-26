@@ -95,3 +95,17 @@ test("Telegram voice transcription falls back to Gemini after Groq rejects the a
   assert.equal(transcript, "Run the nurture workflow for eligible leads.");
   assert.equal(calls.some(url => url.includes("generativelanguage.googleapis.com")), true);
 });
+
+test("Telegram voice transcription supports Gemini as the only configured provider", async () => {
+  const fetchMock: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("getFile")) return new Response(JSON.stringify({ ok: true, result: { file_path: "voice/file.oga" } }), { status: 200 });
+    if (url.includes("/file/bot")) return new Response(new Uint8Array([79, 103, 103, 83]), { status: 200, headers: { "content-type": "application/octet-stream" } });
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "Run the nurture workflow." }] } }] }), { status: 200 });
+  };
+  const transcript = await transcribeTelegramVoice(
+    { botToken: "x", webhookSecret: "y", allowedChatId: "1" }, "file-id", 4,
+    { GEMINI_API_KEY: "test-gemini" }, fetchMock,
+  );
+  assert.equal(transcript, "Run the nurture workflow.");
+});
