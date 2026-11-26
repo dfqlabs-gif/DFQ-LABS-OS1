@@ -724,18 +724,25 @@ async function runManagerNurtureBatch(targetName?: string, requestedCount = 10, 
     ? "I found the CRM record, but it is not eligible for a follow-up right now. No changes were made."
     : "I found 0 qualifying leads. No drafts were created. " + (auditOnly ? "No CRM record had verifiable audit-delivery evidence and no subsequent response." : "No leads currently meet the nurture criteria.");
   const actionType = auditOnly ? "value_dm" : "follow_up";
-  const results = await Promise.all(candidates.map(async (lead: Lead) => {
-    try {
-      const result = await callInternalFounderRoute("/api/agents/generate", { leadIds: [lead.id], actionType });
-      return { staged: result.staged || [], skipped: result.skipped || [] };
-    } catch (error: any) {
-      const key = "agent-draft:" + lead.id + ":" + actionType + ":" + new Date().toISOString().slice(0,10);
-      const existing = await db.query("SELECT id, draft_content, status FROM agent_queue WHERE idempotency_key=$1 LIMIT 1", [key]).catch(() => ({ rows: [] as any[] }));
-      return existing.rows[0]
-        ? { staged: [existing.rows[0]], skipped: [(lead.company || lead.name || lead.id) + ": response timed out; existing draft reconciled."] }
-        : { staged: [], skipped: [(lead.company || lead.name || lead.id) + ": timed out or failed; verify the queue before retrying."] };
+  const results: Array<{staged:any[]; skipped:string[]}> = new Array(candidates.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(4, candidates.length) }, async () => {
+    while (cursor < candidates.length) {
+      const index = cursor++;
+      const lead = candidates[index];
+      try {
+        const result = await callInternalFounderRoute("/api/agents/generate", { leadIds: [lead.id], actionType });
+        results[index] = { staged: result.staged || [], skipped: result.skipped || [] };
+      } catch (error: any) {
+        const key = "agent-draft:" + lead.id + ":" + actionType + ":" + new Date().toISOString().slice(0,10);
+        const existing = await db.query("SELECT id, draft_content, status FROM agent_queue WHERE idempotency_key=$1 LIMIT 1", [key]).catch(() => ({ rows: [] as any[] }));
+        results[index] = existing.rows[0]
+          ? { staged: [existing.rows[0]], skipped: [(lead.company || lead.name || lead.id) + ": response timed out; existing draft reconciled."] }
+          : { staged: [], skipped: [(lead.company || lead.name || lead.id) + ": timed out or failed; verify the queue before retrying."] };
+      }
     }
-  }));
+  });
+  await Promise.all(workers);
   const staged = results.flatMap(result => result.staged);
   const skipped = results.flatMap(result => result.skipped);
   return "Nurture cohort completed.\nRequested: " + requestedCount + ".\nQualifying leads selected: " + candidates.length +
@@ -766,7 +773,7 @@ function telegramDraftHash(content: string): string {
 
 async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
   if (!telegramConfig) return 0;
-  const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(10, limit))]);
+  const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(40, limit))]);
   let greeting = result.rows.length ? await claimTelegramGreeting(chatId) : "";
   for (const row of result.rows) {
     const rawDraft = String(row.draft_content || "");
