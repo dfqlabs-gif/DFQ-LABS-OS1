@@ -141,10 +141,17 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
   `);
   await db.query(`
     CREATE TABLE IF NOT EXISTS agent_telegram_greeting_state (
-      chat_id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
       greeted_date DATE NOT NULL,
       greeted_part TEXT NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (chat_id, greeted_date, greeted_part)
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_telegram_updates (
+      update_id BIGINT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
   await db.query(`
