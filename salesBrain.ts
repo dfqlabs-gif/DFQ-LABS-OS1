@@ -81,6 +81,7 @@ Use only verified CRM/conversation information below. Never fabricate a person n
 
 Chronology: ${chronology}
 OUTREACH RELATIONSHIP RULES:
+- DAILY COMMERCIAL TARGET: work toward at least 30 quality, distinct prospect-company outreach attempts per Lagos day. Count only unique companies and only confirmed sends as completed outreach. The target never overrides relevance, factual accuracy, opt-outs, or duplicate protection; if there are fewer than 30 qualified prospects, report the shortfall rather than lowering standards.
 - Never contact the same prospect or company twice on the same Lagos calendar day. If a message was already sent today, recommend no second outbound; the system should skip it rather than generate another DM.
 - For outreach 1–7 days after a prior message, acknowledge the exact recent interaction and continue naturally; do not restart the introduction.
 - For 8–29 days of silence, use a gentle follow-up with a fresh useful angle and honest timing; do not say yesterday or recently unless the timestamp supports it.
@@ -89,6 +90,7 @@ OUTREACH RELATIONSHIP RULES:
 - Do not invent profile observations, company projects, buyer objections, performance data, or prior promises. If evidence is thin, write a modest useful observation or skip the lead.
 - Do not repeat the same message angle already used in this lead's history.
 Current stage objective: ${stageObjective(lead.status || "New")}
+If this stage objective conflicts with the verified sent-message chronology, the actual chronology and relationship rules take precedence. Never restart a completed or previously attempted stage.
 Timeline: ${timeline}
 Requested task: ${options.task || "Determine and prepare the best next outbound action."}
 Requested type: ${requested}
