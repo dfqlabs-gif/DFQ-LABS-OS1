@@ -30,7 +30,7 @@ test("a new event appended while one is removed is retained and the undo is not 
 });
 
 test("protected anchors cannot be removed and deleted events disappear from AI context", () => {
-  const opening = event("opening", anchors.dmText, "2026-09-11T08:00:00.000Z");
+  const opening = { ...event("opening", anchors.dmText, "2026-09-11T08:00:00.000Z"), outboundId: undefined };
   const initial = event("initial", anchors.initial, "2026-09-11T08:01:00.000Z", "inbound");
   const testMessage = event("test", "Delete me", "2026-09-11T08:20:00.000Z");
   assert.throws(() => removeConversationEvent([opening, initial, testMessage], "opening", anchors.dmText, anchors.initial, "now"), /anchors/);
