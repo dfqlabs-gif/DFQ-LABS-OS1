@@ -77,3 +77,21 @@ test("Telegram OGG voice notes upload with normalized MIME type and useful Groq 
   assert.equal(audio.type, "audio/ogg");
   assert.equal(form.get("model"), "whisper-large-v3-turbo");
 });
+
+test("Telegram voice transcription falls back to Gemini after Groq rejects the audio", async () => {
+  const calls: string[] = [];
+  const fetchMock: typeof fetch = async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("getFile")) return new Response(JSON.stringify({ ok: true, result: { file_path: "voice/file.oga" } }), { status: 200 });
+    if (url.includes("/file/bot")) return new Response(new Uint8Array([79, 103, 103, 83]), { status: 200, headers: { "content-type": "application/octet-stream" } });
+    if (url.includes("groq.com")) return new Response(JSON.stringify({ error: { message: "Invalid file format" } }), { status: 400 });
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "Run the nurture workflow for eligible leads." }] } }] }), { status: 200 });
+  };
+  const transcript = await transcribeTelegramVoice(
+    { botToken: "x", webhookSecret: "y", allowedChatId: "1" }, "file-id", 4,
+    { GROQ_API_KEY: "test-groq", GEMINI_API_KEY: "test-gemini" }, fetchMock,
+  );
+  assert.equal(transcript, "Run the nurture workflow for eligible leads.");
+  assert.equal(calls.some(url => url.includes("generativelanguage.googleapis.com")), true);
+});
