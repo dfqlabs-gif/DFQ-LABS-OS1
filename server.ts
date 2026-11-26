@@ -2106,6 +2106,40 @@ async function runDailyCloserIfDue(): Promise<void> {
 
 let dispatcherBusy = false;
 
+async function reconcileConfirmedDispatches(): Promise<number> {
+  const pending = await db.query("SELECT id, lead_id, external_message_id, sent_at, metadata FROM agent_queue WHERE status='sending' AND external_message_id IS NOT NULL ORDER BY updated_at ASC LIMIT 50");
+  let reconciled = 0;
+  for (const item of pending.rows) {
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const locked = await client.query("SELECT * FROM agent_queue WHERE id=$1 AND status='sending' AND external_message_id IS NOT NULL FOR UPDATE", [item.id]);
+      if (!locked.rowCount) { await client.query("ROLLBACK"); continue; }
+      const leadResult = await client.query("SELECT data FROM leads WHERE id=$1 FOR UPDATE", [item.lead_id]);
+      const lead = leadResult.rows[0]?.data as Lead | undefined;
+      const outboundId = String(locked.rows[0].metadata?.outboundId || "");
+      if (!lead || !outboundId) throw new Error("Delivery receipt exists but lead or outbound reference is missing.");
+      const outbound = (lead.outboundMessages || []).find((entry: any) => entry.id === outboundId);
+      if (!outbound) throw new Error("Delivery receipt exists but canonical outbound record is missing.");
+      const sentAt = item.sent_at ? new Date(item.sent_at).toISOString() : new Date().toISOString();
+      const updatedLead = commitOutboundSent(lead, outboundId, sentAt);
+      await client.query("UPDATE leads SET data=$1::jsonb, updated_at=NOW() WHERE id=$2", [JSON.stringify(updatedLead), item.lead_id]);
+      await client.query("UPDATE agent_queue SET status='sent', sent_at=$1::timestamptz, updated_at=NOW(), error_log=NULL WHERE id=$2 AND status='sending'", [sentAt, item.id]);
+      await client.query("INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'system:dispatcher','outbound_reconciled',$2,$3::jsonb)", [
+        randomUUID(), item.id, JSON.stringify({ leadId: item.lead_id, externalMessageId: item.external_message_id, outboundId, recovered: true })
+      ]);
+      await client.query("COMMIT");
+      reconciled++;
+      void syncLearningForLead(updatedLead).catch(error => console.error("Recovered outbound learning sync failed:", String(error?.message || error).slice(0,180)));
+      await managerTelegramReply(telegramConfig?.allowedChatId || "", "WhatsApp delivery confirmed and CRM thread reconciled for prospect record " + item.lead_id + ". External message ID: " + item.external_message_id + ".");
+    } catch (error: any) {
+      await client.query("ROLLBACK").catch(() => {});
+      console.error("Confirmed WhatsApp delivery reconciliation failed:", String(error?.message || error).slice(0,240));
+    } finally { client.release(); }
+  }
+  return reconciled;
+}
+
 async function dispatchApprovedQueue(): Promise<void> {
   if (dispatcherBusy) return;
   const bridgeStatus = await whatsappBridge.status();
