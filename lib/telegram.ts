@@ -25,14 +25,14 @@ export function verifyTelegramWebhookSecret(received: string | undefined, expect
 
 export function normalizeTelegramText(input: string): string {
   return String(input || "")
-    .replace(/^\\s{0,3}#{1,6}\\s*/gm, "")
-    .replace(/\\*\\*(.*?)\\*\\*/gs, "$1")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/\*\*(.*?)\*\*/gs, "$1")
     .replace(/__(.*?)__/gs, "$1")
-    .replace(/(^|\\n)\\s*\\*\\s+/g, "$1• ")
-    .replace(/(^|\\n)\\s*[-+]\\s+/g, "$1• ")
-    .replace(/^\\s*[-*_]{3,}\\s*$/gm, "")
-    .replace(/\\s+([,.;!?])/g, "$1")
-    .replace(/\\n{3,}/g, "\\n\\n")
+    .replace(/(^|\n)\s*\*\s+/g, "$1• ")
+    .replace(/(^|\n)\s*[-+]\s+/g, "$1• ")
+    .replace(/^\s*[-*_]{3,}\s*$/gm, "")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
