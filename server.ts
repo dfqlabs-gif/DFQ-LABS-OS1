@@ -2210,12 +2210,13 @@ async function dispatchApprovedQueue(): Promise<void> {
     // Keep the lead row locked through the final DNC check and WhatsApp handoff.
     // If delivery becomes uncertain, the queue is failed for manual verification and is never auto-retried.
     await client.query("UPDATE agent_queue SET metadata=metadata || $1::jsonb WHERE id=$2 AND status='sending'", [JSON.stringify({ outboundId: outbound.id, leadId: lead.id }), claimedItem.id]);
+    // Commit the prepared outbound record before the external side effect.
+    // A crash after WhatsApp accepts the message can then be reconciled from its receipt.
+    await client.query("COMMIT");
     const delivery = await whatsappBridge.sendText(phone.international, claimedItem.draft_content);
     if (!delivery.messageId) throw new Error("WhatsApp returned no message ID; delivery outcome is uncertain. Verify manually before retrying.");
     const sentAt = new Date().toISOString();
     // Persist the external WhatsApp receipt independently before CRM reconciliation.
-    // If the following CRM transaction fails, the message ID remains available for safe recovery.
-    await client.query("COMMIT");
     await db.query("UPDATE agent_queue SET external_message_id=$1, sent_at=$2::timestamptz, metadata=metadata || $3::jsonb, updated_at=NOW() WHERE id=$4 AND status='sending'", [
       delivery.messageId, sentAt, JSON.stringify({ deliveryConfirmed: true }), claimedItem.id
     ]);
