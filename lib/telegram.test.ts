@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, transcribeTelegramVoice, verifyTelegramWebhookSecret } from "./telegram.js";
+import { getTelegramConfig, normalizeTelegramText, registerTelegramWebhook, sendTelegramMessage, transcribeTelegramVoice, verifyTelegramWebhookSecret } from "./telegram.js";
 
 test("Telegram config requires all secrets and allowed chat ID", () => {
   assert.equal(getTelegramConfig({ TELEGRAM_BOT_TOKEN: "x", TELEGRAM_WEBHOOK_SECRET: "y" }), null);
@@ -109,3 +109,14 @@ test("Telegram voice transcription supports Gemini as the only configured provid
   );
   assert.equal(transcript, "Run the nurture workflow.");
 });
+
+test("Telegram text normalization removes Markdown markers and preserves readable structure", () => {
+  const result = normalizeTelegramText("### **Operational Overview**\\n\\n1. **Active leads:** 518\\n* Scout needs review\\n- Follow up with warm leads");
+  assert.equal(result.includes("#"), false);
+  assert.equal(result.includes("**"), false);
+  assert.match(result, /Operational Overview/);
+  assert.match(result, /Active leads: 518/);
+  assert.match(result, /• Scout needs review/);
+  assert.match(result, /• Follow up with warm leads/);
+});
+
