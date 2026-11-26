@@ -24,7 +24,7 @@ test("Telegram webhook registers only message updates and retains pending update
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   });
   assert.equal(sent.url, "https://staging.example.com/api/telegram/webhook");
-  assert.deepEqual(sent.allowed_updates, ["message"]);
+  assert.deepEqual(sent.allowed_updates, ["message", "callback_query"]);
   assert.equal(sent.drop_pending_updates, false);
 });
 
