@@ -64,6 +64,12 @@ export function formatProspectGreeting(lead: Pick<Lead, "name" | "company">, now
   return salutation + ", " + recipient + ".";
 }
 
+export function ensureProspectGreeting(lead: Pick<Lead, "name" | "company">, message: string, now = new Date()): string {
+  const clean = String(message || "").trim();
+  if (/^(hi|hello|good morning|good afternoon|good evening|dear)\\b/i.test(clean)) return clean;
+  return formatProspectGreeting(lead, now) + " " + clean;
+}
+
 export function buildOutreachChronology(lead: Lead, now = new Date()): string {
   const last = latestOutboundTouch(lead);
   if (!last) return "CHRONOLOGY: No confirmed sent outbound message is recorded for this lead. Treat this as a first touch. Do not imply prior contact.";
