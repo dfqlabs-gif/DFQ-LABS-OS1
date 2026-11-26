@@ -49,42 +49,62 @@ export async function buildManagerKnowledgeContext(db: Pool, query = ""): Promis
 }
 
 export async function buildManagerDailyReport(db: Pool): Promise<string> {
-  const [leads, queue, agents, learning] = await Promise.all([
+  const dayStart = "(date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')";
+  const [leads, queue, agents, learning, inbound, pipeline] = await Promise.all([
     db.query(`SELECT COUNT(*)::int AS total,
       COUNT(*) FILTER (WHERE LOWER(COALESCE(data->>'status','')) NOT IN ('closed','lost','converted','not interested','dnc'))::int AS active,
       COUNT(*) FILTER (WHERE LOWER(COALESCE(data->>'status','')) IN ('closed','converted','client closed'))::int AS won
       FROM leads`),
     db.query(`SELECT
       COUNT(*) FILTER (WHERE status='pending_approval')::int AS pending,
-      COUNT(*) FILTER (WHERE status='sent' AND sent_at >= NOW() - INTERVAL '24 hours')::int AS sent_24h,
-      COUNT(*) FILTER (WHERE status='failed' AND updated_at >= NOW() - INTERVAL '24 hours')::int AS failed_24h
+      COUNT(*) FILTER (WHERE status='sent' AND sent_at >= ${dayStart})::int AS sent_today,
+      COUNT(*) FILTER (WHERE status='sent' AND sent_at >= ${dayStart} AND action_type='outreach_dm')::int AS first_touch,
+      COUNT(*) FILTER (WHERE status='sent' AND sent_at >= ${dayStart} AND action_type='value_dm')::int AS value_dm,
+      COUNT(*) FILTER (WHERE status='sent' AND sent_at >= ${dayStart} AND action_type='follow_up' AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM')::int AS follow_ups,
+      COUNT(*) FILTER (WHERE status='sent' AND sent_at >= ${dayStart} AND COALESCE(metadata->>'messageType','')='RESPONSE_DM')::int AS inbound_replies_sent,
+      COUNT(*) FILTER (WHERE status='failed' AND updated_at >= ${dayStart})::int AS failed_today
       FROM agent_queue`),
     db.query(`SELECT agent_name, status, summary, items_processed, created_at
-      FROM agent_logs WHERE created_at >= NOW() - INTERVAL '24 hours'
-      ORDER BY created_at DESC LIMIT 30`),
+      FROM agent_logs WHERE created_at >= ${dayStart}
+      ORDER BY created_at DESC LIMIT 20`),
     db.query(`SELECT COUNT(*)::int AS events,
       COUNT(*) FILTER (WHERE data->>'outcome' IN ('POSITIVE_REPLY','QUESTION','INTERESTED','PRICING_REQUEST','MEETING_REQUEST','MEETING_BOOKED','QUALIFIED','CONVERTED'))::int AS positive,
       COUNT(*) FILTER (WHERE data->>'outcome'='MEETING_BOOKED')::int AS meetings,
       COUNT(*) FILTER (WHERE data->>'outcome'='CONVERTED')::int AS conversions
-      FROM sales_learning_events WHERE updated_at >= NOW() - INTERVAL '24 hours'`),
+      FROM sales_learning_events WHERE updated_at >= ${dayStart}`),
+    db.query(`SELECT COUNT(*)::int AS received FROM agent_whatsapp_events WHERE received_at >= ${dayStart}`),
+    db.query(`SELECT COUNT(*)::int AS new_leads FROM leads WHERE created_at >= ${dayStart}`),
   ]);
-  const recent = agents.rows.slice(0,8).map((row: any) =>
+  const recent = agents.rows.slice(0,6).map((row: any) =>
     `• ${row.agent_name}: ${row.status} — ${row.summary} (${row.items_processed} items)`
-  ).join("\n") || "• No agent runs recorded in the last 24 hours.";
+  ).join("\\n") || "• No agent runs recorded today.";
+  const q = queue.rows[0] || {};
   const l = learning.rows[0] || {};
   const day = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Lagos", dateStyle: "full" }).format(new Date());
   return [
-    "DFQLABS OS1 — Head of Business Daily Brief",
+    "DFQLABS OS1 — DAILY EXECUTIVE REPORT",
     day,
     "",
-    `CRM: ${leads.rows[0]?.total || 0} total leads · ${leads.rows[0]?.active || 0} active · ${leads.rows[0]?.won || 0} recorded won`,
-    `Review queue: ${queue.rows[0]?.pending || 0} awaiting approval`,
-    `Last 24h: ${queue.rows[0]?.sent_24h || 0} messages sent · ${queue.rows[0]?.failed_24h || 0} failed queue items`,
-    `Learning: ${l.events || 0} updated events · ${l.positive || 0} positive outcomes · ${l.meetings || 0} meetings · ${l.conversions || 0} conversions`,
+    "OUTREACH",
+    `• First-touch DMs sent: ${q.first_touch || 0}`,
+    `• Value DMs sent: ${q.value_dm || 0}`,
+    `• Follow-ups sent: ${q.follow_ups || 0}`,
+    `• Inbound replies sent: ${q.inbound_replies_sent || 0}`,
+    `• Total confirmed WhatsApp sends: ${q.sent_today || 0}`,
+    `• Failed sends: ${q.failed_today || 0}`,
     "",
-    "Agent activity (latest first):",
+    "PIPELINE",
+    `• New leads added today: ${pipeline.rows[0]?.new_leads || 0}`,
+    `• Inbound messages received: ${inbound.rows[0]?.received || 0}`,
+    `• CRM: ${leads.rows[0]?.total || 0} total · ${leads.rows[0]?.active || 0} active · ${leads.rows[0]?.won || 0} recorded won`,
+    `• Review queue awaiting approval: ${q.pending || 0}`,
+    "",
+    "LEARNING & CONVERSION",
+    `• Learning events: ${l.events || 0} · positive signals: ${l.positive || 0} · meetings: ${l.meetings || 0} · conversions: ${l.conversions || 0}`,
+    "",
+    "AGENT ACTIVITY",
     recent,
     "",
-    "Governance: outbound messaging remains founder-approval-only. Figures reflect recorded OS1 data; missing CRM events are not inferred.",
-  ].join("\n");
+    "Governance: only confirmed dispatcher sends count as sent. Drafts, approvals, attempts and failures are reported separately. Inbound routine replies are sent only within the approved FAQ policy; sensitive or uncertain messages remain in founder review.",
+  ].join("\\n");
 }
