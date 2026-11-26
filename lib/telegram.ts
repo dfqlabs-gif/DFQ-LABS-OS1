@@ -30,12 +30,17 @@ export async function sendTelegramMessage(
   fetchImpl: typeof fetch = fetch,
   replyMarkup?: { inline_keyboard: TelegramInlineButton[][] },
 ): Promise<void> {
-  const chunks = text.match(/[\s\S]{1,3900}/g) || [" "];
-  for (const chunk of chunks) {
+  const chunks = text.match(/[\\s\\S]{1,3900}/g) || [" "];
+  for (let index = 0; index < chunks.length; index++) {
     const response = await fetchImpl(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: chunk, disable_web_page_preview: true, ...(replyMarkup && chunk === (text.match(/[\\s\\S]{1,3900}/g) || [" "]).slice(-1)[0] ? { reply_markup: replyMarkup } : {}) }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: chunks[index],
+        disable_web_page_preview: true,
+        ...(replyMarkup && index === chunks.length - 1 ? { reply_markup: replyMarkup } : {}),
+      }),
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
