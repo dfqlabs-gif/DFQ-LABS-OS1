@@ -1868,7 +1868,7 @@ async function dispatchApprovedQueue(): Promise<void> {
 }
 
 function scheduleDispatcherTick(): void {
-  const delay = 45_000 + Math.floor(Math.random() * 45_000);
+  const delay = 7_000;
   const timer = setTimeout(async () => {
     try { await dispatchApprovedQueue(); }
     catch (error) { console.error("Dispatcher scheduler tick failed:", error); }
