@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { removeConversationEvent, restoreConversationEvent, conversationEventId } from "./conversationEvents.js";
+import { isProtectedConversationAnchor, removeConversationEvent, restoreConversationEvent, conversationEventId } from "./conversationEvents.js";
 import { formatConversationLog } from "../aiEngine.js";
 
 const event = (id: string, text: string, ts: string, direction: "inbound" | "outbound" = "outbound") => ({ id, ts, type: direction === "outbound" ? "dm" as const : "reply" as const, direction, label: "Thread", text, by: "Amina", outboundId: direction === "outbound" ? `out-${id}` : undefined });
