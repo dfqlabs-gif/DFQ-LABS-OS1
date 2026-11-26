@@ -2051,7 +2051,7 @@ app.post("/api/agents/scout", async (req, res) => {
       try {
         const ai = new GoogleGenAI({ apiKey: getGeminiApiKey()! });
         const response = await ai.models.generateContent({
-          model: process.env.GEMINI_SCOUT_MODEL || "gemini-3.8-flash",
+          model: process.env.GEMINI_SCOUT_MODEL || GEMINI_MODEL,
           contents: prompt,
           config: { tools: [{ googleSearch: {} }], maxOutputTokens: 7000, temperature: 0.2 } as any,
         });
