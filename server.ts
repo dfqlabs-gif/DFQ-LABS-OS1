@@ -651,7 +651,7 @@ async function managerTelegramReply(chatId: string, message: string, markup?: { 
 }
 
 function telegramDraftHash(content: string): string {
-  return createHash("sha256").update(content || "").digest("hex").slice(0, 10);
+  return createHash("sha256").update(content || "").digest("hex").slice(0, 16);
 }
 
 async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
