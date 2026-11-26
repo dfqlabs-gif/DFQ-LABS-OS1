@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Lead } from "../types";
 import {
-  ageDays, buildOutreachChronology, chooseOutboundMessageType, formatProspectGreeting,
+  ageDays, buildOutreachChronology, chooseOutboundMessageType, ensureProspectGreeting, formatProspectGreeting,
   hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch, normalizeCompanyIdentity,
 } from "./outreachPolicy";
 
@@ -41,6 +41,13 @@ test("prospect greeting is respectful, personalized and Lagos-time aware", () =>
   assert.equal(formatProspectGreeting({ name: "", company: "Abode" }, new Date("2026-11-26T13:00:00+01:00")), "Good afternoon, Team Abode.");
   assert.equal(formatProspectGreeting({ name: "Ifeanyi", company: "Abode" }, new Date("2026-11-26T09:00:00+01:00")), "Good morning, Ifeanyi.");
   assert.equal(formatProspectGreeting({ name: "", company: "Abode" }, new Date("2026-11-26T18:00:00+01:00")), "Good evening, Team Abode.");
+});
+
+test("greeting enforcement corrects missing addressees and duplicate company openings", () => {
+  const now = new Date("2026-11-26T13:00:00+01:00");
+  assert.equal(ensureProspectGreeting({ name: "", company: "Abode" }, "Abode, here is the breakdown I mentioned.", now), "Good afternoon, Team Abode. here is the breakdown I mentioned.");
+  assert.equal(ensureProspectGreeting({ name: "", company: "Abode" }, "Hi, I noticed an opportunity in your content.", now), "Good afternoon, Team Abode. I noticed an opportunity in your content.");
+  assert.equal(ensureProspectGreeting({ name: "Ifeanyi", company: "Abode" }, "Good morning, Ifeanyi. I have completed the review.", now), "Good afternoon, Ifeanyi. I have completed the review.");
 });
 
 test("same-day duplicate protection catches company aliases and shared phone numbers", () => {
