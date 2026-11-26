@@ -33,7 +33,7 @@ test("a three-month-old outbound is classified as reactivation and chronology st
   const now = new Date("2026-11-26T13:00:00+01:00");
   const lead = { ...base, conversationLog: [{ ts: "2026-08-20T10:00:00Z", type: "dm", direction: "outbound", label: "DM sent", text: "Earlier introduction", by: "DFQLABS" }] } as Lead;
   assert.equal(chooseOutboundMessageType(lead, "FOLLOW_UP", now), "REACTIVATION_DM");
-  assert.match(buildOutreachChronology(lead, now), /96 days ago/);
+  assert.match(buildOutreachChronology(lead, now), /98 days ago/);
   assert.match(buildOutreachChronology(lead, now), /time has passed/);
 });
 
