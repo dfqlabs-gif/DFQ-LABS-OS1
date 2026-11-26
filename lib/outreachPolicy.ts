@@ -67,20 +67,17 @@ export function formatProspectGreeting(lead: Pick<Lead, "name" | "company">, now
 
 export function ensureProspectGreeting(lead: Pick<Lead, "name" | "company">, message: string, now = new Date()): string {
   let clean = String(message || "").trim();
-  const recipient = String(lead.name || "").trim() || (lead.company ? "Team " + lead.company.replace(/^team\s+/i, "") : "there");
+  const person = String(lead.name || "").trim();
+  const company = String(lead.company || "").trim().replace(/^team\s+/i, "");
+  const recipient = person || (company ? "Team " + company : "there");
   const greeting = clean.match(/^(hi|hello|good morning|good afternoon|good evening|dear)\b[,.]?\s*(.*)$/i);
-  if (greeting) {
-    clean = greeting[2].trim();
-    const target = recipient.toLowerCase();
-    if (clean.toLowerCase().startsWith(target + ",") || clean.toLowerCase().startsWith(target + ".")) {
-      clean = clean.slice(recipient.length).replace(/^[,.]\s*/, "").trim();
-    } else {
-      clean = clean.replace(/^(there|team)[,.]?\s*/i, "");
-    }
-  } else {
-    const company = String(lead.company || "").trim().replace(/^team\s+/i, "");
-    if (company && clean.toLowerCase().startsWith(company.toLowerCase() + ",")) clean = clean.slice(company.length + 1).trim();
+  if (greeting) clean = greeting[2].trim();
+  for (const prefix of [recipient, company, person, "there", "team"]) {
+    if (!prefix) continue;
+    const pattern = new RegExp("^" + prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[,.]?\\s*", "i");
+    clean = clean.replace(pattern, "");
   }
+  clean = clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : "";
   return formatProspectGreeting(lead, now) + (clean ? " " + clean : "");
 }
 
