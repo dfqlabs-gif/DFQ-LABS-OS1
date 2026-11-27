@@ -912,7 +912,7 @@ async function sendFounderEventAlert(eventKey: string, action: string, message: 
 
 async function notifyFounderOfInboundOpportunity(lead: Lead, inbound: WhatsAppInbound): Promise<void> {
   const signal = classifyInboundCommercialSignal(inbound.text);
-  if (!signal) return;
+  if (!signal || isAuditIntentMessage(inbound.text)) return;
   const company = String(lead.company || lead.name || "Unmatched business").trim();
   const alert = [
     "INBOUND SALES OPPORTUNITY",
