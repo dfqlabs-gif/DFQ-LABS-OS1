@@ -30,6 +30,9 @@ export function normalizeTelegramText(input: string): string {
     .replace(/__(.*?)__/gs, "$1")
     .replace(/(^|\n)\s*\*\s+/g, "$1• ")
     .replace(/(^|\n)\s*[-+]\s+/g, "$1• ")
+    // Gemini sometimes collapses section headings and bullet items into one line.
+    // Put every bullet on its own line before Telegram delivery.
+    .replace(/[ \t]*•[ \t]*/g, "\n• ")
     .replace(/^\s*[-*_]{3,}\s*$/gm, "")
     .replace(/\s+([,.;!?])/g, "$1")
     .replace(/\n{3,}/g, "\n\n")
