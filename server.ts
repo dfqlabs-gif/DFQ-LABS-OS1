@@ -781,13 +781,14 @@ function telegramDraftHash(content: string): string {
 async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
   if (!telegramConfig) return 0;
   const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up','linkedin_article') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(40, limit))]);
-  let greeting = result.rows.length ? await claimTelegramGreeting(chatId) : "";
+  // Review cards are action cards, not conversational replies; do not prepend a greeting.
+  const greeting = "";
   for (const row of result.rows) {
     const rawDraft = String(row.draft_content || "");
     const rawName = String(row.lead_name || "").trim();
     const leadName = /^(unknown company|unknown|n\/a|not available|unassigned)$/i.test(rawName) ? "" : rawName;
     const lead = { name: leadName, company: String(row.lead_company || "") };
-    const normalizedDraft = ensureProspectGreeting(lead, rawDraft);
+    const normalizedDraft = row.action_type === "linkedin_article" ? rawDraft : ensureProspectGreeting(lead, rawDraft);
     let approvedDraft = rawDraft;
     if (normalizedDraft !== rawDraft) {
       const updated = await db.query("UPDATE agent_queue SET draft_content=$1 WHERE id=$2 AND status='pending_approval' AND draft_content=$3 RETURNING id", [normalizedDraft, row.id, rawDraft]);
@@ -832,7 +833,6 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
       { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
       { text: "Reject", callback_data: "q|r|" + row.id + "|" + hash },
     ]] });
-    greeting = "";
   }
   return result.rows.length;
 }
