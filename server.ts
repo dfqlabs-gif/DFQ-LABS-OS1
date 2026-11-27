@@ -1149,6 +1149,7 @@ async function maybeSendManagerScheduledReport(
 ): Promise<void> {
   if (!telegramConfig || managerDailyReportBusy || !isManagerReportWindowOpen(jobName)) return;
 
+  const local = lagosDateTimeParts();
   const scheduledDate = `${local.year}-${local.month}-${local.day}`;
   let client: any = null;
   let locked = false;
