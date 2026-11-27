@@ -1104,7 +1104,7 @@ async function maybeSendManagerScheduledReport(
   if (!telegramConfig || managerDailyReportBusy) return;
   const local = lagosDateTimeParts();
   const hour = Number(local.hour);
-  if (hour < startHour || hour >= endHour) return;
+  if (hour < startHour) return; // Recover missed runs after Render wakes; database idempotency prevents duplicate delivery.
 
   const scheduledDate = `${local.year}-${local.month}-${local.day}`;
   let client: any = null;
