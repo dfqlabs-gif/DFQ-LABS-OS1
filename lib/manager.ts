@@ -108,3 +108,62 @@ export async function buildManagerDailyReport(db: Pool): Promise<string> {
     "Governance: only confirmed dispatcher sends count as sent. Drafts, approvals, attempts and failures are reported separately. Inbound routine replies are sent only within the approved FAQ policy; sensitive or uncertain messages remain in founder review.",
   ].join("\n");
 }
+
+export async function buildManagerMorningBriefing(db: Pool): Promise<string> {
+  const yesterdayStart = "((date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') - INTERVAL '1 day') AT TIME ZONE 'Africa/Lagos')";
+  const todayStart = "(date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos')";
+  const [outreach, pipeline, signals, queue, blockers, dateLabel] = await Promise.all([
+    db.query(`SELECT
+      COUNT(*) FILTER (WHERE action_type='outreach_dm')::int AS first_touch,
+      COUNT(*) FILTER (WHERE action_type='value_dm')::int AS value_dm,
+      COUNT(*) FILTER (WHERE action_type='follow_up' AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM')::int AS follow_ups,
+      COUNT(*) FILTER (WHERE COALESCE(metadata->>'messageType','')='RESPONSE_DM')::int AS replies_sent,
+      COUNT(*)::int AS total_sent
+      FROM agent_queue WHERE status='sent' AND sent_at >= ${yesterdayStart} AND sent_at < ${todayStart}`),
+    db.query(`SELECT COUNT(*)::int AS new_leads FROM leads
+      WHERE NULLIF(data->>'dateAdded','')::timestamptz >= ${yesterdayStart}
+        AND NULLIF(data->>'dateAdded','')::timestamptz < ${todayStart}`),
+    db.query(`SELECT
+      COUNT(*) FILTER (WHERE data->>'outcome' IN ('POSITIVE_REPLY','QUESTION','INTERESTED','PRICING_REQUEST','MEETING_REQUEST','MEETING_BOOKED','QUALIFIED','CONVERTED'))::int AS positive,
+      COUNT(*) FILTER (WHERE data->>'outcome'='MEETING_BOOKED')::int AS meetings,
+      COUNT(*) FILTER (WHERE data->>'outcome'='CONVERTED')::int AS conversions
+      FROM sales_learning_events WHERE updated_at >= ${yesterdayStart} AND updated_at < ${todayStart}`),
+    db.query(`SELECT
+      COUNT(*) FILTER (WHERE status='pending_approval')::int AS pending,
+      COUNT(*) FILTER (WHERE status='approved')::int AS approved,
+      COUNT(*) FILTER (WHERE status='failed')::int AS failed
+      FROM agent_queue`),
+    db.query(`SELECT agent_name, status, summary FROM agent_logs
+      WHERE created_at >= ${yesterdayStart} AND created_at < ${todayStart}
+        AND status IN ('error','halted_circuit_breaker')
+      ORDER BY created_at DESC LIMIT 5`),
+    db.query(`SELECT to_char(NOW() AT TIME ZONE 'Africa/Lagos','FMDay, DD FMMonth YYYY') AS today`),
+  ]);
+  const o = outreach.rows[0] || {};
+  const s = signals.rows[0] || {};
+  const q = queue.rows[0] || {};
+  const issueLines = blockers.rows.map((row: any) => `• ${row.agent_name}: ${row.status} — ${row.summary}`).join("\\n") || "• No agent errors or circuit-breaker halts recorded yesterday.";
+  return [
+    "DFQLABS OS1 — MORNING OPERATING BRIEFING",
+    String(dateLabel.rows[0]?.today || ""),
+    "",
+    "YESTERDAY'S CONFIRMED OUTCOMES",
+    `• First-touch DMs sent: ${o.first_touch || 0}`,
+    `• Value DMs sent: ${o.value_dm || 0}`,
+    `• Follow-ups sent: ${o.follow_ups || 0}`,
+    `• Inbound replies sent: ${o.replies_sent || 0}`,
+    `• Total confirmed sends: ${o.total_sent || 0}`,
+    `• New CRM leads: ${pipeline.rows[0]?.new_leads || 0}`,
+    `• Positive signals: ${s.positive || 0} · meetings booked: ${s.meetings || 0} · recorded conversions: ${s.conversions || 0}`,
+    "",
+    "TODAY'S OPERATING QUEUE",
+    `• Drafts awaiting founder approval: ${q.pending || 0}`,
+    `• Approved and awaiting dispatch: ${q.approved || 0}`,
+    `• Failed queue items requiring review: ${q.failed || 0}`,
+    "",
+    "SYSTEM HEALTH / BLOCKERS",
+    issueLines,
+    "",
+    "Today's priorities: review pending approvals, verify failed or uncertain deliveries against WhatsApp and CRM history, then progress qualified conversations. No drafts or attempted sends are counted as completed outreach.",
+  ].join("\\n");
+}
