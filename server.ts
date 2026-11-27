@@ -2568,7 +2568,15 @@ async function runScheduledInternalRoute(
         await sendFounderEventAlert(
           "scheduled:" + jobName + ":" + scheduledDate,
           "agent_schedule_failure_alert_sent",
-          "SCHEDULED AGENT FAILURE\\n\\nAgent: " + jobName + "\\nReason: " + summary + "\\nDate: " + scheduledDate + "\\n\\nHarry recorded the failure. No unapproved outbound message was sent.",
+          [
+            "SCHEDULED AGENT FAILURE",
+            "",
+            "Agent: " + jobName,
+            "Reason: " + summary,
+            "Date: " + scheduledDate,
+            "",
+            "Harry recorded the failure. No unapproved outbound message was sent.",
+          ].join("\n"),
         ).catch(alertError => console.error("Scheduled agent failure alert could not be delivered:", String(alertError?.message || alertError).slice(0,200)));
       }
       return;
@@ -2585,7 +2593,15 @@ async function runScheduledInternalRoute(
     await sendFounderEventAlert(
       "scheduled:" + jobName + ":" + scheduledDate,
       "agent_schedule_failure_alert_sent",
-      "SCHEDULED AGENT FAILURE\\n\\nAgent: " + jobName + "\\nReason: " + summary + "\\nDate: " + scheduledDate + "\\n\\nHarry recorded the failure. No unapproved outbound message was sent.",
+      [
+            "SCHEDULED AGENT FAILURE",
+            "",
+            "Agent: " + jobName,
+            "Reason: " + summary,
+            "Date: " + scheduledDate,
+            "",
+            "Harry recorded the failure. No unapproved outbound message was sent.",
+          ].join("\n"),
     ).catch(alertError => console.error("Scheduled agent failure alert could not be delivered:", String(alertError?.message || alertError).slice(0,200)));
   } finally {
     if (client) {
