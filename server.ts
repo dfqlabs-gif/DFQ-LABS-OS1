@@ -310,7 +310,7 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
         "Reason: " + String(error?.message || error).slice(0, 300),
         "",
         "The inbound message was saved to the CRM, but Harry could not complete the response workflow. No automatic WhatsApp reply was sent.",
-      ].join("\\n"),
+      ].join("\n"),
     ).catch(alertError => console.error("Inbound failure alert could not be delivered:", String(alertError?.message || alertError).slice(0, 200)));
   }
 }
@@ -2463,6 +2463,7 @@ async function dispatchApprovedQueue(): Promise<void> {
     if (claimedItem?.id) {
       const safeError = String(error?.message || "WhatsApp send failed; delivery outcome may be uncertain.").slice(0, 500);
       await db.query("UPDATE agent_queue SET status=CASE WHEN external_message_id IS NOT NULL THEN 'sending' ELSE 'failed' END, error_log=$1, updated_at=NOW() WHERE id=$2 AND status='sending'", [safeError + " Verify the WhatsApp chat manually before any retry. If an external message ID exists, reconcile the CRM record; do not resend.", claimedItem.id]).catch(() => {});
+      const failedQueue = await db.query("SELECT external_message_id FROM agent_queue WHERE id=$1", [claimedItem.id]).catch(() => ({ rows: [] as any[] }));
       const prior = await db.query("SELECT status, consecutive_failures FROM agent_logs WHERE agent_name='dispatcher' ORDER BY created_at DESC LIMIT 1").catch(() => ({ rows: [] as any[] }));
       const failures = prior.rows[0]?.status === "error" ? Number(prior.rows[0].consecutive_failures || 0) + 1 : 1;
       const status = failures >= 2 ? "halted_circuit_breaker" : "error";
@@ -2480,10 +2481,10 @@ async function dispatchApprovedQueue(): Promise<void> {
           "Business: " + String(failedLead?.company || failedLead?.name || claimedItem.lead_id || "Unknown prospect"),
           "Queue item: " + String(claimedItem.id),
           "Reason: " + safeError,
-          "External WhatsApp message ID: " + String(claimedItem.external_message_id || "Not recorded"),
+          "External WhatsApp message ID: " + String(failedQueue.rows[0]?.external_message_id || "Not recorded"),
           "",
           "The Dispatcher will not automatically resend this message. Verify the WhatsApp chat and reconcile the CRM record before retrying.",
-        ].join("\\n"),
+        ].join("\n"),
       ).catch(alertError => console.error("Dispatcher failure alert could not be delivered:", String(alertError?.message || alertError).slice(0, 200)));
     } else {
       console.error("Approved dispatcher tick failed:", String(error?.message || error).slice(0, 300));
