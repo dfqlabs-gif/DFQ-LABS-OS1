@@ -142,7 +142,7 @@ export async function buildManagerMorningBriefing(db: Pool): Promise<string> {
   const o = outreach.rows[0] || {};
   const s = signals.rows[0] || {};
   const q = queue.rows[0] || {};
-  const issueLines = blockers.rows.map((row: any) => `• ${row.agent_name}: ${row.status} — ${row.summary}`).join("\\n") || "• No agent errors or circuit-breaker halts recorded yesterday.";
+  const issueLines = blockers.rows.map((row: any) => `• ${row.agent_name}: ${row.status} — ${row.summary}`).join("\n") || "• No agent errors or circuit-breaker halts recorded yesterday.";
   return [
     "DFQLABS OS1 — MORNING OPERATING BRIEFING",
     String(dateLabel.rows[0]?.today || ""),
@@ -165,5 +165,5 @@ export async function buildManagerMorningBriefing(db: Pool): Promise<string> {
     issueLines,
     "",
     "Today's priorities: review pending approvals, verify failed or uncertain deliveries against WhatsApp and CRM history, then progress qualified conversations. No drafts or attempted sends are counted as completed outreach.",
-  ].join("\\n");
+  ].join("\n");
 }
