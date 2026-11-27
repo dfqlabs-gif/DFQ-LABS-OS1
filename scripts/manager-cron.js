@@ -1,8 +1,18 @@
-const jobName = process.argv[2] === "morning"
+const requested = process.argv[2];
+const localHour = Number(new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Africa/Lagos",
+  hour: "2-digit",
+  hourCycle: "h23",
+}).format(new Date()));
+const jobName = requested === "morning"
   ? "manager_morning_briefing"
-  : process.argv[2] === "evening"
+  : requested === "evening"
     ? "manager_evening_report"
-    : null;
+    : requested === "scheduled" && localHour === 7
+      ? "manager_morning_briefing"
+      : requested === "scheduled" && localHour === 18
+        ? "manager_evening_report"
+        : null;
 
 const endpoint = process.env.MANAGER_SCHEDULER_URL;
 const secret = process.env.MANAGER_SCHEDULER_SECRET;
