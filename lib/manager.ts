@@ -77,7 +77,7 @@ export async function buildManagerDailyReport(db: Pool): Promise<string> {
   ]);
   const recent = agents.rows.slice(0,6).map((row: any) =>
     `• ${row.agent_name}: ${row.status} — ${row.summary} (${row.items_processed} items)`
-  ).join("\\n") || "• No agent runs recorded today.";
+  ).join("\n") || "• No agent runs recorded today.";
   const q = queue.rows[0] || {};
   const l = learning.rows[0] || {};
   const day = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Lagos", dateStyle: "full" }).format(new Date());
@@ -106,5 +106,5 @@ export async function buildManagerDailyReport(db: Pool): Promise<string> {
     recent,
     "",
     "Governance: only confirmed dispatcher sends count as sent. Drafts, approvals, attempts and failures are reported separately. Inbound routine replies are sent only within the approved FAQ policy; sensitive or uncertain messages remain in founder review.",
-  ].join("\\n");
+  ].join("\n");
 }
