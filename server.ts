@@ -780,7 +780,7 @@ function telegramDraftHash(content: string): string {
 
 async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<number> {
   if (!telegramConfig) return 0;
-  const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(40, limit))]);
+  const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up','linkedin_article') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(40, limit))]);
   let greeting = result.rows.length ? await claimTelegramGreeting(chatId) : "";
   for (const row of result.rows) {
     const rawDraft = String(row.draft_content || "");
@@ -796,26 +796,39 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
     }
     const hash = telegramDraftHash(approvedDraft);
     const recipient = [leadName, lead.company].filter(Boolean).join(" · ") || "Unassigned prospect";
-    const type = String(row.metadata?.messageType || row.action_type || "").replace(/_/g, " ").toUpperCase();
-    const details = [
-      "📋 FOUNDER REVIEW",
-      "",
-      "👤 PROSPECT",
-      recipient,
-      row.lead_phone ? "📞 WhatsApp: " + row.lead_phone : "",
-      "🏷️ " + type,
-      "",
-      "✉️ PROPOSED MESSAGE",
-      "────────────────────",
-      approvedDraft.slice(0, 2400),
-      row.reasoning ? "" : "",
-      row.reasoning ? "🧠 STRATEGY\n" + String(row.reasoning).slice(0, 350) : "",
-      "",
-      "🔐 Approving sends this exact version. Editing requires a fresh approval.",
-      "Reference: " + row.id,
-    ].filter(Boolean).join("\n");
+    const isLinkedInArticle = row.action_type === "linkedin_article";
+    const type = isLinkedInArticle ? "LINKEDIN ARTICLE" : String(row.metadata?.messageType || row.action_type || "").replace(/_/g, " ").toUpperCase();
+    const details = isLinkedInArticle
+      ? [
+          "📝 LINKEDIN ARTICLE — FOUNDER REVIEW",
+          "",
+          "Topic: " + String(row.metadata?.topic || "DFQLABS thought leadership"),
+          "Draft: " + String(row.metadata?.wordCount || approvedDraft.split(/\\s+/).filter(Boolean).length) + " words",
+          "",
+          approvedDraft,
+          "",
+          "🔐 Approval records your authorization for LinkedIn publication. Nothing is published until LinkedIn is connected and the publish step succeeds.",
+          "Reference: " + row.id,
+        ].join("\\n")
+      : [
+          "📋 FOUNDER REVIEW",
+          "",
+          "👤 PROSPECT",
+          recipient,
+          row.lead_phone ? "📞 WhatsApp: " + row.lead_phone : "",
+          "🏷️ " + type,
+          "",
+          "✉️ PROPOSED MESSAGE",
+          "────────────────────",
+          approvedDraft.slice(0, 2400),
+          row.reasoning ? "" : "",
+          row.reasoning ? "🧠 STRATEGY\\n" + String(row.reasoning).slice(0, 350) : "",
+          "",
+          "🔐 Approving sends this exact version. Editing requires a fresh approval.",
+          "Reference: " + row.id,
+        ].filter(Boolean).join("\\n");
     await sendTelegramMessage(telegramConfig, chatId, greeting + details, fetch, { inline_keyboard: [[
-      { text: "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
+      { text: isLinkedInArticle ? "Approve for LinkedIn" : "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
       { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
       { text: "Reject", callback_data: "q|r|" + row.id + "|" + hash },
     ]] });
@@ -875,6 +888,10 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
     }
     await client.query("INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'telegram-founder','queue_item_approved',$2,$3::jsonb)", [randomUUID(), queueId, JSON.stringify({ channel: "telegram", draftHash: expectedHash })]);
     await client.query("COMMIT");
+    if (item.action_type === "linkedin_article") {
+      await managerTelegramReply(chatId, "LinkedIn article approved and recorded. The LinkedIn account connection is not configured yet, so nothing has been published. Once the account is connected, this approved article can be sent through the LinkedIn publishing flow.");
+      return;
+    }
     await managerTelegramReply(chatId, "Approved — prospect record " + String(item.lead_id || queueId) + ". The Dispatcher is authorized to send this exact version. I will confirm the WhatsApp message ID and CRM reconciliation separately.");
     void dispatchApprovedQueue();
   } catch (error: any) {
@@ -1083,6 +1100,10 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
       const result = await callInternalFounderRoute("/api/agents/linkedin-article", { topic: topic || "A practical buyer-psychology insight for Nigerian real-estate brands" });
       await reply("The Writer has prepared a LinkedIn draft and staged it in the founder review queue. Nothing has been published.");
       await sendTelegramPendingApprovals(chatId, 8);
+      return;
+    }
+    if (/^(?:\\/status|\\/report|status|pipeline|pipeline overview|operational status|daily report|what(?:'s| is) the (?:status|pipeline)|give me (?:the )?(?:status|daily report))\\b/i.test(message)) {
+      await reply(await buildManagerDailyReport(db));
       return;
     }
     const context = await buildManagerKnowledgeContext(db, message);
