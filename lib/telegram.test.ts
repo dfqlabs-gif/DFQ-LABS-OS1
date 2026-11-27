@@ -120,3 +120,15 @@ test("Telegram text normalization removes Markdown markers and preserves readabl
   assert.match(result, /• Follow up with warm leads/);
 });
 
+
+test("Telegram send rejects API-level failure even when HTTP status is 200", async () => {
+  await assert.rejects(
+    () => sendTelegramMessage(
+      { botToken: "bot-token", webhookSecret: "secret", allowedChatId: "123" },
+      "123",
+      "A scheduled report",
+      async () => new Response(JSON.stringify({ ok: false, description: "bot was blocked by the user" }), { status: 200 }),
+    ),
+    /bot was blocked by the user/i,
+  );
+});
