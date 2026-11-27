@@ -803,13 +803,13 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
           "📝 LINKEDIN ARTICLE — FOUNDER REVIEW",
           "",
           "Topic: " + String(row.metadata?.topic || "DFQLABS thought leadership"),
-          "Draft: " + String(row.metadata?.wordCount || approvedDraft.split(/\\s+/).filter(Boolean).length) + " words",
+          "Draft: " + String(row.metadata?.wordCount || approvedDraft.split(/\s+/).filter(Boolean).length) + " words",
           "",
           approvedDraft,
           "",
           "🔐 Approval records your authorization for LinkedIn publication. Nothing is published until LinkedIn is connected and the publish step succeeds.",
           "Reference: " + row.id,
-        ].join("\\n")
+        ].join("\n")
       : [
           "📋 FOUNDER REVIEW",
           "",
@@ -826,7 +826,7 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
           "",
           "🔐 Approving sends this exact version. Editing requires a fresh approval.",
           "Reference: " + row.id,
-        ].filter(Boolean).join("\\n");
+        ].filter(Boolean).join("\n");
     await sendTelegramMessage(telegramConfig, chatId, greeting + details, fetch, { inline_keyboard: [[
       { text: isLinkedInArticle ? "Approve for LinkedIn" : "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
       { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
@@ -1102,7 +1102,7 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
       await sendTelegramPendingApprovals(chatId, 8);
       return;
     }
-    if (/^(?:\\/status|\\/report|status|pipeline|pipeline overview|operational status|daily report|what(?:'s| is) the (?:status|pipeline)|give me (?:the )?(?:status|daily report))\\b/i.test(message)) {
+    if (/^(?:\/status|\/report|status|pipeline|pipeline overview|operational status|daily report|what(?:'s| is) the (?:status|pipeline)|give me (?:the )?(?:status|daily report))\b/i.test(message)) {
       await reply(await buildManagerDailyReport(db));
       return;
     }
