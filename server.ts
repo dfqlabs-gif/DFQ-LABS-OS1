@@ -4,7 +4,7 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { Pool } from "pg";
-import { randomBytes, createHash, randomUUID } from "crypto";
+import { randomBytes, createHash, randomUUID, timingSafeEqual } from "crypto";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { SYSTEM_PROMPT } from "./aiEngine";
 import { runSalesBrainWithGenerator } from "./salesBrain";
@@ -23,6 +23,7 @@ import { createWhatsAppBridge, type WhatsAppInbound } from "./lib/whatsappBridge
 import { getWhatsAppNumber, normalizePhone } from "./lib/phone";
 import { answerTelegramCallback, getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, transcribeTelegramVoice, verifyTelegramWebhookSecret } from "./lib/telegram";
 import { buildManagerDailyReport, buildManagerMorningBriefing, buildManagerKnowledgeContext } from "./lib/manager";
+import { isManagerReportWindowOpen, type ManagerReportJob } from "./lib/managerSchedule";
 import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
 import { chooseOutboundMessageType, ensureProspectGreeting, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
@@ -1075,6 +1076,53 @@ async function handleTelegramWebhookUpdate(body: any): Promise<void> {
   await processManagerTelegramMessage(chatId, textValue);
 }
 
+app.post("/api/internal/manager-schedule", async (req, res) => {
+  const expected = process.env.MANAGER_SCHEDULER_SECRET?.trim() || "";
+  const supplied = req.header("x-manager-scheduler-secret") || "";
+  if (!expected) return res.status(503).json({ error: "Manager scheduler secret is not configured." });
+  const expectedBytes = Buffer.from(expected);
+  const suppliedBytes = Buffer.from(supplied);
+  if (expectedBytes.length !== suppliedBytes.length || !timingSafeEqual(expectedBytes, suppliedBytes)) {
+    return res.status(401).json({ error: "Unauthorized scheduler request." });
+  }
+
+  const jobName = req.body?.jobName as ManagerReportJob | undefined;
+  if (jobName !== "manager_morning_briefing" && jobName !== "manager_evening_report") {
+    return res.status(400).json({ error: "Unsupported manager report job." });
+  }
+  if (!telegramConfig) return res.status(503).json({ error: "Telegram delivery is not configured." });
+  if (!isManagerReportWindowOpen(jobName)) {
+    return res.status(409).json({ error: "The requested report is outside its Africa/Lagos delivery window." });
+  }
+
+  try {
+    await maybeSendManagerScheduledReport(
+      jobName,
+      jobName === "manager_morning_briefing"
+        ? "DFQLABS OS1 — MORNING OPERATING BRIEFING"
+        : "DFQLABS OS1 — EVENING EXECUTIVE REPORT",
+    );
+    const local = lagosDateTimeParts();
+    const scheduledDate = local.year + "-" + local.month + "-" + local.day;
+    const result = await db.query(
+      `SELECT status, summary,
+        GREATEST(0, (EXTRACT(EPOCH FROM (next_attempt_at - NOW())) * 1000)::int) AS retry_after_ms
+       FROM agent_schedule_runs WHERE job_name=$1 AND scheduled_date=$2::date LIMIT 1`,
+      [jobName, scheduledDate],
+    );
+    const run = result.rows[0];
+    if (run?.status === "completed") return res.status(200).json({ status: "completed", summary: run.summary });
+    if (run?.status === "error") return res.status(503).json({ status: "retry_scheduled", retryAfterMs: Number(run.retry_after_ms || 30_000), summary: run.summary });
+    if (run?.status === "pending" || run?.status === "sending" || !run) {
+      return res.status(202).json({ status: run?.status || "waiting_for_scheduler_lock", retryAfterMs: 30_000 });
+    }
+    return res.status(409).json({ status: run.status, summary: run.summary || "Founder review required before retrying." });
+  } catch (error: any) {
+    console.error("Internal manager schedule trigger failed:", String(error?.message || error).slice(0, 300));
+    return res.status(500).json({ error: "Manager report trigger failed." });
+  }
+});
+
 app.post("/api/telegram/webhook", async (req, res) => {
   if (!telegramConfig) return res.status(503).json({ error: "Telegram is not configured." });
   const secret = req.headers["x-telegram-bot-api-secret-token"];
@@ -1096,15 +1144,10 @@ app.post("/api/telegram/webhook", async (req, res) => {
 let managerDailyReportBusy = false;
 
 async function maybeSendManagerScheduledReport(
-  jobName: "manager_morning_briefing" | "manager_evening_report",
-  startHour: number,
-  endHour: number,
+  jobName: ManagerReportJob,
   heading: string,
 ): Promise<void> {
-  if (!telegramConfig || managerDailyReportBusy) return;
-  const local = lagosDateTimeParts();
-  const hour = Number(local.hour);
-  if (hour < startHour) return; // Recover missed runs after Render wakes; database idempotency prevents duplicate delivery.
+  if (!telegramConfig || managerDailyReportBusy || !isManagerReportWindowOpen(jobName)) return;
 
   const scheduledDate = `${local.year}-${local.month}-${local.day}`;
   let client: any = null;
@@ -1197,14 +1240,14 @@ async function maybeSendManagerScheduledReport(
 
 async function maybeSendManagerMorningBriefing(): Promise<void> {
   await maybeSendManagerScheduledReport(
-    "manager_morning_briefing", 7, 10,
+    "manager_morning_briefing",
     "DFQLABS OS1 — MORNING OPERATING BRIEFING",
   );
 }
 
 async function maybeSendManagerDailyReport(): Promise<void> {
   await maybeSendManagerScheduledReport(
-    "manager_evening_report", 18, 20,
+    "manager_evening_report",
     "DFQLABS OS1 — EVENING EXECUTIVE REPORT",
   );
 }
