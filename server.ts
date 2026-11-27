@@ -1164,7 +1164,7 @@ async function maybeSendManagerScheduledReport(
 
     try {
       const report = await buildManagerDailyReport(db);
-      await sendTelegramMessage(telegramConfig, telegramConfig.allowedChatId, heading + "\\n\\n" + report);
+      await sendTelegramMessage(telegramConfig, telegramConfig.allowedChatId, heading + "\n\n" + report);
       await client.query(
         "UPDATE agent_schedule_runs SET status='completed', summary=$2, completed_at=NOW(), next_attempt_at=NULL WHERE id=$1",
         [run.id, heading + " delivered to Telegram."],
