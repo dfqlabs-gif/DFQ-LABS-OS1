@@ -140,6 +140,9 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
       UNIQUE (job_name, scheduled_date)
     )
   `);
+  await db.query("ALTER TABLE agent_schedule_runs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0");
+  await db.query("ALTER TABLE agent_schedule_runs ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ NULL");
+  await db.query("ALTER TABLE agent_schedule_runs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NULL");
   await db.query(`
     CREATE TABLE IF NOT EXISTS agent_telegram_greeting_state (
       chat_id TEXT NOT NULL,
