@@ -22,7 +22,7 @@ import { containsExplicitOptOut } from "./lib/agentSafety";
 import { createWhatsAppBridge, type WhatsAppInbound } from "./lib/whatsappBridge";
 import { getWhatsAppNumber, normalizePhone } from "./lib/phone";
 import { answerTelegramCallback, getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, transcribeTelegramVoice, verifyTelegramWebhookSecret } from "./lib/telegram";
-import { buildManagerDailyReport, buildManagerKnowledgeContext } from "./lib/manager";
+import { buildManagerDailyReport, buildManagerMorningBriefing, buildManagerKnowledgeContext } from "./lib/manager";
 import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
 import { chooseOutboundMessageType, ensureProspectGreeting, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
@@ -1163,7 +1163,7 @@ async function maybeSendManagerScheduledReport(
     );
 
     try {
-      const report = await buildManagerDailyReport(db);
+      const report = jobName === "manager_morning_briefing" ? await buildManagerMorningBriefing(db) : await buildManagerDailyReport(db);
       await sendTelegramMessage(telegramConfig, telegramConfig.allowedChatId, heading + "\n\n" + report);
       await client.query(
         "UPDATE agent_schedule_runs SET status='completed', summary=$2, completed_at=NOW(), next_attempt_at=NULL WHERE id=$1",
