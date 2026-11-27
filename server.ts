@@ -1094,31 +1094,119 @@ app.post("/api/telegram/webhook", async (req, res) => {
 });
 
 let managerDailyReportBusy = false;
-async function maybeSendManagerDailyReport(): Promise<void> {
+
+async function maybeSendManagerScheduledReport(
+  jobName: "manager_morning_briefing" | "manager_evening_report",
+  startHour: number,
+  endHour: number,
+  heading: string,
+): Promise<void> {
   if (!telegramConfig || managerDailyReportBusy) return;
   const local = lagosDateTimeParts();
-  if (Number(local.hour) < 18) return;
+  const hour = Number(local.hour);
+  if (hour < startHour || hour >= endHour) return;
+
   const scheduledDate = `${local.year}-${local.month}-${local.day}`;
+  let client: any = null;
+  let locked = false;
   managerDailyReportBusy = true;
   try {
-    const run = await db.query(`
-      INSERT INTO agent_schedule_runs (id, job_name, scheduled_date, status)
-      VALUES ($1,'manager_evening_report',$2::date,'started')
-      ON CONFLICT (job_name, scheduled_date) DO UPDATE
-      SET status=CASE WHEN agent_schedule_runs.status='completed' THEN 'completed' ELSE 'started' END
-      RETURNING id, status
-    `, [randomUUID(), scheduledDate]);
-    if (run.rows[0]?.status === "completed") return;
-    try {
-      await sendTelegramMessage(telegramConfig, telegramConfig.allowedChatId, await buildManagerDailyReport(db));
-      await db.query("UPDATE agent_schedule_runs SET status='completed', summary='Daily Head of Business report delivered to Telegram.', completed_at=NOW() WHERE id=$1", [run.rows[0].id]);
-    } catch (error: any) {
-      await db.query("UPDATE agent_schedule_runs SET status='error', summary=$1, completed_at=NOW() WHERE id=$2", [String(error?.message || error).slice(0,500), run.rows[0].id]);
-      throw error;
+    client = await db.connect();
+    const lock = await client.query(
+      "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
+      ["dfqlabs-os1:" + jobName],
+    );
+    locked = Boolean(lock.rows[0]?.locked);
+    if (!locked) return;
+
+    await client.query(
+      `INSERT INTO agent_schedule_runs (id, job_name, scheduled_date, status)
+       VALUES ($1,$2,$3::date,'pending')
+       ON CONFLICT (job_name, scheduled_date) DO NOTHING`,
+      [randomUUID(), jobName, scheduledDate],
+    );
+
+    const result = await client.query(
+      `SELECT id, status, attempts, last_attempt_at, next_attempt_at, created_at
+       FROM agent_schedule_runs
+       WHERE job_name=$1 AND scheduled_date=$2::date
+       FOR UPDATE`,
+      [jobName, scheduledDate],
+    );
+    const run = result.rows[0];
+    if (!run || ["completed", "blocked", "delivery_unknown"].includes(String(run.status))) return;
+
+    if (run.status === "sending" || run.status === "started") {
+      const lastAttempt = run.last_attempt_at ? new Date(run.last_attempt_at).getTime() : new Date(run.created_at).getTime();
+      if (Date.now() - lastAttempt < 10 * 60_000) return;
+      await client.query(
+        "UPDATE agent_schedule_runs SET status='delivery_unknown', summary='Previous Telegram delivery outcome is uncertain. Check Telegram before manually retrying.', completed_at=NOW() WHERE id=$1",
+        [run.id],
+      );
+      console.error("Manager report delivery marked uncertain; duplicate send suppressed:", jobName, scheduledDate);
+      return;
     }
-  } catch (error) {
-    console.error("Manager daily report delivery failed:", error);
-  } finally { managerDailyReportBusy = false; }
+
+    if (run.next_attempt_at && new Date(run.next_attempt_at).getTime() > Date.now()) return;
+    const attempts = Number(run.attempts || 0);
+    if (attempts >= 5) {
+      await client.query(
+        "UPDATE agent_schedule_runs SET status='blocked', summary='Maximum Telegram delivery attempts reached. Founder review required.', completed_at=NOW() WHERE id=$1",
+        [run.id],
+      );
+      return;
+    }
+
+    await client.query(
+      "UPDATE agent_schedule_runs SET status='sending', attempts=attempts+1, last_attempt_at=NOW(), next_attempt_at=NULL, summary=$2 WHERE id=$1",
+      [run.id, "Sending " + heading + " to the configured Telegram chat."],
+    );
+
+    try {
+      const report = await buildManagerDailyReport(db);
+      await sendTelegramMessage(telegramConfig, telegramConfig.allowedChatId, heading + "\\n\\n" + report);
+      await client.query(
+        "UPDATE agent_schedule_runs SET status='completed', summary=$2, completed_at=NOW(), next_attempt_at=NULL WHERE id=$1",
+        [run.id, heading + " delivered to Telegram."],
+      );
+    } catch (error: any) {
+      const message = String(error?.message || error || "Telegram delivery failed").slice(0, 500);
+      const attempt = attempts + 1;
+      const permanent = /chat not found|bot was blocked|forbidden|chat_id is empty|not enough rights|user is deactivated/i.test(message);
+      const blocked = permanent || attempt >= 5;
+      const retryMinutes = Math.min(60, 5 * (2 ** Math.max(0, attempt - 1)));
+      await client.query(
+        `UPDATE agent_schedule_runs
+         SET status=$2, summary=$3, completed_at=NOW(),
+             next_attempt_at=CASE WHEN $2='error' THEN NOW() + ($4::text || ' minutes')::interval ELSE NULL END
+         WHERE id=$1`,
+        [run.id, blocked ? "blocked" : "error", message, String(retryMinutes)],
+      );
+      console.error("Manager report delivery failed:", jobName, message);
+    }
+  } catch (error: any) {
+    console.error("Manager scheduled report runner failed:", jobName, String(error?.message || error).slice(0, 300));
+  } finally {
+    if (client) {
+      if (locked) await client.query("SELECT pg_advisory_unlock(hashtext($1))", ["dfqlabs-os1:" + jobName]).catch(() => {});
+      client.release();
+    }
+    managerDailyReportBusy = false;
+  }
+}
+
+async function maybeSendManagerMorningBriefing(): Promise<void> {
+  await maybeSendManagerScheduledReport(
+    "manager_morning_briefing", 7, 10,
+    "DFQLABS OS1 — MORNING OPERATING BRIEFING",
+  );
+}
+
+async function maybeSendManagerDailyReport(): Promise<void> {
+  await maybeSendManagerScheduledReport(
+    "manager_evening_report", 18, 20,
+    "DFQLABS OS1 — EVENING EXECUTIVE REPORT",
+  );
 }
 
 
@@ -2434,7 +2522,8 @@ function startAgentScheduler(): void {
     runDailyWriterSchedule().catch(error => console.error("Writer schedule failed:", error));
     runLinkedInArticleSchedule().catch(error => console.error("LinkedIn schedule failed:", error));
     runDailyCloserIfDue().catch(error => console.error("Closer schedule failed:", error));
-    maybeSendManagerDailyReport().catch(error => console.error("Manager report schedule failed:", error));
+    maybeSendManagerMorningBriefing().catch(error => console.error("Manager morning briefing schedule failed:", error));
+    maybeSendManagerDailyReport().catch(error => console.error("Manager evening report schedule failed:", error));
   };
   const timer = setInterval(runAllScheduledJobs, 60_000);
   timer.unref?.();
