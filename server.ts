@@ -758,15 +758,6 @@ async function runManagerNurtureBatch(targetName?: string, requestedCount = 10, 
 }
 
 
-async function claimTelegramGreeting(chatId: string): Promise<string> {
-  const local = lagosDateTimeParts();
-  const hour = Number(local.hour);
-  const part = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
-  const date = local.year + "-" + local.month + "-" + local.day;
-  const result = await db.query("INSERT INTO agent_telegram_greeting_state (chat_id, greeted_date, greeted_part) VALUES ($1,$2::date,$3) ON CONFLICT (chat_id, greeted_date, greeted_part) DO NOTHING RETURNING chat_id", [chatId, date, part]);
-  return result.rowCount ? "Good " + part + ", Sir.\n\n" : "";
-}
-
 async function managerTelegramReply(chatId: string, message: string, markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }): Promise<void> {
   if (!telegramConfig) return;
   // Harry's response generator may already include a natural greeting. Do not
@@ -782,7 +773,6 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
   if (!telegramConfig) return 0;
   const result = await db.query("SELECT q.id, q.action_type, q.metadata, q.draft_content, q.reasoning, COALESCE(l.data->>'name','') AS lead_name, COALESCE(l.data->>'company','') AS lead_company, COALESCE(l.data->>'phone',l.data->>'whatsapp','') AS lead_phone FROM agent_queue q LEFT JOIN leads l ON l.id=q.lead_id WHERE q.status='pending_approval' AND q.action_type IN ('outreach_dm','value_dm','follow_up','linkedin_article') ORDER BY q.created_at ASC LIMIT $1", [Math.max(1, Math.min(40, limit))]);
   // Review cards are action cards, not conversational replies; do not prepend a greeting.
-  const greeting = "";
   for (const row of result.rows) {
     const rawDraft = String(row.draft_content || "");
     const rawName = String(row.lead_name || "").trim();
@@ -823,12 +813,12 @@ async function sendTelegramPendingApprovals(chatId: string, limit = 8): Promise<
           "────────────────────",
           approvedDraft.slice(0, 2400),
           row.reasoning ? "" : "",
-          row.reasoning ? "🧠 STRATEGY\\n" + String(row.reasoning).slice(0, 350) : "",
+          row.reasoning ? "🧠 STRATEGY\n" + String(row.reasoning).slice(0, 350) : "",
           "",
           "🔐 Approving sends this exact version. Editing requires a fresh approval.",
           "Reference: " + row.id,
         ].filter(Boolean).join("\n");
-    await sendTelegramMessage(telegramConfig, chatId, greeting + details, fetch, { inline_keyboard: [[
+    await sendTelegramMessage(telegramConfig, chatId, details, fetch, { inline_keyboard: [[
       { text: isLinkedInArticle ? "Approve for LinkedIn" : "Approve & Send", callback_data: "q|a|" + row.id + "|" + hash },
       { text: "Edit", callback_data: "q|e|" + row.id + "|" + hash },
       { text: "Reject", callback_data: "q|r|" + row.id + "|" + hash },
