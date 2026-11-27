@@ -70,8 +70,8 @@ export async function sendTelegramMessage(
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!response.ok) {
-      const payload: any = await response.json().catch(() => ({}));
+    const payload: any = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok !== true) {
       throw new Error("Telegram sendMessage failed: " + String(payload?.description || response.statusText).slice(0,200));
     }
   }
