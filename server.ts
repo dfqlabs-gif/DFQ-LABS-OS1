@@ -24,6 +24,7 @@ import { getWhatsAppNumber, normalizePhone } from "./lib/phone";
 import { answerTelegramCallback, getTelegramConfig, registerTelegramWebhook, sendTelegramMessage, transcribeTelegramVoice, verifyTelegramWebhookSecret } from "./lib/telegram";
 import { buildManagerDailyReport, buildManagerMorningBriefing, buildManagerKnowledgeContext } from "./lib/manager";
 import { isManagerReportWindowOpen, type ManagerReportJob } from "./lib/managerSchedule";
+import { classifyInboundCommercialSignal } from "./lib/inboundAlerts";
 import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
 import { chooseOutboundMessageType, ensureProspectGreeting, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
@@ -253,11 +254,12 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
   }
 
   if (!updatedLead) return;
-  void sendAuditOpportunityAlert(updatedLead,message.text,message.receivedAt).catch(error => console.error('Audit opportunity alert failed:',String(error?.message || error).slice(0,200)));
+
   await syncAgentDoNotContact(updatedLead);
   const contactControl = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [updatedLead.id]);
   if (contactControl.rows[0]?.do_not_contact || message.historical) return;
-  await notifyAuditIntent(updatedLead, message);
+  await notifyFounderOfInboundOpportunity(updatedLead, message).catch(error => console.error("Inbound opportunity alert failed:", String(error?.message || error).slice(0, 200)));
+  await notifyAuditIntent(updatedLead, message).catch(error => console.error("Audit intent alert failed:", String(error?.message || error).slice(0, 200)));
   const inboxState = await db.query("SELECT status FROM agent_logs WHERE agent_name='inbox_sync' ORDER BY created_at DESC LIMIT 1");
   if (inboxState.rows[0]?.status === "halted_circuit_breaker") return;
 
@@ -297,19 +299,22 @@ async function handleWhatsAppInbound(message: WhatsAppInbound): Promise<void> {
       "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'inbox_sync',$2,$3,0,$4,$5::jsonb)",
       [randomUUID(), status, "Inbound reply was saved, but response drafting failed: " + String(error?.message || error).slice(0,250), failures, JSON.stringify({ leadId: updatedLead.id, messageId: message.messageId })]
     );
+    await sendFounderEventAlert(
+      "inbound:" + message.messageId,
+      "inbox_response_failure_alert_sent",
+      [
+        "INBOUND RESPONSE NEEDS ATTENTION",
+        "",
+        "Business: " + String(updatedLead.company || updatedLead.name || updatedLead.id),
+        "Prospect message: " + String(message.text || "").slice(0, 900),
+        "Reason: " + String(error?.message || error).slice(0, 300),
+        "",
+        "The inbound message was saved to the CRM, but Harry could not complete the response workflow. No automatic WhatsApp reply was sent.",
+      ].join("\\n"),
+    ).catch(alertError => console.error("Inbound failure alert could not be delivered:", String(alertError?.message || alertError).slice(0, 200)));
   }
 }
 
-async function sendAuditOpportunityAlert(lead: Lead, inboundText: string, receivedAt: string): Promise<void> {
-  if (!telegramConfig || !/\b(audit|strategy review|page review|account review|content audit)\b/i.test(inboundText)) return;
-  const company = lead.company || lead.name || 'Unknown business';
-  let sources: any[] = [];
-  try { const found = await searchWebWithFallback(['"' + company + '" Nigeria real estate','"' + company + '" Instagram',company + ' official website']); sources = found.results.slice(0,6); } catch {}
-  const instagram = lead.instagram || (sources.find(x => String(x.url || '').toLowerCase().includes('instagram.com/'))?.url || 'Not verified');
-  const website = lead.website || (sources.find(x => !/instagram\.com|facebook\.com|linkedin\.com/i.test(x.url))?.url || 'Not verified');
-  const lines = ['AUDIT OPPORTUNITY — FOUNDER INTELLIGENCE','Business/contact: ' + company + ' / ' + (lead.name || 'Not recorded'),'Phone: ' + (lead.phone || lead.whatsapp || 'Not recorded'),'Instagram: ' + instagram,'Website: ' + website,'Location: ' + ((lead as any).location || (lead as any).city || 'Not recorded'),'Category: ' + (lead.clientType || 'Not recorded'),'Original message: “' + inboundText.slice(0,900) + '”','Received: ' + receivedAt,'Intent signal: Prospect mentioned an audit/review. Treat this as an inbound high-intent signal, not permission to send a sales message.','Recommended next action: Review the prospect online, prepare the promised audit scope, and personally confirm a delivery timeline.','Research candidates — verify before use:',...sources.map(x => '• ' + x.title + ' — ' + x.url + ' — ' + x.snippet),'Instagram screenshot: Not attached. No verified screenshot-capture integration is configured, so no image is fabricated.'];
-  await sendTelegramMessage(telegramConfig,telegramConfig.allowedChatId,lines.join('\n'));
-}
 async function appendWhatsAppHistoricalOutbound(message: WhatsAppInbound, author: string): Promise<boolean> {
   const allLeads = await db.query("SELECT id, data FROM leads");
   const matched = allLeads.rows.find((row: any) => {
@@ -891,6 +896,48 @@ function safeProfileUrl(value: string): string {
     return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
   } catch { return ""; }
 }
+async function sendFounderEventAlert(eventKey: string, action: string, message: string): Promise<void> {
+  if (!telegramConfig) return;
+  const prior = await db.query(
+    "SELECT 1 FROM agent_audit_log WHERE action=$1 AND details->>'eventKey'=$2 LIMIT 1",
+    [action, eventKey],
+  );
+  if (prior.rowCount) return;
+  await managerTelegramReply(telegramConfig.allowedChatId, message);
+  await db.query(
+    "INSERT INTO agent_audit_log (id, actor_id, action, details) VALUES ($1,'system:founder_alert',$2,$3::jsonb)",
+    [randomUUID(), action, JSON.stringify({ eventKey })],
+  );
+}
+
+async function notifyFounderOfInboundOpportunity(lead: Lead, inbound: WhatsAppInbound): Promise<void> {
+  const signal = classifyInboundCommercialSignal(inbound.text);
+  if (!signal) return;
+  const company = String(lead.company || lead.name || "Unmatched business").trim();
+  const alert = [
+    "INBOUND SALES OPPORTUNITY",
+    "",
+    "Signal: " + signal.label,
+    "Business: " + company,
+    "Contact: " + String(lead.name || inbound.pushName || "Not recorded"),
+    "WhatsApp: " + String(lead.phone || lead.whatsapp || inbound.phone || "Not recorded"),
+    "CRM stage: " + String(lead.status || "Not recorded"),
+    "",
+    "PROSPECT MESSAGE",
+    inbound.text.slice(0, 1400),
+    "",
+    "RECOMMENDED NEXT ACTION",
+    signal.nextAction,
+    "",
+    "Governance: this is an alert only. Harry has not made a price commitment or sent an unapproved commercial reply.",
+  ].join("\n");
+  await sendFounderEventAlert(
+    "whatsapp:" + inbound.messageId,
+    "inbound_" + signal.type + "_alert_sent",
+    alert,
+  );
+}
+
 async function notifyAuditIntent(lead: Lead, inbound: WhatsAppInbound): Promise<void> {
   if (!telegramConfig || !isAuditIntentMessage(inbound.text)) return;
   const prior = await db.query("SELECT 1 FROM agent_audit_log WHERE action='audit_intent_alert_sent' AND details->>'messageId'=$1 LIMIT 1", [inbound.messageId]);
@@ -1217,14 +1264,16 @@ async function maybeSendManagerScheduledReport(
       const message = String(error?.message || error || "Telegram delivery failed").slice(0, 500);
       const attempt = attempts + 1;
       const permanent = /chat not found|bot was blocked|forbidden|chat_id is empty|not enough rights|user is deactivated/i.test(message);
-      const blocked = permanent || attempt >= 5;
+      const deliveryUncertain = /fetch failed|timeout|timed out|aborted|econnreset|econnrefused|socket|network error|und_err/i.test(message);
+      const blocked = permanent || deliveryUncertain || attempt >= 5;
+      const nextStatus = deliveryUncertain ? "delivery_unknown" : blocked ? "blocked" : "error";
       const retryMinutes = Math.min(60, 5 * (2 ** Math.max(0, attempt - 1)));
       await client.query(
         `UPDATE agent_schedule_runs
-         SET status=$2, summary=$3, completed_at=NOW(),
+         SET status=$2, summary=$3, completed_at=CASE WHEN $2 IN ('blocked','delivery_unknown') THEN NOW() ELSE NULL END,
              next_attempt_at=CASE WHEN $2='error' THEN NOW() + ($4::text || ' minutes')::interval ELSE NULL END
          WHERE id=$1`,
-        [run.id, blocked ? "blocked" : "error", message, String(retryMinutes)],
+        [run.id, nextStatus, message, String(retryMinutes)],
       );
       console.error("Manager report delivery failed:", jobName, message);
     }
@@ -2421,6 +2470,21 @@ async function dispatchApprovedQueue(): Promise<void> {
         "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,'dispatcher',$2,$3,0,$4,$5::jsonb)",
         [randomUUID(), status, "Approved message dispatch failed: " + safeError, failures, JSON.stringify({ queueItemId: claimedItem.id })]
       ).catch(() => {});
+      const failedLead = claimedItem.lead_id ? await getAuthoritativeLead(String(claimedItem.lead_id)).catch(() => null) : null;
+      await sendFounderEventAlert(
+        "queue:" + String(claimedItem.id),
+        "dispatcher_failure_alert_sent",
+        [
+          "WHATSAPP DISPATCH FAILURE — FOUNDER ACTION",
+          "",
+          "Business: " + String(failedLead?.company || failedLead?.name || claimedItem.lead_id || "Unknown prospect"),
+          "Queue item: " + String(claimedItem.id),
+          "Reason: " + safeError,
+          "External WhatsApp message ID: " + String(claimedItem.external_message_id || "Not recorded"),
+          "",
+          "The Dispatcher will not automatically resend this message. Verify the WhatsApp chat and reconcile the CRM record before retrying.",
+        ].join("\\n"),
+      ).catch(alertError => console.error("Dispatcher failure alert could not be delivered:", String(alertError?.message || alertError).slice(0, 200)));
     } else {
       console.error("Approved dispatcher tick failed:", String(error?.message || error).slice(0, 300));
     }
