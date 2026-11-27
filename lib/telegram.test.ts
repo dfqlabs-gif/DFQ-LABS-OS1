@@ -118,6 +118,8 @@ test("Telegram text normalization removes Markdown markers and preserves readabl
   assert.match(result, /Active leads: 518/);
   assert.match(result, /• Scout needs review/);
   assert.match(result, /• Follow up with warm leads/);
+  const collapsed = normalizeTelegramText("Pipeline Overview• Active Leads: 518• Daily Target: 30");
+  assert.match(collapsed, /Pipeline Overview\n• Active Leads: 518\n• Daily Target: 30/);
 });
 
 
