@@ -23,7 +23,7 @@ export function classifyInboundCommercialSignal(text: string): InboundCommercial
     };
   }
 
-  if (/\b(audit|content audit|strategy audit|page review|account review|strategy review)\b/.test(value)) return null;
+if (/\b(audit|content audit|strategy audit|page review|account review|strategy review)\b/.test(value)) return null;
 
   if (/\b(we are interested|i am interested|i'm interested|we're interested|interested in working|want to proceed|ready to proceed|move forward|next steps|send the proposal|share the proposal|let's proceed|would like to work|keen to work|sounds good|this is interesting)\b/.test(value)) {
     return {
