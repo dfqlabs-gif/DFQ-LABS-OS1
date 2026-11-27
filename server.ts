@@ -2562,7 +2562,15 @@ async function runScheduledInternalRoute(
     const payload: any = await response.json().catch(() => ({}));
     if (!response.ok) {
       const status = response.status === 423 ? "blocked" : "error";
-      await client.query("UPDATE agent_schedule_runs SET status=$1, summary=$2, completed_at=NOW() WHERE id=$3", [status, String(payload.error || "Scheduled agent request failed").slice(0,500), runId]);
+      const summary = String(payload.error || "Scheduled agent request failed").slice(0,500);
+      await client.query("UPDATE agent_schedule_runs SET status=$1, summary=$2, completed_at=NOW() WHERE id=$3", [status, summary, runId]);
+      if (status === "error") {
+        await sendFounderEventAlert(
+          "scheduled:" + jobName + ":" + scheduledDate,
+          "agent_schedule_failure_alert_sent",
+          "SCHEDULED AGENT FAILURE\\n\\nAgent: " + jobName + "\\nReason: " + summary + "\\nDate: " + scheduledDate + "\\n\\nHarry recorded the failure. No unapproved outbound message was sent.",
+        ).catch(alertError => console.error("Scheduled agent failure alert could not be delivered:", String(alertError?.message || alertError).slice(0,200)));
+      }
       return;
     }
     const summary = payload.staged?.length !== undefined
@@ -2571,8 +2579,14 @@ async function runScheduledInternalRoute(
       : `Scheduled ${jobName} completed.`;
     await client.query("UPDATE agent_schedule_runs SET status='completed', summary=$1, completed_at=NOW() WHERE id=$2", [summary, runId]);
   } catch (error: any) {
-    console.error("Scheduled agent route failed (" + jobName + "):", String(error?.message || error).slice(0,300));
-    if (client) await client.query("UPDATE agent_schedule_runs SET status='error', summary=$1, completed_at=NOW() WHERE job_name=$2 AND scheduled_date=$3::date AND status='started'", [String(error?.message || "Scheduled job failed").slice(0,500), jobName, scheduledDate]).catch(() => {});
+    const summary = String(error?.message || "Scheduled job failed").slice(0,500);
+    console.error("Scheduled agent route failed (" + jobName + "):", summary.slice(0,300));
+    if (client) await client.query("UPDATE agent_schedule_runs SET status='error', summary=$1, completed_at=NOW() WHERE job_name=$2 AND scheduled_date=$3::date AND status='started'", [summary, jobName, scheduledDate]).catch(() => {});
+    await sendFounderEventAlert(
+      "scheduled:" + jobName + ":" + scheduledDate,
+      "agent_schedule_failure_alert_sent",
+      "SCHEDULED AGENT FAILURE\\n\\nAgent: " + jobName + "\\nReason: " + summary + "\\nDate: " + scheduledDate + "\\n\\nHarry recorded the failure. No unapproved outbound message was sent.",
+    ).catch(alertError => console.error("Scheduled agent failure alert could not be delivered:", String(alertError?.message || alertError).slice(0,200)));
   } finally {
     if (client) {
       if (locked) await client.query("SELECT pg_advisory_unlock(hashtext($1))", ["dfqlabs-os1-schedule:" + jobName]).catch(() => {});
