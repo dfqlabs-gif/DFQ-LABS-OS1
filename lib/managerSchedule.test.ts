@@ -29,3 +29,37 @@ test("morning and evening schedules do not overlap or run outside their windows"
   assert.equal(isManagerReportWindowOpen("manager_evening_report", beforeEvening), false);
   assert.equal(isManagerReportWindowOpen("manager_evening_report", afterEvening), false);
 });
+
+import { createHash } from "node:crypto";
+import { validateApprovedLinkedInDraft } from "./linkedin.js";
+
+function contentHash(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+test("LinkedIn approval integrity preserves exact Unicode content", () => {
+  const draft = "Abuja real estate: reduce risk, build trust.\\n\\nA ₦200M+ decision needs evidence. 🏡";
+  const result = validateApprovedLinkedInDraft(draft, contentHash(draft), Array.from(draft).length);
+  assert.equal(result.contentHash, contentHash(draft));
+  assert.equal(result.characterCount, Array.from(draft).length);
+  assert.equal(result.wordCount, draft.trim().split(/\\s+/).filter(Boolean).length);
+});
+
+test("LinkedIn publisher rejects content changed after founder approval", () => {
+  const approved = "Original complete LinkedIn post.";
+  assert.throws(() => validateApprovedLinkedInDraft(approved + " changed", contentHash(approved), Array.from(approved).length), /content hash does not match/);
+});
+
+test("LinkedIn publisher rejects incorrect approved character count", () => {
+  const draft = "A complete post.";
+  assert.throws(() => validateApprovedLinkedInDraft(draft, contentHash(draft), Array.from(draft).length + 1), /character count does not match/);
+});
+
+test("LinkedIn publisher rejects posts exceeding 3,000 characters", () => {
+  const draft = "x".repeat(3001);
+  assert.throws(() => validateApprovedLinkedInDraft(draft, contentHash(draft), Array.from(draft).length), /exceeds the 3,000-character limit/);
+});
+
+test("LinkedIn publisher rejects empty content", () => {
+  assert.throws(() => validateApprovedLinkedInDraft("", contentHash(""), 0), /draft is empty/);
+});
