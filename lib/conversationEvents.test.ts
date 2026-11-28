@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { removeConversationEvent, restoreConversationEvent, conversationEventId } from "./conversationEvents.js";
+import { isProtectedConversationAnchor, removeConversationEvent, restoreConversationEvent, conversationEventId } from "./conversationEvents.js";
 import { formatConversationLog } from "../aiEngine.js";
 
 const event = (id: string, text: string, ts: string, direction: "inbound" | "outbound" = "outbound") => ({ id, ts, type: direction === "outbound" ? "dm" as const : "reply" as const, direction, label: "Thread", text, by: "Amina", outboundId: direction === "outbound" ? `out-${id}` : undefined });
@@ -30,7 +30,7 @@ test("a new event appended while one is removed is retained and the undo is not 
 });
 
 test("protected anchors cannot be removed and deleted events disappear from AI context", () => {
-  const opening = event("opening", anchors.dmText, "2026-09-11T08:00:00.000Z");
+  const opening = { ...event("opening", anchors.dmText, "2026-09-11T08:00:00.000Z"), outboundId: undefined };
   const initial = event("initial", anchors.initial, "2026-09-11T08:01:00.000Z", "inbound");
   const testMessage = event("test", "Delete me", "2026-09-11T08:20:00.000Z");
   assert.throws(() => removeConversationEvent([opening, initial, testMessage], "opening", anchors.dmText, anchors.initial, "now"), /anchors/);
@@ -44,4 +44,9 @@ test("protected anchors cannot be removed and deleted events disappear from AI c
 test("legacy events receive deterministic identities without using their array position", () => {
   const legacy = { ts: "2026-09-11T08:20:00.000Z", type: "reply" as const, direction: "inbound" as const, label: "Thread", text: "A reply", by: "Sarah" };
   assert.equal(conversationEventId(legacy), conversationEventId({ ...legacy }));
+});
+
+test("committed outbound matching the opening DM is not treated as a protected legacy anchor", async () => {
+  const event: any = { id: "sent-1", outboundId: "outbound-1", ts: "2026-11-26T10:00:00.000Z", type: "dm", direction: "outbound", label: "Sent", text: "Opening message", by: "DFQLABS AI" };
+  assert.equal(isProtectedConversationAnchor(event, "Opening message", ""), false);
 });

@@ -90,3 +90,24 @@ test("Sales Brain receives the exact user instruction alongside one prospect's c
   assert.match(receivedPrompt, /registered C of O/);
   assert.match(receivedPrompt, /Do not sell her anything/);
 });
+
+
+test("Sales Brain includes elapsed outreach chronology and enforces a polite prospect greeting", async () => {
+  let receivedPrompt = "";
+  const result = await runSalesBrainWithGenerator(lead, { requestedMessageType: "VALUE_DM" }, async prompt => {
+    receivedPrompt = prompt;
+    return JSON.stringify({
+      salesStage: "Audit Delivered", buyerIntent: "silent", confidence: 80,
+      primaryObjective: "Re-engage with relevant value", strategicReason: "Prior contact is recorded.",
+      detectedFriction: "No response recorded", recommendedAction: "Share one fresh observation.",
+      messageType: "VALUE_DM",
+      message: "Your next project update could explain one material choice and the buyer risk it addresses.",
+      cta: "", recommendedFollowUpDate: "2026-11-29", recommendedChannel: "WhatsApp",
+      riskLevel: "low", reasoningSummary: "A new useful angle is appropriate.",
+    });
+  });
+  assert.match(receivedPrompt, /CHRONOLOGY — AUTHORITATIVE SENT OUTBOUND HISTORY/);
+  assert.match(receivedPrompt, /30\+ days of silence/);
+  assert.match(result.message, /^Good (morning|afternoon|evening), Team Resmo Properties\./);
+  assert.equal(validateSalesBrainMessage(result.message, "VALUE_DM"), null);
+});

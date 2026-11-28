@@ -31,8 +31,8 @@ export function isLatestThreadEvent(event: ConversationEvent): boolean {
 }
 
 export function isProtectedConversationAnchor(event: ConversationEvent, dmText: string, initialResponse: string): boolean {
-  return (event.type === "dm" && !!dmText && event.text === dmText) ||
-    (event.type === "reply" && !!initialResponse && event.text === initialResponse);
+  return !event.outboundId && ((event.type === "dm" && !!dmText && event.text === dmText) ||
+    (event.type === "reply" && !!initialResponse && event.text === initialResponse));
 }
 
 export function removeConversationEvent(log: ConversationEvent[], eventId: string, dmText: string, initialResponse: string, removedAt: string): { log: ConversationEvent[]; removed: RemovedConversationEvent } {

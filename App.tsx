@@ -37,6 +37,7 @@ import { MergeLeadModal } from "./components/MergeLeadModal";
 import { DuplicateReviewPanel } from "./components/DuplicateReviewPanel";
 import { AskAI } from "./components/AskAI";
 import { LearningIntelligence } from "./components/LearningIntelligence";
+import { AgentReviewQueue } from "./components/AgentReviewQueue";
 import { OutboundActivity } from "./components/OutboundActivity";
 import { NurturePortal } from "./components/NurturePortal";
 import { KnowledgeBase } from "./components/KnowledgeBase";
@@ -874,6 +875,7 @@ export default function App() {
   const [importError, setImportError] = useState<string | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [authed, setAuthed] = useState(false);
+  const [apiToken, setApiToken] = useState<string>("");
   const [mergeCandidates, setMergeCandidates] = useState<[Lead, Lead] | null>(null);
   const [undoActions, setUndoActions] = useState<any[]>([]);
   const [undoMessage, setUndoMessage] = useState<string | null>(null);
@@ -892,39 +894,51 @@ export default function App() {
   const lastSessionWriteRef = useRef(0);
 
   const clearSession = useCallback(async () => {
-    try {
-      localStorage.removeItem(SESSION_KEY);
-    } catch (_) {}
-  }, []);
+    try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+    if (apiToken) {
+      fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${apiToken}` } }).catch(() => {});
+    }
+  }, [apiToken]);
 
-  const writeSession = useCallback(async (roleKey: string) => {
+  const writeSession = useCallback(async (roleKey: string, token?: string) => {
     const expiresAt = Date.now() + SESSION_IDLE_MS;
     try {
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ role: roleKey, expiresAt }));
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ role: roleKey, expiresAt, token: token || "" }));
     } catch (_) {}
   }, []);
 
   const logout = useCallback(() => {
     setAuthed(false);
     setRole(null);
+    setApiToken("");
     clearSession();
   }, [clearSession]);
 
   // Session persistence checks
   useEffect(() => {
-    (() => {
+    let cancelled = false;
+    (async () => {
       try {
-        const r = localStorage.getItem(SESSION_KEY);
-        if (r) {
-          const s = JSON.parse(r);
-          if (s?.role && s?.expiresAt && s.expiresAt > Date.now()) {
-            lastActivityRef.current = Date.now();
-            setRole(s.role);
-            setAuthed(true);
-          }
+        const raw = localStorage.getItem(SESSION_KEY);
+        if (!raw) return;
+        const session = JSON.parse(raw);
+        if (!session?.role || !session?.expiresAt || session.expiresAt <= Date.now()) {
+          localStorage.removeItem(SESSION_KEY);
+          return;
         }
-      } catch (_) {}
+        if (session.role === "founder") {
+          if (!session.token) { localStorage.removeItem(SESSION_KEY); return; }
+          const response = await fetch("/api/auth/me", { headers: { Authorization: `Bearer ${session.token}` } });
+          if (!response.ok) { localStorage.removeItem(SESSION_KEY); return; }
+        }
+        if (cancelled) return;
+        lastActivityRef.current = Date.now();
+        setRole(session.role);
+        setApiToken(session.token || "");
+        setAuthed(true);
+      } catch (_) { try { localStorage.removeItem(SESSION_KEY); } catch {} }
     })();
+    return () => { cancelled = true; };
   }, []);
 
   // Idle lock listener
@@ -934,7 +948,7 @@ export default function App() {
       lastActivityRef.current = Date.now();
       if (Date.now() - lastSessionWriteRef.current > 60000) {
         lastSessionWriteRef.current = Date.now();
-        writeSession(role);
+        writeSession(role, apiToken);
       }
     };
     const events = ["click", "keydown", "mousemove", "touchstart", "scroll"];
@@ -1667,7 +1681,8 @@ export default function App() {
     { key: "gateway", label: "AI Gateway" },
     { key: "activity", label: "DM Activity" },
     { key: "learning", label: "Learning Intelligence" },
-    { key: "knowledge", label: "Knowledge Base" }
+    { key: "knowledge", label: "Knowledge Base" },
+    ...(role === "founder" ? [{ key: "agents", label: "AI Agents" }] : [])
   ];
 
   const importStageMeta = getImportStageMeta(importStage);
@@ -1676,7 +1691,7 @@ export default function App() {
 
   if (loading) return <div style={{ background: BG, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: G, fontFamily: "monospace", letterSpacing: 4, fontSize: 13 }}>LOADING OS…</span></div>;
   if (!role) return <RoleSelect onSelect={setRole} />;
-  if (!authed) return <AccessGate roleKey={role} onSuccess={() => { setAuthed(true); writeSession(role); }} onBack={() => setRole(null)} />;
+  if (!authed) return <AccessGate roleKey={role} onSuccess={(token) => { setApiToken(token || ""); setAuthed(true); writeSession(role, token); }} onBack={() => setRole(null)} />;
 
   // Staff dashboards — each person sees their own leads only
   // "abigail" / "internB" roles are kept here ONLY so any lingering cached sessions
@@ -1957,6 +1972,7 @@ export default function App() {
         {tab === "activity" && <OutboundActivity leads={activeLeads} onOpenLead={setModal} />}
         {tab === "learning" && <LearningIntelligence />}
         {tab === "knowledge" && <KnowledgeBase />}
+        {tab === "agents" && role === "founder" && <AgentReviewQueue token={apiToken} leads={activeLeads} />}
       </div>
       
       {modal && <LeadModal lead={modal} leads={activeLeads} onSave={saveLead} onLeadCommitted={applyCommittedLead} onClose={() => setModal(null)} role="founder" onOpenExisting={l => setModal(l)} onMerge={(existing, draft) => setMergeCandidates([existing, draft])} />}
@@ -2164,30 +2180,88 @@ function RoleSelect({ onSelect }: { onSelect: (r: string) => void }) {
   );
 }
 
-function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess: () => void, onBack: () => void }) {
+function AccessGate({ roleKey, onSuccess, onBack }: { roleKey: string, onSuccess: (token?: string) => void, onBack: () => void }) {
   const cfg = ROLE_ACCESS[roleKey as keyof typeof ROLE_ACCESS] || ROLE_ACCESS.founder;
   const Icon = cfg.Icon;
+  const [username, setUsername] = useState("alex@dfqlabs.com");
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
-  
-  const submit = () => {
-    if (pin === cfg.password) {
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (!pin.trim()) {
+      setErr("Enter your password.");
+      return;
+    }
+
+    // Founder credentials are verified only by the server. No founder password
+    // or password comparison is shipped in the browser bundle.
+    if (roleKey !== "founder") {
+      const expectedPassword = (cfg as { password?: string }).password;
+      if (!expectedPassword || pin !== expectedPassword) {
+        setErr("Incorrect password.");
+        setPin("");
+        return;
+      }
       onSuccess();
-    } else {
-      setErr("Incorrect password.");
+      return;
+    }
+
+    if (!username.trim()) {
+      setErr("Enter your founder email address.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim().toLowerCase(), password: pin })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.token) {
+        throw new Error(data.error || "Founder authentication failed. Check your email and password.");
+      }
+      onSuccess(data.token);
+    } catch (error: any) {
+      setErr(error.message || "Could not authenticate founder session.");
       setPin("");
+    } finally {
+      setSubmitting(false);
     }
   };
 
+  const founder = roleKey === "founder";
   return (
     <div style={{ background: BG, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, color: TEXT, fontFamily: "'Inter',system-ui,sans-serif" }}>
-      <div style={{ width: "100%", maxWidth: 320, textAlign: "center" }}>
+      <div style={{ width: "100%", maxWidth: 360, textAlign: "center" }}>
         <Icon size={30} color={cfg.color} style={{ marginBottom: 10, display: "inline-block" }} />
         <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>{cfg.label} Access</div>
-        <div style={{ fontSize: 11, color: MUTED, marginBottom: 16 }}>Enter the password to unlock DFQ Labs Operating System.</div>
-        <input type="password" value={pin} onChange={e => { setPin(e.target.value); setErr(""); }} onKeyDown={e => { if (e.key === "Enter") submit(); }} placeholder="Password" style={{ ...iStyle, textAlign: "center", marginBottom: 10 }} autoFocus />
-        <button onClick={submit} style={{ background: cfg.color, color: "#000", border: "none", borderRadius: 6, padding: "10px 20px", fontWeight: 800, fontSize: 12, cursor: "pointer", width: "100%", marginBottom: 10 }}>Unlock</button>
-        {err && <div style={{ fontSize: 11, color: "#EF4444", marginBottom: 8 }}>{err}</div>}
+        <div style={{ fontSize: 11, color: MUTED, marginBottom: 16 }}>Sign in to DFQLABS Operating System.</div>
+        {founder && (
+          <input
+            type="email"
+            value={username}
+            onChange={e => { setUsername(e.target.value); setErr(""); }}
+            onKeyDown={e => { if (e.key === "Enter") submit(); }}
+            placeholder="Founder email"
+            autoComplete="username"
+            style={{ ...iStyle, textAlign: "center", marginBottom: 10 }}
+          />
+        )}
+        <input
+          type="password"
+          value={pin}
+          onChange={e => { setPin(e.target.value); setErr(""); }}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }}
+          placeholder="Password"
+          autoComplete={founder ? "current-password" : "off"}
+          style={{ ...iStyle, textAlign: "center", marginBottom: 10 }}
+          autoFocus={!founder}
+        />
+        <button onClick={submit} disabled={submitting} style={{ background: cfg.color, color: "#000", border: "none", borderRadius: 6, padding: "10px 20px", fontWeight: 800, fontSize: 12, cursor: submitting ? "wait" : "pointer", width: "100%", marginBottom: 10 }}>{submitting ? "Verifying…" : "Sign in"}</button>
+        {err && <div role="alert" style={{ fontSize: 11, color: "#EF4444", marginBottom: 8 }}>{err}</div>}
         <button onClick={onBack} style={{ background: "transparent", border: `1px solid ${BORDER}`, color: MUTED, borderRadius: 6, padding: "7px 16px", fontSize: 11, cursor: "pointer" }}>← Back</button>
       </div>
     </div>

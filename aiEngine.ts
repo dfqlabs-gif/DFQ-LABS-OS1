@@ -243,7 +243,7 @@ Hours currently awaiting their reply: ${hoursAwaitingReply !== null && !Number.i
 Internal notes: ${lead.notes || "none"}
 
 === CONVERSATION THREAD ===
-${formatConversationLog(lead)}
+${lead.prospectInitialResponse ? "=== THEIR INITIAL RESPONSE (CRM FIELD) ===\n" + lead.prospectInitialResponse + "\n" : ""}${lead.prospectLatestResponse ? "=== THEIR LATEST RESPONSE (CRM FIELD) ===\n" + lead.prospectLatestResponse + "\n" : ""}${formatConversationLog(lead)}
 === PREVIOUS OUTBOUND RECORDS ===
 ${(lead.outboundMessages || []).length
   ? lead.outboundMessages.map(message => `[${message.status}] ${message.sentAt || message.generatedAt} — ${message.messageType} via ${message.source}: ${message.messageText}`).join("\n")

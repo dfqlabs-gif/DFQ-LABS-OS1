@@ -9,7 +9,8 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts lib/*.test.ts",
+    "prebuild": "npm test"
   },
   "dependencies": {
     "@google/genai": "^2.11.0",
@@ -23,7 +24,9 @@
     "pg": "^8.22.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "@whiskeysockets/baileys": "6.7.24",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
@@ -33,6 +36,8 @@
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
-  }
+    "vite": "^6.2.3",
+    "@types/qrcode": "^1.5.5"
+  },
+  "description": "DFQLABS OS1 — real-estate buyer psychology CRM and agent operating system"
 }

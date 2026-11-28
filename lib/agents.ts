@@ -1,0 +1,519 @@
+import { Router, type Request } from "express";
+import type { Pool } from "pg";
+import { randomUUID } from "node:crypto";
+import { normalizePhone } from "./phone.js";
+
+type AuthUser = { userId: string; role: string; username: string; displayName: string; seatId?: string };
+type AuthResolver = (req: Request) => AuthUser | null;
+
+export async function initializeAgentTables(db: Pool): Promise<void> {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      automation_mode TEXT NOT NULL DEFAULT 'queue_only' CHECK (automation_mode IN ('queue_only','autopilot')),
+      inbound_auto_reply_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      daily_outreach_cap INTEGER NOT NULL DEFAULT 30 CHECK (daily_outreach_cap BETWEEN 1 AND 100),
+      daily_value_dm_cap INTEGER NOT NULL DEFAULT 30 CHECK (daily_value_dm_cap BETWEEN 1 AND 100),
+      brand_voice TEXT NOT NULL DEFAULT 'Sharp, consultative, peer-to-peer buyer psychology authority for real-estate brands. Never needy, hype-heavy or aggressively salesy.',
+      buyer_psychology_pillars JSONB NOT NULL DEFAULT '["hesitation triggers","trust architecture in high-ticket real estate","perceived risk reduction","status and identity signaling"]'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_queue (
+      id UUID PRIMARY KEY,
+      lead_id TEXT NULL REFERENCES leads(id) ON DELETE SET NULL,
+      agent_name TEXT NOT NULL CHECK (agent_name IN ('scout','inbox_sync','writer','closer','dispatcher')),
+      action_type TEXT NOT NULL CHECK (action_type IN ('new_lead','log_inbound','outreach_dm','value_dm','follow_up','linkedin_article')),
+      draft_content TEXT NOT NULL DEFAULT '',
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      reasoning TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending_approval' CHECK (status IN ('pending_approval','approved','sending','sent','completed','rejected','failed')),
+      error_log TEXT NULL,
+      idempotency_key TEXT UNIQUE,
+      scheduled_for TIMESTAMPTZ NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reviewed_by TEXT NULL,
+      reviewed_at TIMESTAMPTZ NULL
+    )
+  `);
+  await db.query("CREATE INDEX IF NOT EXISTS agent_queue_status_created_idx ON agent_queue(status, created_at DESC)");
+  await db.query("CREATE INDEX IF NOT EXISTS agent_queue_lead_created_idx ON agent_queue(lead_id, created_at DESC)");
+  await db.query("CREATE INDEX IF NOT EXISTS agent_queue_action_status_idx ON agent_queue(action_type, status, created_at DESC)");
+  await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS external_message_id TEXT");
+  await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ");
+  await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS dispatch_attempts INTEGER NOT NULL DEFAULT 0");
+  await db.query("ALTER TABLE agent_queue DROP CONSTRAINT IF EXISTS agent_queue_status_check");
+  await db.query("ALTER TABLE agent_queue ADD CONSTRAINT agent_queue_status_check CHECK (status IN ('pending_approval','approved','sending','sent','completed','rejected','failed','delivery_unknown'))");
+  await db.query("UPDATE agent_queue SET status='failed', error_log='Interrupted during dispatch; verify WhatsApp delivery manually before retrying.', updated_at=NOW() WHERE status='sending' AND updated_at < NOW() - INTERVAL '10 minutes'");
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_logs (
+      id UUID PRIMARY KEY,
+      agent_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('success','halted_circuit_breaker','error','info')),
+      summary TEXT NOT NULL,
+      items_processed INTEGER NOT NULL DEFAULT 0,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("CREATE INDEX IF NOT EXISTS agent_logs_created_idx ON agent_logs(created_at DESC)");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_audit_log (
+      id UUID PRIMARY KEY,
+      actor_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      queue_item_id UUID NULL REFERENCES agent_queue(id) ON DELETE SET NULL,
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("CREATE INDEX IF NOT EXISTS agent_audit_created_idx ON agent_audit_log(created_at DESC)");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_contact_controls (
+      lead_id TEXT PRIMARY KEY REFERENCES leads(id) ON DELETE CASCADE,
+      do_not_contact BOOLEAN NOT NULL DEFAULT FALSE,
+      reason TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'founder',
+      updated_by TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("CREATE INDEX IF NOT EXISTS agent_contact_controls_dnc_idx ON agent_contact_controls(do_not_contact) WHERE do_not_contact = TRUE");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_phone_suppressions (
+      phone TEXT PRIMARY KEY,
+      reason TEXT NOT NULL,
+      source TEXT NOT NULL,
+      updated_by TEXT NOT NULL DEFAULT 'system',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_whatsapp_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'disconnected',
+      connected_phone TEXT NULL,
+      last_error TEXT NULL,
+      last_connected_at TIMESTAMPTZ NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("INSERT INTO agent_whatsapp_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_whatsapp_auth_state (
+      state_key TEXT PRIMARY KEY,
+      ciphertext TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      auth_tag TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_whatsapp_events (
+      id TEXT PRIMARY KEY,
+      lead_id TEXT NULL REFERENCES leads(id) ON DELETE SET NULL,
+      remote_jid TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      message_text TEXT NOT NULL,
+      received_at TIMESTAMPTZ NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("CREATE INDEX IF NOT EXISTS agent_whatsapp_events_lead_received_idx ON agent_whatsapp_events(lead_id, received_at DESC)");
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_schedule_runs (
+      id UUID PRIMARY KEY,
+      job_name TEXT NOT NULL,
+      scheduled_date DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'started',
+      summary TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ NULL,
+      UNIQUE (job_name, scheduled_date)
+    )
+  `);
+  await db.query("ALTER TABLE agent_schedule_runs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0");
+  await db.query("ALTER TABLE agent_schedule_runs ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ NULL");
+  await db.query("ALTER TABLE agent_schedule_runs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NULL");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_telegram_greeting_state (
+      chat_id TEXT NOT NULL,
+      greeted_date DATE NOT NULL,
+      greeted_part TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (chat_id, greeted_date, greeted_part)
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_telegram_updates (
+      update_id BIGINT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS agent_telegram_edit_sessions (
+      chat_id TEXT PRIMARY KEY,
+      queue_id UUID NOT NULL REFERENCES agent_queue(id) ON DELETE CASCADE,
+      expected_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.query("ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS inbound_auto_reply_enabled BOOLEAN NOT NULL DEFAULT TRUE");
+  await db.query("INSERT INTO agent_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING");
+}
+
+export function createAgentRouter(db: Pool, resolveUser: AuthResolver): Router {
+  const router = Router();
+  const founder = (req: Request, res: any): AuthUser | null => {
+    const user = resolveUser(req);
+    if (!user || user.role !== "FOUNDER") {
+      res.status(user ? 403 : 401).json({ error: user ? "Founder access required" : "Unauthorized" });
+      return null;
+    }
+    return user;
+  };
+  const audit = async (actor: AuthUser, action: string, itemId: string | null, details: Record<string, unknown> = {}) => {
+    await db.query(
+      "INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,$2,$3,$4,$5::jsonb)",
+      [randomUUID(), actor.userId, action, itemId, JSON.stringify(details)]
+    );
+  };
+
+  router.get("/config", async (req, res) => {
+    if (!founder(req, res)) return;
+    try {
+      const result = await db.query("SELECT * FROM agent_config WHERE id = 1");
+      const counters = await db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM' AND status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS outreach_sent,
+          COUNT(*) FILTER (WHERE action_type IN ('outreach_dm','follow_up') AND COALESCE(metadata->>'messageType','') <> 'RESPONSE_DM' AND status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS outreach_queued,
+          COUNT(*) FILTER (WHERE action_type='value_dm' AND status='sent' AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS value_sent,
+          COUNT(*) FILTER (WHERE action_type='value_dm' AND status IN ('pending_approval','approved','sending') AND created_at >= (date_trunc('day', NOW() AT TIME ZONE 'Africa/Lagos') AT TIME ZONE 'Africa/Lagos'))::int AS value_queued
+        FROM agent_queue
+      `);
+      res.json({ config: result.rows[0], counters: counters.rows[0] || {} });
+    } catch (error) { console.error("Agent config read failed", error); res.status(500).json({ error: "Could not load agent settings" }); }
+  });
+
+  router.patch("/config", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const { automation_mode, daily_outreach_cap, daily_value_dm_cap, brand_voice, buyer_psychology_pillars } = req.body || {};
+    if (automation_mode !== undefined && automation_mode !== "queue_only") return res.status(409).json({ error: "Autopilot is locked until the dispatcher and WhatsApp bridge pass end-to-end verification." });
+    for (const [key, value] of [["daily_outreach_cap",daily_outreach_cap],["daily_value_dm_cap",daily_value_dm_cap]] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 1 || value > 100)) return res.status(400).json({ error: key + " must be an integer from 1 to 100" });
+    }
+    if (brand_voice !== undefined && (typeof brand_voice !== "string" || brand_voice.length > 3000)) return res.status(400).json({ error: "Invalid brand voice" });
+    if (buyer_psychology_pillars !== undefined && (!Array.isArray(buyer_psychology_pillars) || buyer_psychology_pillars.length > 20 || buyer_psychology_pillars.some((v: unknown) => typeof v !== "string" || v.length > 300))) return res.status(400).json({ error: "Invalid buyer psychology pillars" });
+    try {
+      const result = await db.query(`
+        UPDATE agent_config SET
+          automation_mode = COALESCE($1, automation_mode),
+          daily_outreach_cap = COALESCE($2, daily_outreach_cap),
+          daily_value_dm_cap = COALESCE($3, daily_value_dm_cap),
+          brand_voice = COALESCE($4, brand_voice),
+          buyer_psychology_pillars = COALESCE($5::jsonb, buyer_psychology_pillars),
+          updated_at = NOW()
+        WHERE id = 1 RETURNING *
+      `, [automation_mode ?? null, daily_outreach_cap ?? null, daily_value_dm_cap ?? null, brand_voice ?? null, buyer_psychology_pillars === undefined ? null : JSON.stringify(buyer_psychology_pillars)]);
+      await audit(actor, "config_updated", null, { fields: Object.keys(req.body || {}) });
+      res.json({ config: result.rows[0] });
+    } catch (error) { console.error("Agent config update failed", error); res.status(500).json({ error: "Could not update agent settings" }); }
+  });
+
+  router.get("/queue", async (req, res) => {
+    if (!founder(req, res)) return;
+    const status = typeof req.query.status === "string" && req.query.status ? req.query.status : null;
+    const actionType = typeof req.query.action_type === "string" ? req.query.action_type : null;
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+    try {
+      const result = await db.query(`
+        SELECT q.*, l.data->>'name' AS lead_name, l.data->>'company' AS lead_company,
+               COALESCE(l.data->>'whatsapp', l.data->>'phone') AS lead_phone
+        FROM agent_queue q LEFT JOIN leads l ON l.id = q.lead_id
+        WHERE ($1::text IS NULL OR q.status = $1) AND ($2::text IS NULL OR q.action_type = $2)
+        ORDER BY q.created_at DESC LIMIT $3
+      `, [status, actionType, limit]);
+      res.json({ items: result.rows });
+    } catch (error) { console.error("Agent queue read failed", error); res.status(500).json({ error: "Could not load review queue" }); }
+  });
+
+  router.post("/queue", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const { lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key } = req.body || {};
+    const agents = ["scout","inbox_sync","writer","closer","dispatcher"];
+    const actions = ["new_lead","log_inbound","outreach_dm","value_dm","follow_up","linkedin_article"];
+    if (!agents.includes(agent_name) || !actions.includes(action_type) || typeof draft_content !== "string" || draft_content.length > 30000) return res.status(400).json({ error: "Invalid queue item" });
+    if (lead_id && ["outreach_dm","value_dm","follow_up"].includes(action_type)) {
+      const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [lead_id]);
+      if (control.rows[0]?.do_not_contact) return res.status(409).json({ error: "This lead is marked do-not-contact." });
+    }
+    const id = randomUUID();
+    try {
+      const result = await db.query(`
+        INSERT INTO agent_queue (id, lead_id, agent_name, action_type, draft_content, metadata, reasoning, idempotency_key)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
+        ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+        RETURNING *
+      `, [id, lead_id || null, agent_name, action_type, draft_content, JSON.stringify(metadata || {}), String(reasoning || "").slice(0,5000), idempotency_key || null]);
+      await audit(actor, "queue_item_created", result.rows[0].id, { agent_name, action_type });
+      res.status(201).json({ item: result.rows[0] });
+    } catch (error) { console.error("Agent queue create failed", error); res.status(500).json({ error: "Could not stage item" }); }
+  });
+
+  router.patch("/queue/:id", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const { draft_content } = req.body || {};
+    if (typeof draft_content !== "string" || !draft_content.trim() || draft_content.length > 30000) return res.status(400).json({ error: "Draft must contain 1–30000 characters" });
+    try {
+      const result = await db.query("UPDATE agent_queue SET draft_content=$1, updated_at=NOW() WHERE id=$2 AND status='pending_approval' RETURNING *", [draft_content, req.params.id]);
+      if (!result.rowCount) return res.status(404).json({ error: "Pending queue item not found" });
+      await audit(actor, "draft_edited", req.params.id, {});
+      res.json({ item: result.rows[0] });
+    } catch (error) { console.error("Agent draft update failed", error); res.status(500).json({ error: "Could not save draft" }); }
+  });
+
+  router.post("/queue/:id/review", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const decision = req.body?.decision;
+    if (!["approve","reject"].includes(decision)) return res.status(400).json({ error: "Decision must be approve or reject" });
+    try {
+      const itemResult = await db.query("SELECT * FROM agent_queue WHERE id=$1 AND status='pending_approval'", [req.params.id]);
+      const queueItem = itemResult.rows[0];
+      if (!queueItem) return res.status(409).json({ error: "Item is no longer awaiting review" });
+
+      if (decision === "approve" && queueItem.action_type === "new_lead") {
+        const metadata = queueItem.metadata || {};
+        const company = String(metadata.company_name || "").trim().slice(0,200);
+        const sourceUrl = String(metadata.source_url || "").trim();
+        const website = String(metadata.website || "").trim();
+        const observation = String(metadata.buyer_psychology_observation || "").trim().slice(0,1000);
+        const safeUrl = (value: string) => {
+          try { const url = new URL(value); return ["https:","http:"].includes(url.protocol) ? url.toString() : ""; } catch { return ""; }
+        };
+        if (!company || !safeUrl(sourceUrl)) return res.status(400).json({ error: "Scout item is missing a verified company name or source URL." });
+        const client = await db.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["dfqlabs-scout-company:" + company.toLowerCase()]);
+          const currentQueue = await client.query("SELECT status FROM agent_queue WHERE id=$1 FOR UPDATE", [req.params.id]);
+          if (!currentQueue.rowCount || currentQueue.rows[0].status !== "pending_approval") {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: "Scout item was already reviewed." });
+          }
+          const existing = await client.query("SELECT id, data FROM leads FOR UPDATE");
+          const domain = (value: string) => { try { return new URL(value).hostname.toLowerCase().replace(/^www\./,""); } catch { return ""; } };
+          const phone = String(metadata.phone || metadata.whatsapp || "").replace(/\D/g,"");
+          const instagram = String(metadata.instagram_url || "").toLowerCase().replace(/\/$/,"");
+          const duplicate = existing.rows.find((row: any) => {
+            const lead = row.data || {};
+            return String(lead.company || "").trim().toLowerCase() === company.toLowerCase() ||
+              (!!website && !!lead.website && domain(website) === domain(String(lead.website))) ||
+              (!!phone && String(lead.whatsapp || lead.phone || "").replace(/\D/g,"") === phone) ||
+              (!!instagram && String(lead.instagram || "").toLowerCase().replace(/\/$/,"") === instagram);
+          });
+          if (duplicate) {
+            await client.query("UPDATE agent_queue SET status='rejected', error_log=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW() WHERE id=$3", ["Possible duplicate of CRM lead " + duplicate.id, actor.userId, req.params.id]);
+            await client.query("COMMIT");
+            await audit(actor, "scout_duplicate_rejected", req.params.id, { duplicateLeadId: duplicate.id });
+            return res.status(409).json({ error: "Possible duplicate detected. Existing lead: " + (duplicate.data?.company || duplicate.id) });
+          }
+          const now = new Date();
+          const date = now.toISOString().slice(0,10);
+          const leadId = randomUUID();
+          const lead = {
+            id: leadId,
+            name: String(metadata.contact_name || company).slice(0,160),
+            company,
+            phone: phone ? String(metadata.phone || metadata.whatsapp) : "",
+            whatsapp: phone ? String(metadata.whatsapp || metadata.phone) : "",
+            email: String(metadata.email || "").slice(0,180),
+            website: safeUrl(website),
+            instagram: safeUrl(String(metadata.instagram_url || "")),
+            linkedin: safeUrl(String(metadata.linkedin_url || "")),
+            source: "AI Scout — " + String(metadata.city || "Nigeria").slice(0,80),
+            clientType: "Real Estate",
+            service: "Content Intelligence",
+            status: "New",
+            priority: "Medium",
+            assignedTo: actor.displayName || "Unassigned",
+            notes: ["Buyer psychology observation: " + (observation || "Review company positioning and buyer trust signals."), "Verified source: " + safeUrl(sourceUrl), "Scout discovery. Verify contact details before outreach."].join("\n"),
+            dmText: "",
+            prospectInitialResponse: "",
+            prospectLatestResponse: "",
+            conversationLog: [],
+            nextAction: "Verify the company profile and approve an appropriate first outreach angle.",
+            nextActionDate: date,
+            dateAdded: date,
+            lastContacted: "",
+            lastMeaningfulTouchpoint: "",
+            awaitingReplySince: "",
+            meetingScheduledAt: "",
+            meetingPrepNote: "",
+            followUpCount: 0,
+            weekAdded: date,
+            completedFollowUps: [],
+            betaCandidate: false,
+            autoFollowUpDate: null,
+            autoFollowUpReason: "",
+            outboundMessages: [],
+          };
+          await client.query("INSERT INTO leads (id, data, updated_at) VALUES ($1,$2::jsonb,NOW())", [leadId, JSON.stringify(lead)]);
+          const normalizedLeadPhone = normalizePhone(String(lead.whatsapp || lead.phone || ""));
+          const leadPhoneDigits = normalizedLeadPhone.valid ? normalizedLeadPhone.digits : String(lead.whatsapp || lead.phone || "").replace(/\D/g,"");
+          if (leadPhoneDigits) {
+            const suppression = await client.query("SELECT reason FROM agent_phone_suppressions WHERE phone=$1", [leadPhoneDigits]);
+            if (suppression.rows[0]) {
+              await client.query("INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at) VALUES ($1,TRUE,$2,'phone_suppression','system',NOW()) ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source='phone_suppression', updated_by='system', updated_at=NOW()", [leadId, suppression.rows[0].reason]);
+            }
+          }
+          const updated = await client.query(`
+            UPDATE agent_queue SET status='completed', lead_id=$2, reviewed_by=$1, reviewed_at=NOW(),
+              metadata = metadata || jsonb_build_object('createdLeadId',$2::text),
+              updated_at=NOW()
+            WHERE id=$3 RETURNING *
+          `, [actor.userId, leadId, req.params.id]);
+          await client.query("COMMIT");
+          await audit(actor, "scout_lead_created", req.params.id, { leadId, company });
+          return res.json({ item: updated.rows[0], createdLeadId: leadId });
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => {});
+          throw error;
+        } finally { client.release(); }
+      }
+
+      if (decision === "approve" && queueItem.lead_id && ["outreach_dm","value_dm","follow_up"].includes(queueItem.action_type)) {
+        const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [queueItem.lead_id]);
+        if (control.rows[0]?.do_not_contact) return res.status(409).json({ error: "This lead is marked do-not-contact. The draft cannot be approved." });
+      }
+      const status = decision === "approve" ? (queueItem.action_type === "log_inbound" ? "completed" : "approved") : "rejected";
+      const result = await db.query(`
+        UPDATE agent_queue SET status=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW()
+        WHERE id=$3 AND status='pending_approval' RETURNING *
+      `, [status, actor.userId, req.params.id]);
+      if (!result.rowCount) return res.status(409).json({ error: "Item is no longer awaiting review" });
+      await audit(actor, decision === "approve" ? (queueItem.action_type === "log_inbound" ? "inbound_log_acknowledged" : "queue_item_approved") : "queue_item_rejected", req.params.id, {});
+      res.json({ item: result.rows[0] });
+    } catch (error) { console.error("Agent review failed", error); res.status(500).json({ error: "Could not review queue item" }); }
+  });
+
+  router.post("/queue/batch-review", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids.filter((id: unknown) => typeof id === "string"))].slice(0,30) : [];
+    const decision = req.body?.decision;
+    if (!ids.length || !["approve","reject"].includes(decision)) return res.status(400).json({ error: "Provide 1–30 queue IDs and an approve/reject decision." });
+    const updated: any[] = [];
+    const skipped: any[] = [];
+    try {
+      for (const id of ids) {
+        const item = await db.query("SELECT lead_id, action_type FROM agent_queue WHERE id=$1 AND status='pending_approval'", [id]);
+        if (!item.rowCount) { skipped.push({ id, reason: "No longer pending review" }); continue; }
+        if (decision === "approve" && item.rows[0].action_type === "new_lead") { skipped.push({ id, reason: "New lead creation requires individual founder approval." }); continue; }
+        if (decision === "approve" && item.rows[0].lead_id && ["outreach_dm","value_dm","follow_up"].includes(item.rows[0].action_type)) {
+          const control = await db.query("SELECT do_not_contact FROM agent_contact_controls WHERE lead_id=$1", [item.rows[0].lead_id]);
+          if (control.rows[0]?.do_not_contact) { skipped.push({ id, reason: "Lead is marked do-not-contact" }); continue; }
+        }
+        const status = decision === "approve" ? (item.rows[0].action_type === "log_inbound" ? "completed" : "approved") : "rejected";
+        const result = await db.query("UPDATE agent_queue SET status=$1, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW() WHERE id=$3 AND status='pending_approval' RETURNING id,status", [status, actor.userId, id]);
+        if (result.rowCount) updated.push(result.rows[0]); else skipped.push({ id, reason: "Queue item changed during review" });
+      }
+      await audit(actor, "queue_batch_" + (decision === "approve" ? "approved" : "rejected"), null, { updated: updated.length, skipped });
+      res.json({ ok: true, updated, skipped });
+    } catch (error) { console.error("Batch queue review failed", error); res.status(500).json({ error: "Could not complete batch review" }); }
+  });
+
+  router.get("/contact-controls", async (req, res) => {
+    if (!founder(req, res)) return;
+    try {
+      const result = await db.query(`
+        SELECT c.*, l.data->>'name' AS lead_name, l.data->>'company' AS lead_company
+        FROM agent_contact_controls c LEFT JOIN leads l ON l.id = c.lead_id
+        WHERE c.do_not_contact = TRUE ORDER BY c.updated_at DESC LIMIT 200
+      `);
+      res.json({ controls: result.rows });
+    } catch (error) { console.error("Contact control read failed", error); res.status(500).json({ error: "Could not load contact controls" }); }
+  });
+
+  router.post("/leads/:leadId/do-not-contact", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.slice(0,500) : "Founder marked do-not-contact";
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("SELECT id FROM leads WHERE id=$1 FOR UPDATE", [req.params.leadId]);
+      if (!result.rowCount) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Lead not found" }); }
+      await client.query(`
+        INSERT INTO agent_contact_controls (lead_id, do_not_contact, reason, source, updated_by, updated_at)
+        VALUES ($1, TRUE, $2, 'founder', $3, NOW())
+        ON CONFLICT (lead_id) DO UPDATE SET do_not_contact=TRUE, reason=EXCLUDED.reason, source='founder', updated_by=EXCLUDED.updated_by, updated_at=NOW()
+      `, [req.params.leadId, reason, actor.userId]);
+      await client.query("UPDATE agent_queue SET status='rejected', error_log='Cancelled: lead is on the do-not-contact list', updated_at=NOW() WHERE lead_id=$1 AND status IN ('pending_approval','approved')", [req.params.leadId]);
+      await client.query("COMMIT");
+      await audit(actor, "lead_marked_do_not_contact", null, { leadId: req.params.leadId, reason });
+      res.json({ ok: true, leadId: req.params.leadId, doNotContact: true });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      console.error("Do-not-contact update failed", error);
+      res.status(500).json({ error: "Could not update contact control" });
+    } finally { client.release(); }
+  });
+
+  router.delete("/leads/:leadId/do-not-contact", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    try {
+      await db.query("DELETE FROM agent_contact_controls WHERE lead_id=$1", [req.params.leadId]);
+      await audit(actor, "lead_removed_from_do_not_contact", null, { leadId: req.params.leadId });
+      res.json({ ok: true, leadId: req.params.leadId, doNotContact: false });
+    } catch (error) { console.error("Do-not-contact removal failed", error); res.status(500).json({ error: "Could not update contact control" }); }
+  });
+
+  router.post("/circuit-breakers/:agentName/reset", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const agentName = req.params.agentName;
+    if (!["scout","inbox_sync","writer","closer","dispatcher"].includes(agentName)) return res.status(400).json({ error: "Unknown agent" });
+    try {
+      await db.query(
+        "INSERT INTO agent_logs (id, agent_name, status, summary, items_processed, consecutive_failures, metadata) VALUES ($1,$2,'success',$3,0,0,$4::jsonb)",
+        [randomUUID(), agentName, "Circuit breaker manually reset by founder.", JSON.stringify({ resetBy: actor.userId })]
+      );
+      await audit(actor, "agent_circuit_breaker_reset", null, { agentName });
+      res.json({ ok: true, agentName, halted: false });
+    } catch (error) { console.error("Circuit breaker reset failed", error); res.status(500).json({ error: "Could not reset circuit breaker" }); }
+  });
+
+  router.get("/phone-suppressions", async (req, res) => {
+    if (!founder(req, res)) return;
+    try {
+      const result = await db.query("SELECT phone, reason, source, updated_at FROM agent_phone_suppressions ORDER BY updated_at DESC LIMIT 200");
+      res.json({ suppressions: result.rows });
+    } catch (error) { console.error("Phone suppression read failed", error); res.status(500).json({ error: "Could not load phone suppressions" }); }
+  });
+
+  router.delete("/phone-suppressions/:phone", async (req, res) => {
+    const actor = founder(req, res); if (!actor) return;
+    const phone = String(req.params.phone || "").replace(/\\D/g,"");
+    if (phone.length < 7 || phone.length > 15) return res.status(400).json({ error: "Invalid phone number" });
+    try {
+      await db.query("DELETE FROM agent_phone_suppressions WHERE phone=$1", [phone]);
+      await audit(actor, "phone_suppression_removed_after_opt_in", null, { phone });
+      res.json({ ok: true, phone, suppressed: false });
+    } catch (error) { console.error("Phone suppression removal failed", error); res.status(500).json({ error: "Could not remove phone suppression" }); }
+  });
+
+  router.get("/logs", async (req, res) => {
+    if (!founder(req, res)) return;
+    try {
+      const result = await db.query("SELECT * FROM agent_logs ORDER BY created_at DESC LIMIT 50");
+      res.json({ logs: result.rows });
+    } catch (error) { console.error("Agent logs read failed", error); res.status(500).json({ error: "Could not load agent activity" }); }
+  });
+
+  return router;
+}
