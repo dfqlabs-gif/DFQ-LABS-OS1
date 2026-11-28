@@ -73,16 +73,6 @@ export function registerLinkedInRoutes(
   db: Queryable,
   isFounder: (req: any) => boolean,
 ): void {
-  app.get("/api/auth/linkedin/start", async (req, res) => {
-    if (!isFounder(req)) return res.status(403).send("Founder access required. Start this connection from Harry in Telegram.");
-    try {
-      const url = await createLinkedInAuthorizationUrl(db);
-      return res.redirect(url);
-    } catch (error: any) {
-      return res.status(503).send(String(error?.message || "LinkedIn connection is not configured."));
-    }
-  });
-
   app.get("/api/auth/linkedin/callback", async (req, res) => {
     const state = String(req.query?.state || "");
     const code = String(req.query?.code || "");
@@ -189,7 +179,10 @@ export async function publishLinkedInArticle(db: Queryable, queueId: string): Pr
       throw new Error("LinkedIn rejected the post (HTTP " + response.status + "). The item is marked failed; review the draft and connection before trying again.");
     }
     const postId = response.headers.get("x-restli-id") || response.headers.get("x-linkedin-id");
-    if (!postId) throw new Error("LinkedIn accepted the request but returned no post ID. The delivery outcome is uncertain; do not retry until you check your LinkedIn profile.");
+    if (!postId) {
+      await db.query("UPDATE agent_queue SET status='delivery_unknown', error_log='LinkedIn accepted the request but returned no post ID. Verify the profile before any retry.', updated_at=NOW() WHERE id=$1 AND status='sending'", [queueId]);
+      throw new Error("LinkedIn accepted the request but returned no post ID. Delivery is uncertain; check your LinkedIn profile before retrying.");
+    }
     await db.query(
       "UPDATE agent_queue SET status='sent', external_message_id=$1, sent_at=NOW(), updated_at=NOW(), error_log=NULL, metadata=metadata || $2::jsonb WHERE id=$3 AND status='sending'",
       [postId, JSON.stringify({ linkedinPublished: true, linkedinPublishedAt: new Date().toISOString() }), queueId],
@@ -197,7 +190,7 @@ export async function publishLinkedInArticle(db: Queryable, queueId: string): Pr
     return { postId, memberName: String(row.member_name || "") };
   } catch (error: any) {
     await db.query(
-      "UPDATE agent_queue SET status='failed', error_log=$1, updated_at=NOW() WHERE id=$2 AND status='sending'",
+      "UPDATE agent_queue SET status=CASE WHEN status='sending' THEN 'failed' ELSE status END, error_log=$1, updated_at=NOW() WHERE id=$2 AND status IN ('sending','delivery_unknown')",
       [String(error?.message || "LinkedIn publishing failed").slice(0, 1000), queueId],
     ).catch(() => {});
     throw error;
