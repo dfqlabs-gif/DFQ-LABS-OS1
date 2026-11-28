@@ -29,6 +29,7 @@ import { searchWebWithFallback } from "./lib/webSearch";
 import { configuredFallbackProviders, generateWithCompatibleProvider } from "./lib/aiProviders";
 import { chooseOutboundMessageType, ensureProspectGreeting, hasSameDayContactIdentity, isSameLagosDay, latestOutboundTouch } from "./lib/outreachPolicy";
 import { isRoutineInboundFaq } from "./lib/inboundPolicy";
+import { initializeLinkedInTables, registerLinkedInRoutes, createLinkedInAuthorizationUrl, publishLinkedInArticle } from "./lib/linkedin";
 
 dotenv.config();
 
@@ -36,6 +37,8 @@ const app = express();
 
 // ── PostgreSQL connection pool ─────────────────────────────────────────────────
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
+
+registerLinkedInRoutes(app, db);
 
 // ── Password & Session Utilities ────────────────────────────────────────────────
 import { scryptSync } from "crypto";
@@ -879,7 +882,20 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
     await client.query("INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'telegram-founder','queue_item_approved',$2,$3::jsonb)", [randomUUID(), queueId, JSON.stringify({ channel: "telegram", draftHash: expectedHash })]);
     await client.query("COMMIT");
     if (item.action_type === "linkedin_article") {
-      await managerTelegramReply(chatId, "LinkedIn article approved and recorded. The LinkedIn account connection is not configured yet, so nothing has been published. Once the account is connected, this approved article can be sent through the LinkedIn publishing flow.");
+      try {
+        const published = await publishLinkedInArticle(db, queueId);
+        await db.query(
+          "INSERT INTO agent_audit_log (id, actor_id, action, queue_item_id, details) VALUES ($1,'system:linkedin_publisher','linkedin_post_published',$2,$3::jsonb)",
+          [randomUUID(), queueId, JSON.stringify({ postId: published.postId, memberName: published.memberName })],
+        );
+        await managerTelegramReply(chatId, "Published successfully to your personal LinkedIn feed.\n\n" +
+          (published.memberName ? "Account: " + published.memberName + "\n" : "") +
+          "LinkedIn post ID: " + published.postId + "\n\nHarry will continue to require your approval for every post.");
+      } catch (error: any) {
+        await managerTelegramReply(chatId, "LinkedIn publication did not complete safely.\n\n" +
+          String(error?.message || "Unknown publishing error").slice(0, 500) +
+          "\n\nPlease check your LinkedIn profile and the review queue status before attempting another publication.");
+      }
       return;
     }
     await managerTelegramReply(chatId, "Approved — prospect record " + String(item.lead_id || queueId) + ". The Dispatcher is authorized to send this exact version. I will confirm the WhatsApp message ID and CRM reconciliation separately.");
@@ -1082,6 +1098,11 @@ async function processManagerTelegramMessage(chatId: string, textValue: string):
       const result = await callInternalFounderRoute("/api/agents/scout", { city, limit: 10 });
       await reply("Scout completed for " + city + ". " + (result.staged?.length || 0) + " verified candidate(s) staged; " + (result.skipped?.length || 0) + " skipped. New leads are awaiting founder review.");
       await sendTelegramPendingApprovals(chatId, 8);
+      return;
+    }
+    if (/^\/linkedin_connect(?:@\\w+)?$/i.test(message)) {
+      const authorizationUrl = await createLinkedInAuthorizationUrl(db);
+      await reply("Connect your personal LinkedIn account using this secure one-time link. Open it in your browser, sign in to the LinkedIn account you want Harry to publish from, and approve the requested permissions.\n\n" + authorizationUrl + "\n\nThe link expires in 10 minutes. No post will be published by connecting.");
       return;
     }
     const linkedinMatch = message.match(/^\/linkedin(?:@\w+)?(?:\s+(.+))?$/i);
@@ -3910,7 +3931,8 @@ async function startServer() {
 (async () => {
   try {
     await initializeDatabase();
-  await whatsappBridge.initialize();
+    await initializeLinkedInTables(db);
+    await whatsappBridge.initialize();
     await startServer();
   } catch (err) {
     console.error("✗ Failed to start application:", err);
