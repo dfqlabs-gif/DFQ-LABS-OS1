@@ -139,7 +139,7 @@ export function validateApprovedLinkedInDraft(
 ): { contentHash: string; characterCount: number; wordCount: number } {
   const contentHash = createHash("sha256").update(commentary, "utf8").digest("hex");
   const characterCount = Array.from(commentary).length;
-  const wordCount = commentary.trim().split(/\\s+/).filter(Boolean).length;
+  const wordCount = commentary.trim().split(/\s+/).filter(Boolean).length;
   if (!commentary.trim()) throw new Error("The approved LinkedIn draft is empty.");
   if (!approvedHash || approvedHash !== contentHash) {
     throw new Error("The approved LinkedIn content hash does not match the stored draft. Nothing was published; generate a fresh review card.");
