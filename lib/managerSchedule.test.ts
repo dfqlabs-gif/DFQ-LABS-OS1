@@ -38,11 +38,11 @@ function contentHash(value: string): string {
 }
 
 test("LinkedIn approval integrity preserves exact Unicode content", () => {
-  const draft = "Abuja real estate: reduce risk, build trust.\\n\\nA ₦200M+ decision needs evidence. 🏡";
+  const draft = "Abuja real estate: reduce risk, build trust.\n\nA ₦200M+ decision needs evidence. 🏡";
   const result = validateApprovedLinkedInDraft(draft, contentHash(draft), Array.from(draft).length);
   assert.equal(result.contentHash, contentHash(draft));
   assert.equal(result.characterCount, Array.from(draft).length);
-  assert.equal(result.wordCount, draft.trim().split(/\\s+/).filter(Boolean).length);
+  assert.equal(result.wordCount, draft.trim().split(/\s+/).filter(Boolean).length);
 });
 
 test("LinkedIn publisher rejects content changed after founder approval", () => {
