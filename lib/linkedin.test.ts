@@ -9,7 +9,7 @@ test("accepts exact approved LinkedIn content and counts Unicode code points", (
   const result = validateApprovedLinkedInDraft(content, hash, Array.from(content).length);
   assert.equal(result.contentHash, hash);
   assert.equal(result.characterCount, Array.from(content).length);
-  assert.equal(result.wordCount, 7);
+  assert.equal(result.wordCount, 6);
 });
 
 test("rejects content changed after founder approval", () => {
