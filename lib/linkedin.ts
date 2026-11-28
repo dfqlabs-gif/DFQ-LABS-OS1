@@ -71,7 +71,6 @@ export async function createLinkedInAuthorizationUrl(db: Queryable): Promise<str
 export function registerLinkedInRoutes(
   app: ExpressLike,
   db: Queryable,
-  isFounder: (req: any) => boolean,
 ): void {
   app.get("/api/auth/linkedin/callback", async (req, res) => {
     const state = String(req.query?.state || "");
