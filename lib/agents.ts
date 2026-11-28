@@ -45,7 +45,7 @@ export async function initializeAgentTables(db: Pool): Promise<void> {
   await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ");
   await db.query("ALTER TABLE agent_queue ADD COLUMN IF NOT EXISTS dispatch_attempts INTEGER NOT NULL DEFAULT 0");
   await db.query("ALTER TABLE agent_queue DROP CONSTRAINT IF EXISTS agent_queue_status_check");
-  await db.query("ALTER TABLE agent_queue ADD CONSTRAINT agent_queue_status_check CHECK (status IN ('pending_approval','approved','sending','sent','completed','rejected','failed'))");
+  await db.query("ALTER TABLE agent_queue ADD CONSTRAINT agent_queue_status_check CHECK (status IN ('pending_approval','approved','sending','sent','completed','rejected','failed','delivery_unknown'))");
   await db.query("UPDATE agent_queue SET status='failed', error_log='Interrupted during dispatch; verify WhatsApp delivery manually before retrying.', updated_at=NOW() WHERE status='sending' AND updated_at < NOW() - INTERVAL '10 minutes'");
 
   await db.query(`
