@@ -874,7 +874,20 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
         return;
       }
     }
-    const updated = await client.query("UPDATE agent_queue SET status=CASE WHEN action_type='log_inbound' THEN 'completed' ELSE 'approved' END, reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log=NULL WHERE id=$1 AND status='pending_approval' RETURNING action_type", [queueId]);
+    const approvedContent = String(item.draft_content || "");
+    const approvalMetadata = {
+      ...(item.metadata && typeof item.metadata === "object" ? item.metadata : {}),
+      ...(item.action_type === "linkedin_article" ? {
+        approvedContentHash: createHash("sha256").update(approvedContent, "utf8").digest("hex"),
+        approvedCharacterCount: Array.from(approvedContent).length,
+        approvedWordCount: approvedContent.trim().split(/\\s+/).filter(Boolean).length,
+        approvedAt: new Date().toISOString(),
+      } : {}),
+    };
+    const updated = await client.query(
+      "UPDATE agent_queue SET status=CASE WHEN action_type='log_inbound' THEN 'completed' ELSE 'approved' END, metadata=$2::jsonb, reviewed_by='telegram-founder', reviewed_at=NOW(), updated_at=NOW(), error_log=NULL WHERE id=$1 AND status='pending_approval' RETURNING action_type",
+      [queueId, JSON.stringify(approvalMetadata)],
+    );
     if (!updated.rowCount) {
       await client.query("ROLLBACK");
       return;
