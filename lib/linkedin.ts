@@ -120,7 +120,7 @@ export function registerLinkedInRoutes(
          ON CONFLICT (id) DO UPDATE SET access_token_encrypted=EXCLUDED.access_token_encrypted,
            member_sub=EXCLUDED.member_sub, member_name=EXCLUDED.member_name, scopes=EXCLUDED.scopes,
            expires_at=EXCLUDED.expires_at, updated_at=NOW()`,
-        [encrypt(String(tokenData.access_token)), String(profile.sub), String(profile.name || [profile.given_name, profile.family_name].filter(Boolean).join(" ")), String(tokenData.scope || ""), String(expiresIn)],
+        [encrypt(String(tokenData.access_token)), String(profile.sub), String(profile.name || [profile.given_name, profile.family_name].filter(Boolean).join(" ")), String(tokenData.scope || "openid profile email w_member_social"), String(expiresIn)],
       );
       return res.status(200).send(
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>LinkedIn connected</title></head><body style='font-family:Arial,sans-serif;max-width:620px;margin:12vh auto;padding:24px;color:#17212b'><h1>LinkedIn connected successfully</h1><p>Your personal LinkedIn member account is now connected to DFQLABS OS1.</p><p>Harry will still require your explicit Telegram approval before publishing any post.</p><p>You can close this window and return to Telegram.</p></body></html>",
