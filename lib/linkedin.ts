@@ -28,7 +28,7 @@ function config() {
   const clientSecret = String(process.env.LINKEDIN_CLIENT_SECRET || "").trim();
   const redirectUri = String(process.env.LINKEDIN_REDIRECT_URI || "").trim();
   if (!clientId || !clientSecret || !redirectUri) throw new Error("LinkedIn OAuth credentials are not fully configured.");
-  return { clientId, clientSecret, redirectUri, apiVersion: String(process.env.LINKEDIN_API_VERSION || "202609").trim() };
+  return { clientId, clientSecret, redirectUri, apiVersion: String(process.env.LINKEDIN_API_VERSION || "202611").trim() };
 }
 
 export async function initializeLinkedInTables(db: Queryable): Promise<void> {
