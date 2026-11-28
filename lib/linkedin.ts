@@ -188,9 +188,11 @@ export async function publishLinkedInArticle(db: Queryable, queueId: string): Pr
     );
     return { postId, memberName: String(row.member_name || "") };
   } catch (error: any) {
+    const message = String(error?.message || "LinkedIn publishing failed").slice(0, 1000);
+    const uncertain = /fetch failed|timeout|timed out|aborted|econnreset|econnrefused|socket|network error|und_err/i.test(message);
     await db.query(
-      "UPDATE agent_queue SET status=CASE WHEN status='sending' THEN 'failed' ELSE status END, error_log=$1, updated_at=NOW() WHERE id=$2 AND status IN ('sending','delivery_unknown')",
-      [String(error?.message || "LinkedIn publishing failed").slice(0, 1000), queueId],
+      "UPDATE agent_queue SET status=CASE WHEN status='sending' THEN $1 ELSE status END, error_log=$2, updated_at=NOW() WHERE id=$3 AND status IN ('sending','delivery_unknown')",
+      [uncertain ? "delivery_unknown" : "failed", message, queueId],
     ).catch(() => {});
     throw error;
   }
