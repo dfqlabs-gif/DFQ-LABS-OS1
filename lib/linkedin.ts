@@ -132,6 +132,27 @@ export function registerLinkedInRoutes(
   });
 }
 
+export function validateApprovedLinkedInDraft(
+  commentary: string,
+  approvedHash: string,
+  approvedCharacterCount: number,
+): { contentHash: string; characterCount: number; wordCount: number } {
+  const contentHash = createHash("sha256").update(commentary, "utf8").digest("hex");
+  const characterCount = Array.from(commentary).length;
+  const wordCount = commentary.trim().split(/\\s+/).filter(Boolean).length;
+  if (!commentary.trim()) throw new Error("The approved LinkedIn draft is empty.");
+  if (!approvedHash || approvedHash !== contentHash) {
+    throw new Error("The approved LinkedIn content hash does not match the stored draft. Nothing was published; generate a fresh review card.");
+  }
+  if (Number(approvedCharacterCount) !== characterCount) {
+    throw new Error("The approved LinkedIn character count does not match the stored draft. Nothing was published.");
+  }
+  if (characterCount > 3000) {
+    throw new Error("The approved LinkedIn feed post exceeds the 3,000-character limit. Nothing was published.");
+  }
+  return { contentHash, characterCount, wordCount };
+}
+
 export async function publishLinkedInArticle(db: Queryable, queueId: string): Promise<{ postId: string; memberName: string; alreadyPublished?: boolean }> {
   const claim = await db.query(
     "UPDATE agent_queue SET status='sending', updated_at=NOW(), error_log=NULL WHERE id=$1 AND action_type='linkedin_article' AND status='approved' RETURNING id, draft_content, metadata",
@@ -156,20 +177,13 @@ export async function publishLinkedInArticle(db: Queryable, queueId: string): Pr
     // Publish the exact founder-approved UTF-8 text. Do not trim, slice, or
     // otherwise rewrite the payload after approval.
     const commentary = String(claim.rows[0].draft_content ?? "");
-    const contentHash = createHash("sha256").update(commentary, "utf8").digest("hex");
-    const characterCount = Array.from(commentary).length;
     const metadata = claim.rows[0].metadata && typeof claim.rows[0].metadata === "object" ? claim.rows[0].metadata : {};
-    const approvedHash = String(metadata.approvedContentHash || "");
-    if (!commentary.trim()) throw new Error("The approved LinkedIn draft is empty.");
-    if (!approvedHash || approvedHash !== contentHash) {
-      throw new Error("The approved LinkedIn content hash does not match the stored draft. Nothing was published; generate a fresh review card.");
-    }
-    if (Number(metadata.approvedCharacterCount) !== characterCount) {
-      throw new Error("The approved LinkedIn character count does not match the stored draft. Nothing was published.");
-    }
-    if (characterCount > 3000) {
-      throw new Error("The approved LinkedIn feed post exceeds the 3,000-character limit. Nothing was published.");
-    }
+    const integrity = validateApprovedLinkedInDraft(
+      commentary,
+      String(metadata.approvedContentHash || ""),
+      Number(metadata.approvedCharacterCount),
+    );
+    const { contentHash, characterCount, wordCount } = integrity;
     const postBody = {
       author: "urn:li:person:" + String(row.member_sub),
       commentary,
@@ -180,7 +194,7 @@ export async function publishLinkedInArticle(db: Queryable, queueId: string): Pr
     };
     await db.query(
       "UPDATE agent_queue SET metadata=metadata || $1::jsonb, updated_at=NOW() WHERE id=$2 AND status='sending'",
-      [JSON.stringify({ linkedinSubmissionContentHash: contentHash, linkedinSubmissionCharacterCount: characterCount, linkedinSubmissionWordCount: commentary.trim().split(/\\s+/).filter(Boolean).length }), queueId],
+      [JSON.stringify({ linkedinSubmissionContentHash: contentHash, linkedinSubmissionCharacterCount: characterCount, linkedinSubmissionWordCount: wordCount }), queueId],
     );
     const response = await fetch("https://api.linkedin.com/rest/posts", {
       method: "POST",
@@ -204,7 +218,7 @@ export async function publishLinkedInArticle(db: Queryable, queueId: string): Pr
     }
     await db.query(
       "UPDATE agent_queue SET status='sent', external_message_id=$1, sent_at=NOW(), updated_at=NOW(), error_log=NULL, metadata=metadata || $2::jsonb WHERE id=$3 AND status='sending'",
-      [postId, JSON.stringify({ linkedinPublished: true, linkedinPublishedAt: new Date().toISOString(), linkedinPublishedContentHash: contentHash, linkedinPublishedCharacterCount: characterCount, linkedinPublishedWordCount: commentary.trim().split(/\\s+/).filter(Boolean).length, linkedinPublicationVerified: "accepted_by_linkedin_api_not_read_back" }), queueId],
+      [postId, JSON.stringify({ linkedinPublished: true, linkedinPublishedAt: new Date().toISOString(), linkedinPublishedContentHash: contentHash, linkedinPublishedCharacterCount: characterCount, linkedinPublishedWordCount: wordCount, linkedinPublicationVerified: "accepted_by_linkedin_api_not_read_back" }), queueId],
     );
     return { postId, memberName: String(row.member_name || "") };
   } catch (error: any) {
