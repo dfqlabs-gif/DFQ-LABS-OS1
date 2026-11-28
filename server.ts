@@ -892,9 +892,20 @@ async function handleTelegramQueueCallback(callback: any): Promise<void> {
           (published.memberName ? "Account: " + published.memberName + "\n" : "") +
           "LinkedIn post ID: " + published.postId + "\n\nHarry will continue to require your approval for every post.");
       } catch (error: any) {
-        await managerTelegramReply(chatId, "LinkedIn publication did not complete safely.\n\n" +
-          String(error?.message || "Unknown publishing error").slice(0, 500) +
-          "\n\nPlease check your LinkedIn profile and the review queue status before attempting another publication.");
+        const publishError = String(error?.message || "Unknown publishing error").slice(0, 500);
+        if (/not connected|access has expired|did not grant|not configured|encryption key|credential/i.test(publishError)) {
+          await db.query(
+            "UPDATE agent_queue SET status='pending_approval', error_log=$1, updated_at=NOW() WHERE id=$2 AND status='failed'",
+            [publishError, queueId],
+          );
+          await managerTelegramReply(chatId, "Nothing was published because the LinkedIn connection needs attention.\n\n" +
+            publishError + "\n\nI have returned this draft to your approval queue. Connect or reconnect LinkedIn, then approve the draft again.");
+          await sendTelegramPendingApprovals(chatId, 8);
+        } else {
+          await managerTelegramReply(chatId, "LinkedIn publication did not complete safely.\n\n" +
+            publishError +
+            "\n\nPlease check your LinkedIn profile and the review queue status before attempting another publication. If delivery is uncertain, do not approve again until you verify whether the post appeared.");
+        }
       }
       return;
     }
